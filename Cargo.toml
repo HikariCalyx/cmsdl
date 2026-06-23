@@ -1,0 +1,22 @@
+[package]
+name = "cmsdl"
+version = "0.1.0"
+edition = "2021"
+description = "A downloader designed for Greater China region mushroom game"
+license = "MIT"
+repository = "https://github.com/HikariCalyx/cmsdl"
+
+[[bin]]
+name = "cmsdl"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+ureq = "2"
+roxmltree = "0.20"
+rsa = { version = "0.9", features = ["pem"] }
+hex = "0.4"
+base64 = "0.22"
+chrono = "0.4"
+md-5 = "0.10"
