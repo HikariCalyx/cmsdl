@@ -10,6 +10,9 @@ repository = "https://github.com/HikariCalyx/cmsdl"
 name = "cmsdl"
 path = "src/main.rs"
 
+[build-dependencies]
+winresource = "0.1"
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
