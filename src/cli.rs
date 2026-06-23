@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::{ArgGroup, Parser, ValueEnum};
 
@@ -68,11 +68,41 @@ impl Cli {
         if self.check {
             Action::Check
         } else if let Some(path) = &self.download {
-            Action::Download(path.clone())
+            Action::Download(sanitize_path(path))
         } else if let Some(path) = &self.repair {
-            Action::Repair(path.clone())
+            Action::Repair(sanitize_path(path))
         } else {
             unreachable!("clap ArgGroup guarantees exactly one action is set")
         }
     }
+}
+
+/// Strip surrounding quote characters from a path argument.
+///
+/// On Windows, a quoted path ending in a backslash (e.g. `"D:\My Games\"`)
+/// has its closing quote escaped by the shell, so the program receives a
+/// literal trailing `"` (e.g. `D:\My Games\"`). A leading `"` can survive in
+/// similar situations. Both are illegal in Windows paths and break directory
+/// creation, so we trim any matching/stray surrounding quotes here.
+fn sanitize_path(path: &Path) -> PathBuf {
+    let s = path.to_string_lossy();
+    let trimmed = s.trim().trim_matches(|c| c == '"' || c == '\'');
+
+    // On Windows, `"D:\"` is parsed by the shell as the escaped sequence
+    // `D:"` (the backslash escapes the closing quote and is consumed), which
+    // trims down to a bare drive specifier `D:`. That is a *drive-relative*
+    // path (current dir on D:), not the root. Restore the separator so it
+    // resolves to the drive root `D:\` as the user intended.
+    if is_bare_drive_spec(trimmed) {
+        return PathBuf::from(format!("{trimmed}\\"));
+    }
+
+    PathBuf::from(trimmed)
+}
+
+/// Return `true` if `s` is a bare Windows drive specifier like `C:` or `d:`
+/// (a drive letter followed by a colon and nothing else).
+fn is_bare_drive_spec(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    bytes.len() == 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
 }
