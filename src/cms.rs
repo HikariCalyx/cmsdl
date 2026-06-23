@@ -30,6 +30,21 @@ const SEGMENTS_PER_FILE: usize = 5;
 /// Smallest segment size; files smaller than this are downloaded single-threaded.
 const MIN_SEGMENT_SIZE: u64 = 1 << 20; // 1 MiB
 
+/// If no data arrives on a connection for this long, the read fails and the
+/// download is treated as stalled, triggering a re-signed resume.
+const STALL_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Timeout for establishing a connection (and resolving DNS).
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Maximum number of consecutive stalls (with no bytes received) tolerated for a
+/// single segment before it is reported as failed. The counter resets whenever
+/// any progress is made, so flaky-but-advancing connections keep going.
+const MAX_STALL_RETRIES: usize = 30;
+
+/// Pause before re-signing the URL and resuming after a stall.
+const RESUME_BACKOFF: Duration = Duration::from_millis(500);
+
 /// URL of the CMS launcher control file.
 const CTRL_XML_URL: &str = "https://downloader.dorado.sdo.com/v3launcher/5/v3ctrl.xml";
 
@@ -442,6 +457,14 @@ pub fn download_client(target_dir: &Path) -> Result<()> {
         })
         .collect();
 
+    // A shared HTTP agent with a read timeout, so a connection that stops
+    // delivering data surfaces as an error (instead of hanging forever) and can
+    // be resumed from its current byte offset with a freshly-signed URL.
+    let agent = ureq::AgentBuilder::new()
+        .timeout_read(STALL_TIMEOUT)
+        .timeout_connect(CONNECT_TIMEOUT)
+        .build();
+
     let counter = AtomicUsize::new(0);
     let downloaded = AtomicUsize::new(0);
     let skipped = AtomicUsize::new(0);
@@ -455,6 +478,7 @@ pub fn download_client(target_dir: &Path) -> Result<()> {
         let skipped = &skipped;
         let failures = &failures;
         let total_pb = &total_pb;
+        let agent = &agent;
         let challenge = challenge.as_str();
         let version = version.as_str();
         let domain = domain.as_str();
@@ -478,20 +502,9 @@ pub fn download_client(target_dir: &Path) -> Result<()> {
                         continue;
                     }
 
-                    // Step 5: obfuscated server-side name.
-                    let obf_name = obfuscated_file_name(version, &entry.raw_path);
-
-                    // Steps 7 & 8: per-file signed URL (fresh time per request).
-                    let file_time = get_current_utc8_time();
-                    let signature_input = format!(
-                        "{challenge}{file_time}{base_path}/{}{obf_name}",
-                        entry.file_location
-                    );
-                    let signature = md5_hex(&signature_input);
-                    let url = format!(
-                        "{domain}/{file_time}/{signature}{base_path}/{}{obf_name}",
-                        entry.file_location
-                    );
+                    // Step 5: obfuscated server-side name, and steps 7 & 8: a
+                    // re-signable URL (each `build()` uses the current time).
+                    let url = SignedUrl::new(challenge, version, domain, base_path, entry);
 
                     bar.set_length(entry.file_size);
                     bar.set_position(0);
@@ -505,6 +518,7 @@ pub fn download_client(target_dir: &Path) -> Result<()> {
                         SEGMENTS_PER_FILE,
                         &bar,
                         total_pb,
+                        agent,
                     ) {
                         Ok(()) => {
                             downloaded.fetch_add(1, Ordering::Relaxed);
@@ -539,14 +553,61 @@ pub fn download_client(target_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Builds a freshly-signed download URL for a single client file on demand.
+///
+/// The signature embeds a `yyyyMMddHHmm` timestamp, so a URL can expire or stop
+/// serving data. Calling [`SignedUrl::build`] again produces a URL signed for
+/// the current time, which is used to resume a stalled download from its
+/// current byte offset.
+struct SignedUrl<'a> {
+    challenge: &'a str,
+    domain: &'a str,
+    base_path: &'a str,
+    file_location: &'a str,
+    obf_name: String,
+}
+
+impl<'a> SignedUrl<'a> {
+    fn new(
+        challenge: &'a str,
+        version: &str,
+        domain: &'a str,
+        base_path: &'a str,
+        entry: &'a FileEntry,
+    ) -> Self {
+        SignedUrl {
+            challenge,
+            domain,
+            base_path,
+            file_location: &entry.file_location,
+            obf_name: obfuscated_file_name(version, &entry.raw_path),
+        }
+    }
+
+    /// Produce a URL signed for the current UTC+8 time.
+    fn build(&self) -> String {
+        let file_time = get_current_utc8_time();
+        let signature_input = format!(
+            "{}{file_time}{}/{}{}",
+            self.challenge, self.base_path, self.file_location, self.obf_name
+        );
+        let signature = md5_hex(&signature_input);
+        format!(
+            "{}/{file_time}/{signature}{}/{}{}",
+            self.domain, self.base_path, self.file_location, self.obf_name
+        )
+    }
+}
+
 /// Download `url` to `dest`, using parallel byte-range segments for large files.
 fn download_file(
-    url: &str,
+    url: &SignedUrl,
     dest: &Path,
     size: u64,
     max_segments: usize,
     pb: &ProgressBar,
     total: &ProgressBar,
+    agent: &ureq::Agent,
 ) -> Result<()> {
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent)
@@ -554,8 +615,8 @@ fn download_file(
     }
 
     let segments = effective_segments(size, max_segments);
-    if segments <= 1 || !supports_ranges(url) {
-        return download_single(url, dest, pb, total);
+    if segments <= 1 || !supports_ranges(&url.build(), agent) {
+        return download_single(url, dest, pb, total, agent);
     }
 
     // Pre-allocate the destination file so segments can be written at offsets.
@@ -572,7 +633,9 @@ fn download_file(
     std::thread::scope(|scope| {
         let handles: Vec<_> = ranges
             .into_iter()
-            .map(|(start, end)| scope.spawn(move || download_range(url, dest, start, end, pb, total)))
+            .map(|(start, end)| {
+                scope.spawn(move || download_range(url, dest, start, end, pb, total, agent))
+            })
             .collect();
 
         for handle in handles {
@@ -598,60 +661,142 @@ fn download_file(
     }
 }
 
-/// Download a single byte range `[start, end]` of `url` into `dest` at `start`.
+/// Download a byte range `[start, end]` of `url` into `dest`, resuming from the
+/// current offset (with a freshly-signed URL) whenever the connection stalls.
 fn download_range(
-    url: &str,
+    url: &SignedUrl,
     dest: &Path,
     start: u64,
     end: u64,
     pb: &ProgressBar,
     total: &ProgressBar,
+    agent: &ureq::Agent,
 ) -> Result<()> {
-    let resp = ureq::get(url)
-        .set("Range", &format!("bytes={start}-{end}"))
-        .call()
-        .context("HTTP range request failed")?;
-    let mut reader = resp.into_reader();
-
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .open(dest)
         .with_context(|| format!("failed to open {}", dest.display()))?;
-    file.seek(SeekFrom::Start(start))
-        .with_context(|| format!("failed to seek in {}", dest.display()))?;
 
-    copy_with_progress(&mut reader, &mut file, pb, total)
+    let mut pos = start;
+    let mut stalls = 0usize;
+
+    while pos <= end {
+        let before = pos;
+        // Re-sign the URL for the current time and resume from `pos`.
+        let signed = url.build();
+        let _ = stream_segment(agent, &signed, &mut file, &mut pos, end, pb, total);
+
+        if pos > end {
+            return Ok(());
+        }
+
+        // The range did not complete: either a stall/timeout or an early EOF.
+        if pos > before {
+            stalls = 0; // progress was made, so reset the stall counter
+        } else {
+            stalls += 1;
+            if stalls > MAX_STALL_RETRIES {
+                bail!(
+                    "download stalled with no progress after {MAX_STALL_RETRIES} retries \
+                     (no data for {}s)",
+                    STALL_TIMEOUT.as_secs()
+                );
+            }
+        }
+        std::thread::sleep(RESUME_BACKOFF);
+    }
+
+    Ok(())
 }
 
-/// Download the whole of `url` into `dest` in a single stream.
-fn download_single(url: &str, dest: &Path, pb: &ProgressBar, total: &ProgressBar) -> Result<()> {
-    let resp = ureq::get(url).call().context("HTTP request failed")?;
-    let mut reader = resp.into_reader();
-
-    let mut file = std::fs::File::create(dest)
-        .with_context(|| format!("failed to create file {}", dest.display()))?;
-
-    copy_with_progress(&mut reader, &mut file, pb, total)
-}
-
-/// Copy from `reader` to `writer`, advancing both the file and total progress bars.
-fn copy_with_progress<R: Read, W: Write>(
-    reader: &mut R,
-    writer: &mut W,
+/// Stream a range request from `*pos` to `end` into `file`, advancing `*pos` and
+/// both progress bars as bytes arrive. Returns `Ok(())` on a clean end of
+/// stream and `Err` on any I/O error (including a stall read timeout); in both
+/// cases `*pos` reflects exactly how many bytes were written.
+fn stream_segment(
+    agent: &ureq::Agent,
+    url: &str,
+    file: &mut std::fs::File,
+    pos: &mut u64,
+    end: u64,
     pb: &ProgressBar,
     total: &ProgressBar,
 ) -> Result<()> {
+    let resp = agent
+        .get(url)
+        .set("Range", &format!("bytes={}-{end}", *pos))
+        .call()
+        .context("HTTP range request failed")?;
+    let mut reader = resp.into_reader();
+
+    file.seek(SeekFrom::Start(*pos))
+        .with_context(|| "failed to seek before resuming")?;
+
     let mut buf = [0u8; 64 * 1024];
     loop {
         let n = reader.read(&mut buf).context("failed to read response body")?;
         if n == 0 {
             break;
         }
-        writer.write_all(&buf[..n]).context("failed to write to disk")?;
+        file.write_all(&buf[..n]).context("failed to write to disk")?;
+        *pos += n as u64;
         pb.inc(n as u64);
         total.inc(n as u64);
     }
     Ok(())
+}
+
+/// Download the whole of `url` into `dest` in a single stream, retrying from the
+/// start (with a freshly-signed URL) whenever the connection stalls. Used for
+/// small files and servers that do not honour range requests.
+fn download_single(
+    url: &SignedUrl,
+    dest: &Path,
+    pb: &ProgressBar,
+    total: &ProgressBar,
+    agent: &ureq::Agent,
+) -> Result<()> {
+    let mut stalls = 0usize;
+
+    loop {
+        let mut written = 0u64;
+        let result = (|| -> Result<()> {
+            let resp = agent.get(&url.build()).call().context("HTTP request failed")?;
+            let mut reader = resp.into_reader();
+            let mut file = std::fs::File::create(dest)
+                .with_context(|| format!("failed to create file {}", dest.display()))?;
+
+            let mut buf = [0u8; 64 * 1024];
+            loop {
+                let n = reader.read(&mut buf).context("failed to read response body")?;
+                if n == 0 {
+                    break;
+                }
+                file.write_all(&buf[..n]).context("failed to write to disk")?;
+                written += n as u64;
+                pb.inc(n as u64);
+                total.inc(n as u64);
+            }
+            Ok(())
+        })();
+
+        match result {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                stalls += 1;
+                if stalls > MAX_STALL_RETRIES {
+                    return Err(e.context(format!(
+                        "download stalled, giving up after {MAX_STALL_RETRIES} retries"
+                    )));
+                }
+                // Roll back the progress counted by this failed attempt, since
+                // the next attempt restarts the file from the beginning.
+                total.set_position(total.position().saturating_sub(written));
+                pb.set_position(pb.position().saturating_sub(written));
+                std::thread::sleep(RESUME_BACKOFF);
+            }
+        }
+    }
 }
 
 /// Decide how many segments to use for a file of the given size.
@@ -682,8 +827,8 @@ fn compute_ranges(size: u64, segments: usize) -> Vec<(u64, u64)> {
 }
 
 /// Probe whether the server honours HTTP range requests for `url`.
-fn supports_ranges(url: &str) -> bool {
-    match ureq::get(url).set("Range", "bytes=0-0").call() {
+fn supports_ranges(url: &str, agent: &ureq::Agent) -> bool {
+    match agent.get(url).set("Range", "bytes=0-0").call() {
         Ok(resp) => resp.status() == 206,
         Err(_) => false,
     }
