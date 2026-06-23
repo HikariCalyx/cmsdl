@@ -1,0 +1,128 @@
+name: Build
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  # Native / single-target builds for Windows and Linux.
+  build:
+    name: ${{ matrix.artifact }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2022
+            target: x86_64-pc-windows-msvc
+            bin: cmsdl.exe
+            artifact: cmsdl_x86-64-windows.exe
+          - runner: windows-2022
+            target: i686-pc-windows-msvc
+            bin: cmsdl.exe
+            artifact: cmsdl_i686-windows.exe
+          - runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            bin: cmsdl.exe
+            artifact: cmsdl_aarch64-windows.exe
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            bin: cmsdl
+            artifact: cmsdl_x86-64-linux
+          - runner: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            bin: cmsdl
+            artifact: cmsdl_aarch64-linux
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      # `ring` (pulled in via rustls/ureq) needs NASM to assemble its x86/x86_64
+      # routines on Windows. ARM Windows builds do not require it.
+      - name: Install NASM (Windows x86/x86_64)
+        if: matrix.target == 'x86_64-pc-windows-msvc' || matrix.target == 'i686-pc-windows-msvc'
+        uses: ilammy/setup-nasm@v1
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Stage binary
+        shell: bash
+        run: cp "target/${{ matrix.target }}/release/${{ matrix.bin }}" "${{ matrix.artifact }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+          if-no-files-found: error
+
+  # Universal-2 macOS binary (arm64 + x86_64).
+  # Built on the macos-26 image, but `MACOSX_DEPLOYMENT_TARGET` pins the minimum
+  # supported OS to macOS 11 so the binary still runs on macOS 11 and later.
+  macos-universal:
+    name: cmsdl_darwin
+    runs-on: macos-26
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build (aarch64-apple-darwin)
+        run: cargo build --release --locked --target aarch64-apple-darwin
+
+      - name: Build (x86_64-apple-darwin)
+        run: cargo build --release --locked --target x86_64-apple-darwin
+
+      - name: Create universal binary with lipo
+        run: |
+          lipo -create -output cmsdl_darwin \
+            target/aarch64-apple-darwin/release/cmsdl \
+            target/x86_64-apple-darwin/release/cmsdl
+          lipo -info cmsdl_darwin
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cmsdl_darwin
+          path: cmsdl_darwin
+          if-no-files-found: error
+
+  # Attach all binaries to a GitHub Release when a tag is pushed.
+  release:
+    name: Release
+    needs: [build, macos-universal]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*

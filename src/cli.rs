@@ -8,7 +8,7 @@ use clap::{ArgGroup, Parser, ValueEnum};
 #[command(group(
     ArgGroup::new("action")
         .required(true)
-        .args(["check", "download", "repair"]),
+        .args(["check", "download"]),
 ))]
 pub struct Cli {
     /// The region to operate on (case-insensitive, e.g. cms, CMS, cMs).
@@ -24,20 +24,21 @@ pub struct Cli {
     pub download: Option<PathBuf>,
 
     /// Verify checksums and repair corrupted files in the given directory.
-    #[arg(long, value_name = "PATH")]
+    #[arg(long, value_name = "PATH", hide = true)]
     pub repair: Option<PathBuf>,
 
     /// Increase output verbosity (can be repeated, e.g. -vv).
-    #[arg(short, long, action = clap::ArgAction::Count, global = true)]
+    #[arg(short, long, action = clap::ArgAction::Count, global = true, hide = true)]
     pub verbose: u8,
 }
 
 /// Supported game regions.
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Region {
-    /// Mainland China region.
+    /// China mainland region.
     Cms,
     /// Taiwan region.
+    #[value(hide = true)]
     Tms,
 }
 

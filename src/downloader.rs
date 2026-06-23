@@ -11,8 +11,14 @@ pub fn check(region: Region) -> Result<()> {
 
     match region {
         Region::Cms => {
-            let file_list = cms::get_client_file_list()?;
-            print!("{file_list}");
+            let info = cms::get_client_file_list_info()?;
+            println!("  version:    {}", info.version);
+            println!("  files:      {}", info.file_count);
+            println!(
+                "  total size: {:.2} GB ({} bytes)",
+                info.total_size as f64 / 1_073_741_824.0,
+                with_thousands_separator(info.total_size)
+            );
         }
         Region::Tms => {
             // TODO: implement update check logic for the TMS region.
@@ -29,7 +35,12 @@ pub fn download(region: Region, path: &Path) -> Result<()> {
         path.display()
     );
 
-    // TODO: implement the download logic here.
+    match region {
+        Region::Cms => cms::download_client(path)?,
+        Region::Tms => {
+            // TODO: implement the download logic for the TMS region.
+        }
+    }
 
     Ok(())
 }
@@ -44,4 +55,20 @@ pub fn repair(region: Region, path: &Path) -> Result<()> {
     // TODO: implement the checksum and repair logic here.
 
     Ok(())
+}
+
+/// Format an integer with `,` thousands separators (e.g. `70776930990` -> `70,776,930,990`).
+fn with_thousands_separator(value: u64) -> String {
+    let digits = value.to_string();
+    let len = digits.len();
+    let mut out = String::with_capacity(len + len / 3);
+
+    for (i, ch) in digits.chars().enumerate() {
+        if i != 0 && (len - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+
+    out
 }
