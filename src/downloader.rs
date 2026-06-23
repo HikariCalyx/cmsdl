@@ -12,6 +12,7 @@ pub fn check(region: Region) -> Result<()> {
     match region {
         Region::Cms => {
             let info = cms::get_client_file_list_info()?;
+            println!("  build:      {}", info.build_number);
             println!("  version:    {}", info.version);
             println!("  files:      {}", info.file_count);
             println!(
@@ -29,14 +30,17 @@ pub fn check(region: Region) -> Result<()> {
 }
 
 /// Download the client for the given region into `path`.
-pub fn download(region: Region, path: &Path) -> Result<()> {
+///
+/// When `wz_only` is set, only data files are downloaded (for CMS, paths under
+/// `mxd/Data`).
+pub fn download(region: Region, path: &Path, wz_only: bool) -> Result<()> {
     println!(
         "cmsdl: downloading client for region '{region}' into '{}'.",
         path.display()
     );
 
     match region {
-        Region::Cms => cms::download_client(path)?,
+        Region::Cms => cms::download_client(path, wz_only)?,
         Region::Tms => {
             // TODO: implement the download logic for the TMS region.
         }

@@ -17,7 +17,7 @@ use rsa::traits::PublicKeyParts;
 use rsa::{BigUint, RsaPublicKey};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -51,8 +51,39 @@ const CTRL_XML_URL: &str = "https://downloader.dorado.sdo.com/v3launcher/5/v3ctr
 /// Host serving the signed client download files.
 const DOWNLOAD_HOST: &str = "https://mxdver0.jijiagames.com";
 
-/// Path of the client file list, relative to the download host.
-const CLIENT_FILE_LIST_PATH: &str = "/v3client/build/5/8848/apppc/1020/client_all_files_list.dat";
+/// Portion of the client-file-list path that precedes the build number.
+const CLIENT_FILE_LIST_PATH_PREFIX: &str = "/v3client/build/5/8848/apppc/";
+
+/// Portion of the client-file-list path that follows the build number.
+const CLIENT_FILE_LIST_PATH_SUFFIX: &str = "/client_all_files_list.dat";
+
+/// Build number to start the exhaustive search from when neither a persisted
+/// value nor the launcher's initial number is available.
+const DEFAULT_CLIENT_NUMBER: u32 = 961;
+
+/// Unsigned launcher file list whose header records the current build number.
+/// Used to seed the exhaustive search the first time, before any value has been
+/// persisted to [`LAST_CLIENT_VERSION_FILE`].
+const INITIAL_CLIENT_LIST_URL: &str =
+    "https://v3launcher.jijiagames.com/v3launcher/build/5/8848/client-all-files-list/client_all_files_list.dat";
+
+/// Number of build numbers to probe past the last known version when searching
+/// for the newest one. A fixed window (rather than stopping at the first gap)
+/// tolerates missing intermediate builds.
+const SEARCH_WINDOW: u32 = 160;
+
+/// Number of concurrent threads used to probe the search window.
+const PARALLEL_PROBES: usize = 16;
+
+/// Name of the file used to remember the highest build number found, so the
+/// next exhaustive search can resume from there instead of from the default.
+const LAST_CLIENT_VERSION_FILE: &str = "last_client_version.ini";
+
+/// Build the client-file-list path (relative to the download host) for a given
+/// build number, e.g. `/v3client/build/5/8848/apppc/1020/client_all_files_list.dat`.
+fn client_file_list_path(number: u32) -> String {
+    format!("{CLIENT_FILE_LIST_PATH_PREFIX}{number}{CLIENT_FILE_LIST_PATH_SUFFIX}")
+}
 
 /// Base64-encoded DER (SubjectPublicKeyInfo) of the RSA public key used to
 /// decrypt the control-file `md5key` values.
@@ -194,21 +225,11 @@ pub fn get_current_utc8_time() -> u64 {
         .expect("yyyyMMddHHmm is always a valid number")
 }
 
-/// Build the signed URL for the client file list and download its contents.
-///
-/// The path is signed with an MD5 of `<challengeCode><utc8Time><path>`, and the
-/// resulting URL is `<host>/<utc8Time>/<md5>/<path>`.
-pub fn get_client_file_list() -> Result<String> {
-    let utc8_time = get_current_utc8_time();
-    let challenge_code = get_challenge_key().context("failed to obtain challenge code")?;
-
-    let url = build_client_file_list_url(&challenge_code, utc8_time);
-    http_get_text(&url).context("failed to download client file list")
-}
-
 /// Summary information parsed from a client file list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientFileList {
+    /// Build number discovered by exhaustive search (e.g. `1021`).
+    pub build_number: u32,
     /// Client version, taken from the last field of the header line (e.g. `0.0.0.15`).
     pub version: String,
     /// Sum of the size field across all file entries, in bytes.
@@ -218,9 +239,22 @@ pub struct ClientFileList {
 }
 
 /// Download and parse the client file list summary.
+///
+/// The build number is discovered by exhaustive search so the newest published
+/// list is summarized.
 pub fn get_client_file_list_info() -> Result<ClientFileList> {
-    let contents = get_client_file_list()?;
-    parse_client_file_list(&contents)
+    let challenge_code = get_challenge_key().context("failed to obtain challenge code")?;
+
+    println!("scanning for the latest build version...");
+    let number = discover_latest_client_number_with(&challenge_code)?;
+
+    let utc8_time = get_current_utc8_time();
+    let url = build_signed_url(&challenge_code, utc8_time, &client_file_list_path(number));
+    let contents = http_get_text(&url).context("failed to download client file list")?;
+
+    let mut info = parse_client_file_list(&contents)?;
+    info.build_number = number;
+    Ok(info)
 }
 
 /// Parse a client file list into its version, total size and file count.
@@ -255,18 +289,173 @@ fn parse_client_file_list(contents: &str) -> Result<ClientFileList> {
     }
 
     Ok(ClientFileList {
+        build_number: 0,
         version,
         total_size,
         file_count,
     })
 }
 
-/// Build the signed client-file-list URL from the challenge code and time value.
-fn build_client_file_list_url(challenge_code: &str, utc8_time: u64) -> String {
-    let signature_input = format!("{challenge_code}{utc8_time}{CLIENT_FILE_LIST_PATH}");
+/// Build a signed download URL for an arbitrary `path` (relative to the host).
+///
+/// The path is signed with an MD5 of `<challengeCode><utc8Time><path>`, and the
+/// resulting URL is `<host>/<utc8Time>/<md5><path>`.
+fn build_signed_url(challenge_code: &str, utc8_time: u64, path: &str) -> String {
+    let signature_input = format!("{challenge_code}{utc8_time}{path}");
     let signature = md5_hex(&signature_input);
 
-    format!("{DOWNLOAD_HOST}/{utc8_time}/{signature}{CLIENT_FILE_LIST_PATH}")
+    format!("{DOWNLOAD_HOST}/{utc8_time}/{signature}{path}")
+}
+
+/// Fetch the client file list for a specific build `number`.
+///
+/// Returns `Ok(Some(contents))` when the list exists (HTTP 200), `Ok(None)` when
+/// the server reports it as unavailable (HTTP 403 or 404), and `Err` for any
+/// other transport or HTTP failure.
+fn fetch_client_file_list_for(challenge_code: &str, number: u32) -> Result<Option<String>> {
+    let utc8_time = get_current_utc8_time();
+    let url = build_signed_url(challenge_code, utc8_time, &client_file_list_path(number));
+
+    match ureq::get(&url).call() {
+        Ok(resp) => {
+            let mut reader = resp.into_reader();
+            let mut buf = Vec::new();
+            reader
+                .read_to_end(&mut buf)
+                .context("failed to read response body")?;
+            Ok(Some(String::from_utf8_lossy(&buf).into_owned()))
+        }
+        // The build is simply not published (yet): not an error, just a stop signal.
+        Err(ureq::Error::Status(403, _)) | Err(ureq::Error::Status(404, _)) => Ok(None),
+        Err(e) => Err(e).with_context(|| format!("request for build {number} failed")),
+    }
+}
+
+/// Discover the highest available build number by exhaustive search, reusing an
+/// already-computed challenge code.
+///
+/// Starting from the persisted (or seeded) number, it probes the next
+/// [`SEARCH_WINDOW`] numbers and takes the highest one that still returns a
+/// list. The result is written back to [`LAST_CLIENT_VERSION_FILE`] for the
+/// next run.
+fn discover_latest_client_number_with(challenge: &str) -> Result<u32> {
+    // Prefer the persisted value; otherwise seed from the launcher's published
+    // number; fall back to the hardcoded default only if both are unavailable.
+    let start = load_last_client_version()
+        .or_else(fetch_initial_client_number)
+        .unwrap_or(DEFAULT_CLIENT_NUMBER);
+
+    // Confirm the starting point is valid. If a stale starting value is no
+    // longer available, fall back to the known-good default and search again.
+    let mut current = if fetch_client_file_list_for(challenge, start)?.is_some() {
+        start
+    } else if start != DEFAULT_CLIENT_NUMBER
+        && fetch_client_file_list_for(challenge, DEFAULT_CLIENT_NUMBER)?.is_some()
+    {
+        DEFAULT_CLIENT_NUMBER
+    } else {
+        bail!("no client file list found to start the exhaustive search from");
+    };
+
+    // Probe the next SEARCH_WINDOW numbers across PARALLEL_PROBES threads and
+    // keep the highest that still returns a list, so gaps (missing intermediate
+    // builds) don't end the search prematurely.
+    let base = current;
+    let max_found = AtomicU32::new(current);
+    let next_offset = AtomicU32::new(1);
+    let first_err: Mutex<Option<anyhow::Error>> = Mutex::new(None);
+
+    std::thread::scope(|scope| {
+        let max_found = &max_found;
+        let next_offset = &next_offset;
+        let first_err = &first_err;
+
+        for _ in 0..PARALLEL_PROBES {
+            scope.spawn(move || loop {
+                let offset = next_offset.fetch_add(1, Ordering::Relaxed);
+                if offset > SEARCH_WINDOW {
+                    break;
+                }
+                let candidate = base + offset;
+                match fetch_client_file_list_for(challenge, candidate) {
+                    Ok(Some(_)) => {
+                        max_found.fetch_max(candidate, Ordering::Relaxed);
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        let mut slot = first_err.lock().unwrap();
+                        if slot.is_none() {
+                            *slot = Some(e);
+                        }
+                        // Stop the remaining probes once any request hard-fails.
+                        next_offset.store(SEARCH_WINDOW + 1, Ordering::Relaxed);
+                        break;
+                    }
+                }
+            });
+        }
+    });
+
+    if let Some(e) = first_err.into_inner().unwrap() {
+        return Err(e);
+    }
+    current = max_found.load(Ordering::Relaxed);
+
+    save_last_client_version(current)?;
+    Ok(current)
+}
+
+/// Read the highest build number recorded in [`LAST_CLIENT_VERSION_FILE`].
+///
+/// Returns `None` when the file is absent or contains no parseable value.
+fn load_last_client_version() -> Option<u32> {
+    let contents = std::fs::read_to_string(LAST_CLIENT_VERSION_FILE).ok()?;
+    parse_last_client_version(&contents)
+}
+
+/// Read the initial build number from the public launcher file list.
+///
+/// The list's header location ends in the build number (e.g. `.../apppc/961`),
+/// which is returned. Any failure yields `None` so callers can fall back to
+/// [`DEFAULT_CLIENT_NUMBER`].
+fn fetch_initial_client_number() -> Option<u32> {
+    let contents = http_get_text(INITIAL_CLIENT_LIST_URL).ok()?;
+    parse_client_number_from_header(&contents)
+}
+
+/// Extract the build number from the first (header) line of a file list.
+///
+/// The header's first field is a URL whose final path segment is the build
+/// number, e.g. `https://.../apppc/961|5|0.0.0.9` -> `961`.
+fn parse_client_number_from_header(contents: &str) -> Option<u32> {
+    let header = contents.lines().find(|l| !l.trim().is_empty())?;
+    let (_, base_path) = parse_header_location(header).ok()?;
+    base_path.rsplit('/').next()?.trim().parse().ok()
+}
+
+/// Parse the `last_client_version` value out of the INI contents.
+fn parse_last_client_version(contents: &str) -> Option<u32> {
+    for line in contents.lines() {
+        let line = line.trim();
+        if line.starts_with('#') || line.starts_with(';') {
+            continue;
+        }
+        if let Some((key, value)) = line.split_once('=') {
+            if key.trim().eq_ignore_ascii_case("last_client_version") {
+                if let Ok(n) = value.trim().parse::<u32>() {
+                    return Some(n);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Persist the highest build number to [`LAST_CLIENT_VERSION_FILE`] as INI.
+fn save_last_client_version(number: u32) -> Result<()> {
+    let contents = format!("[CMS]\nlast_client_version = {number}\n");
+    std::fs::write(LAST_CLIENT_VERSION_FILE, contents)
+        .with_context(|| format!("failed to write {LAST_CLIENT_VERSION_FILE}"))
 }
 
 /// Compute the lowercase hex MD5 digest of `input`.
@@ -396,13 +585,16 @@ fn is_up_to_date(path: &Path, entry: &FileEntry) -> Result<bool> {
 /// each large file is fetched in up to [`SEGMENTS_PER_FILE`] parallel byte-range
 /// segments. Files already present with the expected size and checksum are
 /// skipped. Progress and download speed are shown with live progress bars.
-pub fn download_client(target_dir: &Path) -> Result<()> {
+pub fn download_client(target_dir: &Path, wz_only: bool) -> Result<()> {
     // Step 1: obtain the challenge code and keep it for the whole session.
     let challenge = get_challenge_key().context("failed to obtain challenge code")?;
 
-    // Step 2: fetch the file list (signed with the stored challenge).
+    // Step 2: find the newest build by exhaustive search, then fetch its file
+    // list (signed with the stored challenge).
+    println!("scanning for the latest build version...");
+    let number = discover_latest_client_number_with(&challenge)?;
     let list_time = get_current_utc8_time();
-    let list_url = build_client_file_list_url(&challenge, list_time);
+    let list_url = build_signed_url(&challenge, list_time, &client_file_list_path(number));
     let contents = http_get_text(&list_url).context("failed to download client file list")?;
 
     let mut lines = contents.lines().filter(|l| !l.trim().is_empty());
@@ -418,6 +610,8 @@ pub fn download_client(target_dir: &Path) -> Result<()> {
         .to_owned();
     let (domain, base_path) = parse_header_location(header)?;
 
+    println!("latest version: {version} (build {number}); starting download.");
+
     // Step 3: parse every remaining entry.
     // TODO: temporary cap for testing; uncomment to limit the number of files.
     // const MAX_FILES_FOR_TESTING: usize = 100;
@@ -425,6 +619,27 @@ pub fn download_client(target_dir: &Path) -> Result<()> {
         // .take(MAX_FILES_FOR_TESTING)
         .map(parse_entry)
         .collect::<Result<_>>()?;
+
+    // When `--download-wz-only` is set, keep only the data files (paths under
+    // `mxd/Data`). The published paths use backslashes, but `file_location`
+    // is already normalized to forward slashes.
+    let entries: Vec<FileEntry> = if wz_only {
+        let kept: Vec<FileEntry> = entries
+            .into_iter()
+            .filter(|e| {
+                e.file_location
+                    .to_ascii_lowercase()
+                    .starts_with("mxd/data/")
+            })
+            .collect();
+        println!(
+            "Limiting download to {} WZ file(s) under mxd/Data.",
+            kept.len()
+        );
+        kept
+    } else {
+        entries
+    };
 
     let total_bytes: u64 = entries.iter().map(|e| e.file_size).sum();
 
@@ -928,5 +1143,40 @@ mod tests {
         assert_eq!(effective_segments(MIN_SEGMENT_SIZE * 3, 5), 3);
         assert_eq!(effective_segments(MIN_SEGMENT_SIZE * 100, 5), 5); // capped
         assert_eq!(effective_segments(0, 5), 1);
+    }
+
+    #[test]
+    fn builds_client_file_list_path_for_number() {
+        assert_eq!(
+            client_file_list_path(1020),
+            "/v3client/build/5/8848/apppc/1020/client_all_files_list.dat"
+        );
+    }
+
+    #[test]
+    fn parses_client_number_from_header() {
+        let contents = "https://mxdver0.jijiagames.com/v3client/build/5/8848/apppc/961|5|0.0.0.9\n\
+                        mxd\\bdvid64.dll|8432048|02D3A68F0F7EE2DEFEE6C315DC2F873E\n";
+        assert_eq!(parse_client_number_from_header(contents), Some(961));
+        assert_eq!(parse_client_number_from_header(""), None);
+    }
+
+    #[test]
+    fn parses_last_client_version_ini() {
+        assert_eq!(
+            parse_last_client_version("[CMS]\nlast_client_version = 1023\n"),
+            Some(1023)
+        );
+        // Case-insensitive key, no surrounding spaces.
+        assert_eq!(
+            parse_last_client_version("LAST_CLIENT_VERSION=1042"),
+            Some(1042)
+        );
+        // Comments and unrelated keys are ignored.
+        assert_eq!(
+            parse_last_client_version("; a comment\nother = 7\n"),
+            None
+        );
+        assert_eq!(parse_last_client_version(""), None);
     }
 }

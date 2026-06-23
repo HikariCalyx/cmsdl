@@ -27,6 +27,10 @@ pub struct Cli {
     #[arg(long, value_name = "PATH", hide = true)]
     pub repair: Option<PathBuf>,
 
+    /// Only download WZ files
+    #[arg(long)]
+    pub download_wz_only: bool,
+
     /// Increase output verbosity (can be repeated, e.g. -vv).
     #[arg(short, long, action = clap::ArgAction::Count, global = true, hide = true)]
     pub verbose: u8,

@@ -12,7 +12,7 @@ fn main() -> Result<()> {
 
     match cli.action() {
         Action::Check => downloader::check(cli.region)?,
-        Action::Download(path) => downloader::download(cli.region, &path)?,
+        Action::Download(path) => downloader::download(cli.region, &path, cli.download_wz_only)?,
         Action::Repair(path) => downloader::repair(cli.region, &path)?,
     }
 
