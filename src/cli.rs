@@ -8,10 +8,10 @@ use clap::{ArgGroup, Parser, ValueEnum};
 #[command(group(
     ArgGroup::new("action")
         .required(true)
-        .args(["check", "download"]),
+        .args(["check", "download", "get_bit_torrent"]),
 ))]
 pub struct Cli {
-    /// The region to operate on (case-insensitive, e.g. cms, CMS, cMs).
+    /// The region to operate on (case-insensitive).
     #[arg(value_enum, ignore_case = true)]
     pub region: Region,
 
@@ -22,6 +22,15 @@ pub struct Cli {
     /// Download the client from the region into the given directory.
     #[arg(long, value_name = "PATH")]
     pub download: Option<PathBuf>,
+
+    /// Download only the BitTorrent (.torrent) file for the latest version.
+    #[arg(long)]
+    pub get_bit_torrent: bool,
+
+    /// Destination for --get-bit-torrent (a file path or an existing directory).
+    /// Defaults to the torrent's own name in the current directory.
+    #[arg(long, short = 'o', value_name = "PATH")]
+    pub output: Option<PathBuf>,
 
     /// Verify checksums and repair corrupted files in the given directory.
     #[arg(long, value_name = "PATH", hide = true)]
@@ -39,10 +48,9 @@ pub struct Cli {
 /// Supported game regions.
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Region {
-    /// China mainland region.
+    /// Mainland region, officially known as 冒险岛Online in Chinese.
     Cms,
-    /// Taiwan region.
-    #[value(hide = true)]
+    /// Taiwan and SARs region, officially known as 新楓之谷 in Chinese.
     Tms,
 }
 
@@ -61,6 +69,7 @@ impl std::fmt::Display for Region {
 pub enum Action {
     Check,
     Download(PathBuf),
+    GetBitTorrent(Option<PathBuf>),
     Repair(PathBuf),
 }
 
@@ -73,6 +82,8 @@ impl Cli {
             Action::Check
         } else if let Some(path) = &self.download {
             Action::Download(sanitize_path(path))
+        } else if self.get_bit_torrent {
+            Action::GetBitTorrent(self.output.as_deref().map(sanitize_path))
         } else if let Some(path) = &self.repair {
             Action::Repair(sanitize_path(path))
         } else {

@@ -1,9 +1,10 @@
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 
 use crate::cli::Region;
 use crate::cms;
+use crate::tms;
 
 /// Check for available updates from the given region.
 pub fn check(region: Region) -> Result<()> {
@@ -22,7 +23,15 @@ pub fn check(region: Region) -> Result<()> {
             );
         }
         Region::Tms => {
-            // TODO: implement update check logic for the TMS region.
+            let info = tms::get_product_info_summary()?;
+            println!("  product:    {}", info.product_name);
+            println!("  version:    {}", info.version);
+            println!("  files:      {}", info.file_count);
+            println!(
+                "  total size: {:.2} GB ({} bytes)",
+                info.total_size as f64 / 1_073_741_824.0,
+                with_thousands_separator(info.total_size)
+            );
         }
     }
 
@@ -41,8 +50,23 @@ pub fn download(region: Region, path: &Path, wz_only: bool) -> Result<()> {
 
     match region {
         Region::Cms => cms::download_client(path, wz_only)?,
+        Region::Tms => tms::download_client(path, wz_only)?,
+    }
+
+    Ok(())
+}
+
+/// Download the BitTorrent file for the latest version of the given region.
+///
+/// Only the TMS region publishes a torrent file.
+pub fn get_bit_torrent(region: Region, output: Option<&Path>) -> Result<()> {
+    match region {
         Region::Tms => {
-            // TODO: implement the download logic for the TMS region.
+            println!("cmsdl: fetching torrent file for region '{region}'.");
+            tms::download_torrent(output)?;
+        }
+        Region::Cms => {
+            bail!("region '{region}' does not publish a BitTorrent file");
         }
     }
 
