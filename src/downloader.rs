@@ -41,8 +41,9 @@ pub fn check(region: Region) -> Result<()> {
 /// Download the client for the given region into `path`.
 ///
 /// When `wz_only` is set, only data files are downloaded (for CMS, paths under
-/// `mxd/Data`).
-pub fn download(region: Region, path: &Path, wz_only: bool) -> Result<()> {
+/// `mxd/Data`; for TMS, paths under `Data`). When `use_bittorrent` is set (TMS
+/// only), the BitTorrent source is combined with HTTP.
+pub fn download(region: Region, path: &Path, wz_only: bool, use_bittorrent: bool) -> Result<()> {
     println!(
         "cmsdl: downloading client for region '{region}' into '{}'.",
         path.display()
@@ -50,7 +51,7 @@ pub fn download(region: Region, path: &Path, wz_only: bool) -> Result<()> {
 
     match region {
         Region::Cms => cms::download_client(path, wz_only)?,
-        Region::Tms => tms::download_client(path, wz_only)?,
+        Region::Tms => tms::download_client(path, wz_only, use_bittorrent)?,
     }
 
     Ok(())

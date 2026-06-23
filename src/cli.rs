@@ -40,6 +40,10 @@ pub struct Cli {
     #[arg(long)]
     pub download_wz_only: bool,
 
+    /// Disable the BitTorrent source; download over HTTP only (TMS only).
+    #[arg(long)]
+    pub no_bit_torrent: bool,
+
     /// Increase output verbosity (can be repeated, e.g. -vv).
     #[arg(short, long, action = clap::ArgAction::Count, global = true, hide = true)]
     pub verbose: u8,

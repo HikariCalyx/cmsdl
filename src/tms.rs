@@ -166,6 +166,22 @@ pub fn download_torrent(output: Option<&Path>) -> Result<()> {
     Ok(())
 }
 
+/// Run the BitTorrent download stage: fetch the `.torrent` for the current
+/// version and hand it to the BitTorrent engine to download into `target_dir`.
+fn run_bittorrent_stage(info: &ProductInfo, target_dir: &Path) -> Result<()> {
+    let url = torrent_url(&info.base_url, &info.product_id, &info.version);
+    println!(
+        "stage 1: downloading via BitTorrent ({}).",
+        torrent_file_name(&info.product_id, &info.version)
+    );
+
+    let torrent_bytes = http_get_bytes(&url).context("failed to download torrent file")?;
+    crate::bittorrent::download(torrent_bytes, target_dir)?;
+
+    println!("stage 2: verifying and completing over HTTP.");
+    Ok(())
+}
+
 /// Perform a GET request and return the raw response body.
 fn http_get_bytes(url: &str) -> Result<Vec<u8>> {
     let mut reader = ureq::get(url)
@@ -286,7 +302,13 @@ fn local_path(root: &Path, rel: &str) -> PathBuf {
 /// segments. Files already present with the expected size and checksum are
 /// skipped. When `wz_only` is set, only data files (paths under `Data/`) are
 /// downloaded.
-pub fn download_client(target_dir: &Path, wz_only: bool) -> Result<()> {
+///
+/// When `use_bittorrent` is set (and BitTorrent support was compiled in), the
+/// torrent is downloaded first into `target_dir`; the subsequent HTTP pass then
+/// verifies every file by checksum and fetches anything the swarm did not
+/// provide. The BitTorrent stage is skipped in `wz_only` mode (the torrent
+/// covers the whole client, not just the data files).
+pub fn download_client(target_dir: &Path, wz_only: bool, use_bittorrent: bool) -> Result<()> {
     let info = get_product_info()?;
     println!(
         "latest version: {} ({}); declared install size: {:.2} GB. starting download.",
@@ -294,6 +316,20 @@ pub fn download_client(target_dir: &Path, wz_only: bool) -> Result<()> {
         info.product_name,
         info.size_in_bytes as f64 / 1_073_741_824.0,
     );
+
+    // Stage 1 (optional): pull as much as possible from the BitTorrent swarm
+    // (and any HTTP web seeds the torrent advertises) before the HTTP pass.
+    if use_bittorrent && !wz_only {
+        if crate::bittorrent::is_available() {
+            if let Err(e) = run_bittorrent_stage(&info, target_dir) {
+                eprintln!("  bittorrent stage skipped ({e:#}); continuing with HTTP.");
+            }
+        } else {
+            println!("note: built without BitTorrent support; downloading over HTTP only.");
+        }
+    } else if !use_bittorrent {
+        println!("BitTorrent disabled; downloading over HTTP only.");
+    }
 
     // A shared HTTP agent with a read timeout, so a connection that stops
     // delivering data surfaces as an error (instead of hanging forever) and can
