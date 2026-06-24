@@ -27,7 +27,7 @@
 !define PRODUCT_WEB_SITE "https://github.com/HikariCalyx/cmsdl"
 
 ; Installation Directory
-!define INSTALL_DIR "$%SystemDrive%\MapleStoryCN"
+!define INSTALL_DIR "$%SystemDrive%"
 
 ; Required Space: 70,780,930,990 bytes (approximately 65.92 GB)
 !define REQUIRED_SPACE "70780930990"
