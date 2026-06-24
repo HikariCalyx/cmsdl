@@ -567,9 +567,57 @@ pub fn launch_client(target_dir: &Path) -> Result<()> {
         bail!("cannot launch: {} not found", exe.display());
     }
     println!("launching {} --sqLauncher", exe.display());
-    std::process::Command::new(&exe)
+    launch_exe(&exe, &mxd)
+}
+
+/// Launch `exe --sqLauncher` through the Windows shell.
+///
+/// `MapleStory.exe` ships a manifest that requests administrator rights, so a
+/// plain `CreateProcess` (`std::process::Command`) fails with OS error 740
+/// (`ERROR_ELEVATION_REQUIRED`). Launching via the shell (`ShellExecute`, driven
+/// here by PowerShell's `Start-Process`) lets Windows show the UAC prompt so the
+/// user can elevate manually.
+#[cfg(windows)]
+fn launch_exe(exe: &Path, working_dir: &Path) -> Result<()> {
+    use std::process::Command;
+
+    // Single-quote a value for PowerShell by doubling embedded single quotes.
+    fn ps_q(s: &str) -> String {
+        format!("'{}'", s.replace('\'', "''"))
+    }
+
+    let script = format!(
+        "Start-Process -FilePath {} -ArgumentList '--sqLauncher' -WorkingDirectory {}",
+        ps_q(&exe.to_string_lossy()),
+        ps_q(&working_dir.to_string_lossy()),
+    );
+
+    let status = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &script,
+        ])
+        .status()
+        .context("failed to launch the client via PowerShell Start-Process")?;
+
+    if !status.success() {
+        bail!(
+            "could not launch the client (the UAC elevation prompt may have been declined)"
+        );
+    }
+    Ok(())
+}
+
+/// Launch `exe --sqLauncher` directly on non-Windows platforms.
+#[cfg(not(windows))]
+fn launch_exe(exe: &Path, working_dir: &Path) -> Result<()> {
+    std::process::Command::new(exe)
         .arg("--sqLauncher")
-        .current_dir(&mxd)
+        .current_dir(working_dir)
         .spawn()
         .with_context(|| format!("failed to launch {}", exe.display()))?;
     Ok(())

@@ -1,6 +1,6 @@
 # I'd like to implement the switch "--patch" for ...
 
-Exported: 6/24/2026, 4:12:12 PM
+Exported: 6/24/2026, 4:26:18 PM
 
 ---
 
@@ -351,5 +351,31 @@ Error: --patch is not supported for region 'tms'; incremental patching is only a
 ```
 
 This is caught in `Cli::action()` before any network or filesystem work happens. The downloader-level guards remain as a backstop. Build is clean.
+
+---
+
+**User:**
+
+I got os error 740 when passing --launch-after-patching to patch command. Can I choose to execute by doing elevation manually?
+
+---
+
+**Assistant:**
+
+OS error 740 is `ERROR_ELEVATION_REQUIRED` — `MapleStory.exe` ships a manifest that requests administrator rights, and a plain `CreateProcess` (what `std::process::Command` uses) won't trigger UAC, so it fails. The fix is to launch it through the shell (`ShellExecute`), which honors the manifest and shows the UAC prompt so you can elevate manually.
+
+Let me update `launch_client` to go through the shell on Windows:
+
+Builds clean. Here's the fix:
+
+The launch now goes through the Windows shell (`ShellExecute`, via PowerShell's `Start-Process`) instead of a direct `CreateProcess`. Because `MapleStory.exe`'s manifest requests administrator rights, `ShellExecute` honors that and triggers the **UAC elevation prompt** — so you elevate manually by clicking "Yes". That's what resolves error 740.
+
+Behavior details:
+- If you accept the UAC prompt, the game launches elevated.
+- If you decline it, `Start-Process` fails and cmsdl reports: `could not launch the client (the UAC elevation prompt may have been declined)`.
+- Patching itself still completes successfully regardless; only the optional launch step is affected.
+- Non-Windows builds keep the direct spawn (the game is Windows-only, but the code stays cross-platform).
+
+Note: if you run cmsdl from an already-elevated terminal, Windows won't show a prompt and the game launches directly. So whether elevation is "manual" depends on cmsdl's own privilege level — the prompt appears only when elevation is actually needed.
 
 ---
