@@ -48,6 +48,11 @@ const RESUME_BACKOFF: Duration = Duration::from_millis(500);
 /// URL of the CMS launcher control file.
 const CTRL_XML_URL: &str = "https://downloader.dorado.sdo.com/v3launcher/5/v3ctrl.xml";
 
+/// URL of the CMS patch metadata file (`ver2.dat`), a JSON document listing
+/// every published incremental patch. It is served without any signing.
+const PATCH_DATA_URL: &str =
+    "https://v3launcher.jijiagames.com/v3launcher/build/ver2data/5/8848/-1/ver2.dat";
+
 /// Host serving the signed client download files.
 const DOWNLOAD_HOST: &str = "https://mxdver0.jijiagames.com";
 
@@ -225,6 +230,53 @@ pub fn get_current_utc8_time() -> u64 {
         .expect("yyyyMMddHHmm is always a valid number")
 }
 
+/// A single incremental patch entry parsed from the patch metadata
+/// (`ver2.dat`). Only the fields relevant for listing and applying are captured.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+pub struct PatchPackage {
+    /// Source version the patch upgrades from (e.g. `0.0.0.1`).
+    pub from: String,
+    /// Target version the patch upgrades to (e.g. `0.0.0.3`).
+    pub to: String,
+    /// Human-facing display version (e.g. `v222`).
+    #[serde(rename = "versionView")]
+    pub version_view: String,
+    /// Path (relative to the patch `baseUrl`) of this patch's `FileList.dat`,
+    /// e.g. `/0.0.0.14-0.0.0.15-<hash>/5_0.0.0.14-0.0.0.15_FileList.dat`.
+    #[serde(rename = "fileListUrl")]
+    pub file_list_url: String,
+}
+
+/// The patch metadata document (`ver2.dat`): a base URL plus the list of
+/// published incremental patches.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct PatchData {
+    /// Base URL the patch `fileListUrl`s are relative to, e.g.
+    /// `https://mxdver0.jijiagames.com/v3client/build/5/8848/diff`.
+    #[serde(rename = "baseUrl")]
+    pub base_url: String,
+    /// Every published patch, in chained order.
+    pub packages: Vec<PatchPackage>,
+}
+
+/// Fetch and parse the CMS patch metadata (`ver2.dat`).
+///
+/// The metadata is a JSON document served without any signing/challenge.
+pub fn get_patch_data(allow_insecure: bool, proxy: Option<&str>) -> Result<PatchData> {
+    let agent = crate::net::agent(allow_insecure, proxy);
+    let body = http_get_text(&agent, PATCH_DATA_URL).context("failed to fetch patch metadata")?;
+    serde_json::from_str(&body).context("failed to parse patch metadata JSON")
+}
+
+/// Strip the leading download host from a full URL, returning the path portion
+/// (e.g. `https://mxdver0.jijiagames.com/v3client/...` -> `/v3client/...`).
+///
+/// If `url` does not start with the known [`DOWNLOAD_HOST`], it is returned
+/// unchanged (it may already be a host-relative path).
+pub(crate) fn strip_download_host(url: &str) -> &str {
+    url.strip_prefix(DOWNLOAD_HOST).unwrap_or(url)
+}
+
 /// Summary information parsed from a client file list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientFileList {
@@ -301,7 +353,7 @@ fn parse_client_file_list(contents: &str) -> Result<ClientFileList> {
 ///
 /// The path is signed with an MD5 of `<challengeCode><utc8Time><path>`, and the
 /// resulting URL is `<host>/<utc8Time>/<md5><path>`.
-fn build_signed_url(challenge_code: &str, utc8_time: u64, path: &str) -> String {
+pub(crate) fn build_signed_url(challenge_code: &str, utc8_time: u64, path: &str) -> String {
     let signature_input = format!("{challenge_code}{utc8_time}{path}");
     let signature = md5_hex(&signature_input);
 
@@ -1226,6 +1278,80 @@ fn supports_ranges(url: &str, agent: &ureq::Agent) -> bool {
         Ok(resp) => resp.status() == 206,
         Err(_) => false,
     }
+}
+
+/// Download specific files (identified by their published backslash paths, e.g.
+/// `mxd\Data\Base\Base.wz`) from the latest full client index, overwriting any
+/// existing copies under `target_dir`.
+///
+/// Used to repair files that could not be patched: the newest build's
+/// `client_all_files_list.dat` is fetched, and each requested path is matched
+/// by its `raw_path` and downloaded via its obfuscated, signed URL.
+///
+/// Returns the list of requested paths that could not be found or downloaded.
+pub(crate) fn replace_files_from_latest(
+    target_dir: &Path,
+    rel_paths: &[String],
+    allow_insecure: bool,
+    proxy: Option<&str>,
+) -> Result<Vec<String>> {
+    let agent = crate::net::agent_builder(allow_insecure, proxy)
+        .timeout_read(STALL_TIMEOUT)
+        .timeout_connect(CONNECT_TIMEOUT)
+        .build();
+
+    let challenge = get_challenge_key(&agent).context("failed to obtain challenge code")?;
+    println!("scanning for the latest build version...");
+    let number = discover_latest_client_number_with(&agent, &challenge)?;
+
+    let list_time = get_current_utc8_time();
+    let list_url = build_signed_url(&challenge, list_time, &client_file_list_path(number));
+    let contents =
+        http_get_text(&agent, &list_url).context("failed to download client file list")?;
+
+    let mut lines = contents.lines().filter(|l| !l.trim().is_empty());
+    let header = lines.next().context("client file list is empty")?;
+    let version = header
+        .rsplit('|')
+        .next()
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| anyhow!("missing version in client file list header"))?
+        .trim()
+        .to_owned();
+    let (domain, base_path) = parse_header_location(header)?;
+
+    // Index entries by their published path, normalized to backslashes so it
+    // matches the patch manifest's keys.
+    let mut by_path: std::collections::HashMap<String, FileEntry> = std::collections::HashMap::new();
+    for line in lines {
+        let entry = parse_entry(line)?;
+        by_path.insert(entry.raw_path.replace('/', "\\"), entry);
+    }
+
+    let pb = ProgressBar::hidden();
+    let total = ProgressBar::hidden();
+    let mut failed = Vec::new();
+
+    for rel in rel_paths {
+        let key = rel.replace('/', "\\");
+        let Some(entry) = by_path.get(&key) else {
+            failed.push(rel.clone());
+            continue;
+        };
+        let local_path = target_dir.join(&entry.file_location).join(&entry.file_name);
+        let url = SignedUrl::new(&challenge, &version, &domain, &base_path, entry);
+        println!("  repairing {rel} from build {number} ({version})...");
+        match download_file(&url, &local_path, entry.file_size, SEGMENTS_PER_FILE, &pb, &total, &agent)
+        {
+            Ok(()) => {}
+            Err(e) => {
+                eprintln!("    failed: {e:#}");
+                failed.push(rel.clone());
+            }
+        }
+    }
+
+    Ok(failed)
 }
 
 #[cfg(test)]

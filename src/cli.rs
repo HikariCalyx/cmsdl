@@ -8,7 +8,7 @@ use clap::{ArgGroup, Parser, ValueEnum};
 #[command(group(
     ArgGroup::new("action")
         .required(true)
-        .args(["check", "download", "get_bit_torrent"]),
+        .args(["check", "download", "get_bit_torrent", "patch"]),
 ))]
 pub struct Cli {
     /// The region to operate on (case-insensitive).
@@ -31,6 +31,22 @@ pub struct Cli {
     /// Defaults to the torrent's own name in the current directory.
     #[arg(long, short = 'o', value_name = "PATH")]
     pub output: Option<PathBuf>,
+
+    /// Operate on incremental patches for the region.
+    ///
+    /// Pass `list` to print every published patch. Pass a target version
+    /// (e.g. `0.0.0.15`) or `latest` to apply patches up to that version to the
+    /// client directory given as the second positional argument.
+    #[arg(long, value_name = "VERSION|list")]
+    pub patch: Option<String>,
+
+    /// Client directory to download or patch (used with `--download`, or `--patch <version>`).
+    #[arg(value_name = "CLIENT_DIR")]
+    pub patch_target: Option<PathBuf>,
+
+    /// Launch game after patching finishes.
+    #[arg(long)]
+    pub launch_after_patching: bool,
 
     /// Only download WZ files
     #[arg(long)]
@@ -83,28 +99,60 @@ impl std::fmt::Display for Region {
     }
 }
 
+/// The patch sub-action selected by `--patch`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PatchAction {
+    /// List every published incremental patch.
+    List,
+    /// Apply patches up to `version` (or the latest) into `target`.
+    Apply { version: String, target: PathBuf },
+}
+
 /// The resolved action to perform, derived from the CLI flags.
 #[derive(Debug)]
 pub enum Action {
     Check,
     Download(PathBuf),
     GetBitTorrent(Option<PathBuf>),
+    Patch(PatchAction),
 }
 
 impl Cli {
     /// Resolve the mutually exclusive action flags into a single [`Action`].
     ///
     /// The arg group guarantees exactly one of the flags is set.
-    pub fn action(&self) -> Action {
-        if self.check {
+    pub fn action(&self) -> anyhow::Result<Action> {
+        let action = if self.check {
             Action::Check
         } else if let Some(path) = &self.download {
             Action::Download(sanitize_path(path))
         } else if self.get_bit_torrent {
             Action::GetBitTorrent(self.output.as_deref().map(sanitize_path))
+        } else if let Some(patch) = &self.patch {
+            if self.region == Region::Tms {
+                anyhow::bail!(
+                    "--patch is not supported for region 'tms'; \
+                     incremental patching is only available for 'cms'"
+                );
+            }
+            if patch.eq_ignore_ascii_case("list") {
+                Action::Patch(PatchAction::List)
+            } else {
+                let target = self.patch_target.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "applying patches requires a client directory, e.g. \
+                         `cmsdl cms --patch {patch} /path/to/client`"
+                    )
+                })?;
+                Action::Patch(PatchAction::Apply {
+                    version: patch.clone(),
+                    target: sanitize_path(target),
+                })
+            }
         } else {
             unreachable!("clap ArgGroup guarantees exactly one action is set")
-        }
+        };
+        Ok(action)
     }
 }
 

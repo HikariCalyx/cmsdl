@@ -94,6 +94,68 @@ pub fn get_bit_torrent(
     Ok(())
 }
 
+/// List the published incremental patches for the given region.
+///
+/// Only the CMS region publishes patch metadata.
+pub fn patch_list(region: Region, allow_insecure: bool, proxy: Option<&str>) -> Result<()> {
+    match region {
+        Region::Cms => {
+            println!("cmsdl: listing patches for region '{region}'.");
+            let patches = cms::get_patch_data(allow_insecure, proxy)?.packages;
+
+            if patches.is_empty() {
+                println!("no patches published.");
+                return Ok(());
+            }
+
+            println!();
+            println!("{:<12}  {:<12}  {}", "FROM", "TO", "VERSION VIEW");
+            println!("{:<12}  {:<12}  {}", "----", "--", "------------");
+            for p in &patches {
+                println!("{:<12}  {:<12}  {}", p.from, p.to, p.version_view);
+            }
+            println!();
+            println!("{} patch(es) total.", patches.len());
+        }
+        Region::Tms => {
+            bail!("region '{region}' does not publish patch metadata");
+        }
+    }
+
+    Ok(())
+}
+
+/// Apply incremental patches up to `version` (or `latest`) into `target`.
+///
+/// When `launch_after` is set, the client is launched once patching completes
+/// successfully. Only the CMS region supports patching.
+pub fn patch_apply(
+    region: Region,
+    version: &str,
+    target: &Path,
+    launch_after: bool,
+    allow_insecure: bool,
+    proxy: Option<&str>,
+) -> Result<()> {
+    match region {
+        Region::Cms => {
+            println!(
+                "cmsdl: patching region '{region}' client at '{}' up to '{version}'.",
+                target.display()
+            );
+            crate::patch::apply_patches(target, version, allow_insecure, proxy)?;
+            if launch_after {
+                crate::patch::launch_client(target)?;
+            }
+        }
+        Region::Tms => {
+            bail!("region '{region}' does not support patching");
+        }
+    }
+
+    Ok(())
+}
+
 /// Format an integer with `,` thousands separators (e.g. `70776930990` -> `70,776,930,990`).
 fn with_thousands_separator(value: u64) -> String {
     let digits = value.to_string();
