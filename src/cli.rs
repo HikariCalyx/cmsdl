@@ -45,6 +45,23 @@ pub struct Cli {
     /// Increase output verbosity (can be repeated, e.g. -vv).
     #[arg(short, long, action = clap::ArgAction::Count, global = true, hide = true)]
     pub verbose: u8,
+
+    /// Skip TLS certificate verification for all downloads (INSECURE).
+    ///
+    /// Use only when a download fails because the server's certificate cannot
+    /// be verified and you trust the network. This disables protection against
+    /// man-in-the-middle attacks.
+    #[arg(long, global = true)]
+    pub allow_insecure: bool,
+
+    /// Route all traffic through a proxy.
+    ///
+    /// Pass a URL to use a specific proxy, e.g. `--proxy=socks5://127.0.0.1:6000`
+    /// or `--proxy=http://127.0.0.1:8080`. Pass the flag with no value
+    /// (`--proxy`) to use the system proxy (taken from the `*_PROXY` environment
+    /// variables, or the Windows Internet Settings on Windows).
+    #[arg(long, global = true, value_name = "URL", num_args = 0..=1, require_equals = true)]
+    pub proxy: Option<Option<String>>,
 }
 
 /// Supported game regions.

@@ -7,12 +7,12 @@ use crate::cms;
 use crate::tms;
 
 /// Check for available updates from the given region.
-pub fn check(region: Region) -> Result<()> {
+pub fn check(region: Region, allow_insecure: bool, proxy: Option<&str>) -> Result<()> {
     println!("cmsdl: checking for updates from region '{region}'.");
 
     match region {
         Region::Cms => {
-            let info = cms::get_client_file_list_info()?;
+            let info = cms::get_client_file_list_info(allow_insecure, proxy)?;
             println!("  build:      {}", info.build_number);
             println!("  version:    {}", info.version);
             println!("  files:      {}", info.file_count);
@@ -23,7 +23,7 @@ pub fn check(region: Region) -> Result<()> {
             );
         }
         Region::Tms => {
-            let info = tms::get_product_info_summary()?;
+            let info = tms::get_product_info_summary(allow_insecure, proxy)?;
             println!("  product:    {}", info.product_name);
             println!("  version:    {}", info.version);
             println!("  files:      {}", info.file_count);
@@ -46,11 +46,16 @@ pub fn check(region: Region) -> Result<()> {
 /// When `skip_create_shortcut` is set, the CMS post-download step skips creating
 /// the desktop and Start Menu shortcuts (the one next to the binary is still
 /// created). This flag does not apply to TMS.
+///
+/// When `allow_insecure` is set, TLS certificate verification is disabled for
+/// all requests. When `proxy` is given, all requests are routed through it.
 pub fn download(
     region: Region,
     path: &Path,
     wz_only: bool,
     skip_create_shortcut: bool,
+    allow_insecure: bool,
+    proxy: Option<&str>,
 ) -> Result<()> {
     println!(
         "cmsdl: downloading client for region '{region}' into '{}'.",
@@ -58,8 +63,10 @@ pub fn download(
     );
 
     match region {
-        Region::Cms => cms::download_client(path, wz_only, skip_create_shortcut)?,
-        Region::Tms => tms::download_client(path, wz_only)?,
+        Region::Cms => {
+            cms::download_client(path, wz_only, skip_create_shortcut, allow_insecure, proxy)?
+        }
+        Region::Tms => tms::download_client(path, wz_only, allow_insecure, proxy)?,
     }
 
     Ok(())
@@ -68,11 +75,16 @@ pub fn download(
 /// Download the BitTorrent file for the latest version of the given region.
 ///
 /// Only the TMS region publishes a torrent file.
-pub fn get_bit_torrent(region: Region, output: Option<&Path>) -> Result<()> {
+pub fn get_bit_torrent(
+    region: Region,
+    output: Option<&Path>,
+    allow_insecure: bool,
+    proxy: Option<&str>,
+) -> Result<()> {
     match region {
         Region::Tms => {
             println!("cmsdl: fetching torrent file for region '{region}'.");
-            tms::download_torrent(output)?;
+            tms::download_torrent(output, allow_insecure, proxy)?;
         }
         Region::Cms => {
             bail!("region '{region}' does not publish a BitTorrent file");

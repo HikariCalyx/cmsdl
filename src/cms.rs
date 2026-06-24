@@ -102,8 +102,8 @@ fn public_key() -> Result<RsaPublicKey> {
 /// The challenge key is the concatenation of the first 16 characters of the
 /// decrypted `client` md5key and the last 16 characters of the decrypted
 /// `server-let` md5key.
-pub fn get_challenge_key() -> Result<String> {
-    let xml = fetch_ctrl_xml().context("failed to fetch v3ctrl.xml")?;
+pub fn get_challenge_key(agent: &ureq::Agent) -> Result<String> {
+    let xml = fetch_ctrl_xml(agent).context("failed to fetch v3ctrl.xml")?;
     let (server_let_hex, client_hex) =
         extract_md5keys(&xml).context("failed to parse md5keys from v3ctrl.xml")?;
 
@@ -118,15 +118,15 @@ pub fn get_challenge_key() -> Result<String> {
 }
 
 /// Download the control file as text.
-fn fetch_ctrl_xml() -> Result<String> {
+fn fetch_ctrl_xml(agent: &ureq::Agent) -> Result<String> {
     // The document declares `encoding="gbk"`, but every value we care about is
     // ASCII hex, so a lossy UTF-8 decode is sufficient.
-    http_get_text(CTRL_XML_URL).context("HTTP request failed")
+    http_get_text(agent, CTRL_XML_URL).context("HTTP request failed")
 }
 
 /// Perform a GET request and return the response body as (lossy) UTF-8 text.
-fn http_get_text(url: &str) -> Result<String> {
-    let mut reader = ureq::get(url).call().context("HTTP request failed")?.into_reader();
+fn http_get_text(agent: &ureq::Agent, url: &str) -> Result<String> {
+    let mut reader = agent.get(url).call().context("HTTP request failed")?.into_reader();
 
     let mut buf = Vec::new();
     std::io::Read::read_to_end(&mut reader, &mut buf).context("failed to read response body")?;
@@ -242,15 +242,16 @@ pub struct ClientFileList {
 ///
 /// The build number is discovered by exhaustive search so the newest published
 /// list is summarized.
-pub fn get_client_file_list_info() -> Result<ClientFileList> {
-    let challenge_code = get_challenge_key().context("failed to obtain challenge code")?;
+pub fn get_client_file_list_info(allow_insecure: bool, proxy: Option<&str>) -> Result<ClientFileList> {
+    let agent = crate::net::agent(allow_insecure, proxy);
+    let challenge_code = get_challenge_key(&agent).context("failed to obtain challenge code")?;
 
     println!("scanning for the latest build version...");
-    let number = discover_latest_client_number_with(&challenge_code)?;
+    let number = discover_latest_client_number_with(&agent, &challenge_code)?;
 
     let utc8_time = get_current_utc8_time();
     let url = build_signed_url(&challenge_code, utc8_time, &client_file_list_path(number));
-    let contents = http_get_text(&url).context("failed to download client file list")?;
+    let contents = http_get_text(&agent, &url).context("failed to download client file list")?;
 
     let mut info = parse_client_file_list(&contents)?;
     info.build_number = number;
@@ -312,11 +313,15 @@ fn build_signed_url(challenge_code: &str, utc8_time: u64, path: &str) -> String 
 /// Returns `Ok(Some(contents))` when the list exists (HTTP 200), `Ok(None)` when
 /// the server reports it as unavailable (HTTP 403 or 404), and `Err` for any
 /// other transport or HTTP failure.
-fn fetch_client_file_list_for(challenge_code: &str, number: u32) -> Result<Option<String>> {
+fn fetch_client_file_list_for(
+    agent: &ureq::Agent,
+    challenge_code: &str,
+    number: u32,
+) -> Result<Option<String>> {
     let utc8_time = get_current_utc8_time();
     let url = build_signed_url(challenge_code, utc8_time, &client_file_list_path(number));
 
-    match ureq::get(&url).call() {
+    match agent.get(&url).call() {
         Ok(resp) => {
             let mut reader = resp.into_reader();
             let mut buf = Vec::new();
@@ -338,19 +343,19 @@ fn fetch_client_file_list_for(challenge_code: &str, number: u32) -> Result<Optio
 /// [`SEARCH_WINDOW`] numbers and takes the highest one that still returns a
 /// list. The result is written back to [`LAST_CLIENT_VERSION_FILE`] for the
 /// next run.
-fn discover_latest_client_number_with(challenge: &str) -> Result<u32> {
+fn discover_latest_client_number_with(agent: &ureq::Agent, challenge: &str) -> Result<u32> {
     // Prefer the persisted value; otherwise seed from the launcher's published
     // number; fall back to the hardcoded default only if both are unavailable.
     let start = load_last_client_version()
-        .or_else(fetch_initial_client_number)
+        .or_else(|| fetch_initial_client_number(agent))
         .unwrap_or(DEFAULT_CLIENT_NUMBER);
 
     // Confirm the starting point is valid. If a stale starting value is no
     // longer available, fall back to the known-good default and search again.
-    let mut current = if fetch_client_file_list_for(challenge, start)?.is_some() {
+    let mut current = if fetch_client_file_list_for(agent, challenge, start)?.is_some() {
         start
     } else if start != DEFAULT_CLIENT_NUMBER
-        && fetch_client_file_list_for(challenge, DEFAULT_CLIENT_NUMBER)?.is_some()
+        && fetch_client_file_list_for(agent, challenge, DEFAULT_CLIENT_NUMBER)?.is_some()
     {
         DEFAULT_CLIENT_NUMBER
     } else {
@@ -369,6 +374,7 @@ fn discover_latest_client_number_with(challenge: &str) -> Result<u32> {
         let max_found = &max_found;
         let next_offset = &next_offset;
         let first_err = &first_err;
+        let agent = &agent;
 
         for _ in 0..PARALLEL_PROBES {
             scope.spawn(move || loop {
@@ -377,7 +383,7 @@ fn discover_latest_client_number_with(challenge: &str) -> Result<u32> {
                     break;
                 }
                 let candidate = base + offset;
-                match fetch_client_file_list_for(challenge, candidate) {
+                match fetch_client_file_list_for(agent, challenge, candidate) {
                     Ok(Some(_)) => {
                         max_found.fetch_max(candidate, Ordering::Relaxed);
                     }
@@ -418,8 +424,8 @@ fn load_last_client_version() -> Option<u32> {
 /// The list's header location ends in the build number (e.g. `.../apppc/961`),
 /// which is returned. Any failure yields `None` so callers can fall back to
 /// [`DEFAULT_CLIENT_NUMBER`].
-fn fetch_initial_client_number() -> Option<u32> {
-    let contents = http_get_text(INITIAL_CLIENT_LIST_URL).ok()?;
+fn fetch_initial_client_number(agent: &ureq::Agent) -> Option<u32> {
+    let contents = http_get_text(agent, INITIAL_CLIENT_LIST_URL).ok()?;
     parse_client_number_from_header(&contents)
 }
 
@@ -590,17 +596,32 @@ fn is_up_to_date(path: &Path, entry: &FileEntry) -> Result<bool> {
 /// [`create_shortcuts`]). When `skip_create_shortcut` is set, the desktop and
 /// Start Menu shortcuts are skipped, but the one next to the cmsdl binary is
 /// still created.
-pub fn download_client(target_dir: &Path, wz_only: bool, skip_create_shortcut: bool) -> Result<()> {
+pub fn download_client(
+    target_dir: &Path,
+    wz_only: bool,
+    skip_create_shortcut: bool,
+    allow_insecure: bool,
+    proxy: Option<&str>,
+) -> Result<()> {
+    // A shared HTTP agent with a read timeout, so a connection that stops
+    // delivering data surfaces as an error (instead of hanging forever) and can
+    // be resumed from its current byte offset with a freshly-signed URL. The
+    // same agent is reused for the control/list metadata requests.
+    let agent = crate::net::agent_builder(allow_insecure, proxy)
+        .timeout_read(STALL_TIMEOUT)
+        .timeout_connect(CONNECT_TIMEOUT)
+        .build();
+
     // Step 1: obtain the challenge code and keep it for the whole session.
-    let challenge = get_challenge_key().context("failed to obtain challenge code")?;
+    let challenge = get_challenge_key(&agent).context("failed to obtain challenge code")?;
 
     // Step 2: find the newest build by exhaustive search, then fetch its file
     // list (signed with the stored challenge).
     println!("scanning for the latest build version...");
-    let number = discover_latest_client_number_with(&challenge)?;
+    let number = discover_latest_client_number_with(&agent, &challenge)?;
     let list_time = get_current_utc8_time();
     let list_url = build_signed_url(&challenge, list_time, &client_file_list_path(number));
-    let contents = http_get_text(&list_url).context("failed to download client file list")?;
+    let contents = http_get_text(&agent, &list_url).context("failed to download client file list")?;
 
     let mut lines = contents.lines().filter(|l| !l.trim().is_empty());
     let header = lines.next().context("client file list is empty")?;
@@ -676,14 +697,6 @@ pub fn download_client(target_dir: &Path, wz_only: bool, skip_create_shortcut: b
             pb
         })
         .collect();
-
-    // A shared HTTP agent with a read timeout, so a connection that stops
-    // delivering data surfaces as an error (instead of hanging forever) and can
-    // be resumed from its current byte offset with a freshly-signed URL.
-    let agent = ureq::AgentBuilder::new()
-        .timeout_read(STALL_TIMEOUT)
-        .timeout_connect(CONNECT_TIMEOUT)
-        .build();
 
     let counter = AtomicUsize::new(0);
     let downloaded = AtomicUsize::new(0);

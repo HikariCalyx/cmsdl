@@ -95,14 +95,16 @@ pub struct ProductSummary {
 }
 
 /// Fetch and parse the product manifest.
-pub fn get_product_info() -> Result<ProductInfo> {
-    let bytes = http_get_bytes(PRODUCT_INFO_URL).context("failed to fetch productInfo.json")?;
+pub fn get_product_info(agent: &ureq::Agent) -> Result<ProductInfo> {
+    let bytes =
+        http_get_bytes(agent, PRODUCT_INFO_URL).context("failed to fetch productInfo.json")?;
     serde_json::from_slice(&bytes).context("failed to parse productInfo.json")
 }
 
 /// Fetch the product manifest and summarize it.
-pub fn get_product_info_summary() -> Result<ProductSummary> {
-    let info = get_product_info()?;
+pub fn get_product_info_summary(allow_insecure: bool, proxy: Option<&str>) -> Result<ProductSummary> {
+    let agent = crate::net::agent(allow_insecure, proxy);
+    let info = get_product_info(&agent)?;
     let total_size = info.files.iter().map(|f| f.size_in_bytes).sum();
     Ok(ProductSummary {
         product_name: info.product_name,
@@ -140,13 +142,14 @@ fn resolve_torrent_output(output: Option<&Path>, default_name: &str) -> PathBuf 
 /// The torrent is served at `<baseUrl>torrent/<productId>_<version>.torrent`.
 /// When `output` is omitted the file is written under its own name in the
 /// current directory.
-pub fn download_torrent(output: Option<&Path>) -> Result<()> {
-    let info = get_product_info()?;
+pub fn download_torrent(output: Option<&Path>, allow_insecure: bool, proxy: Option<&str>) -> Result<()> {
+    let agent = crate::net::agent(allow_insecure, proxy);
+    let info = get_product_info(&agent)?;
     let url = torrent_url(&info.base_url, &info.product_id, &info.version);
     let default_name = torrent_file_name(&info.product_id, &info.version);
     let dest = resolve_torrent_output(output, &default_name);
 
-    let bytes = http_get_bytes(&url).context("failed to download torrent file")?;
+    let bytes = http_get_bytes(&agent, &url).context("failed to download torrent file")?;
 
     if let Some(parent) = dest.parent() {
         if !parent.as_os_str().is_empty() {
@@ -167,8 +170,9 @@ pub fn download_torrent(output: Option<&Path>) -> Result<()> {
 }
 
 /// Perform a GET request and return the raw response body.
-fn http_get_bytes(url: &str) -> Result<Vec<u8>> {
-    let mut reader = ureq::get(url)
+fn http_get_bytes(agent: &ureq::Agent, url: &str) -> Result<Vec<u8>> {
+    let mut reader = agent
+        .get(url)
         .call()
         .context("HTTP request failed")?
         .into_reader();
@@ -286,22 +290,23 @@ fn local_path(root: &Path, rel: &str) -> PathBuf {
 /// segments. Files already present with the expected size and checksum are
 /// skipped. When `wz_only` is set, only data files (paths under `Data/`) are
 /// downloaded.
-pub fn download_client(target_dir: &Path, wz_only: bool) -> Result<()> {
-    let info = get_product_info()?;
+pub fn download_client(target_dir: &Path, wz_only: bool, allow_insecure: bool, proxy: Option<&str>) -> Result<()> {
+    // A shared HTTP agent with a read timeout, so a connection that stops
+    // delivering data surfaces as an error (instead of hanging forever) and can
+    // be resumed from its current byte offset. The same agent is reused for the
+    // manifest request.
+    let agent = crate::net::agent_builder(allow_insecure, proxy)
+        .timeout_read(STALL_TIMEOUT)
+        .timeout_connect(CONNECT_TIMEOUT)
+        .build();
+
+    let info = get_product_info(&agent)?;
     println!(
         "latest version: {} ({}); declared install size: {:.2} GB. starting download.",
         info.version,
         info.product_name,
         info.size_in_bytes as f64 / 1_073_741_824.0,
     );
-
-    // A shared HTTP agent with a read timeout, so a connection that stops
-    // delivering data surfaces as an error (instead of hanging forever) and can
-    // be resumed from its current byte offset.
-    let agent = ureq::AgentBuilder::new()
-        .timeout_read(STALL_TIMEOUT)
-        .timeout_connect(CONNECT_TIMEOUT)
-        .build();
 
     let mut items = build_download_items(&info, wz_only);
     if wz_only {
