@@ -82,18 +82,6 @@ pub fn get_bit_torrent(region: Region, output: Option<&Path>) -> Result<()> {
     Ok(())
 }
 
-/// Verify checksums and repair corrupted files for the given region at `path`.
-pub fn repair(region: Region, path: &Path) -> Result<()> {
-    println!(
-        "cmsdl: repairing client for region '{region}' at '{}'.",
-        path.display()
-    );
-
-    // TODO: implement the checksum and repair logic here.
-
-    Ok(())
-}
-
 /// Format an integer with `,` thousands separators (e.g. `70776930990` -> `70,776,930,990`).
 fn with_thousands_separator(value: u64) -> String {
     let digits = value.to_string();

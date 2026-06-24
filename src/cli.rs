@@ -32,10 +32,6 @@ pub struct Cli {
     #[arg(long, short = 'o', value_name = "PATH")]
     pub output: Option<PathBuf>,
 
-    /// Verify checksums and repair corrupted files in the given directory.
-    #[arg(long, value_name = "PATH", hide = true)]
-    pub repair: Option<PathBuf>,
-
     /// Only download WZ files
     #[arg(long)]
     pub download_wz_only: bool,
@@ -76,7 +72,6 @@ pub enum Action {
     Check,
     Download(PathBuf),
     GetBitTorrent(Option<PathBuf>),
-    Repair(PathBuf),
 }
 
 impl Cli {
@@ -90,8 +85,6 @@ impl Cli {
             Action::Download(sanitize_path(path))
         } else if self.get_bit_torrent {
             Action::GetBitTorrent(self.output.as_deref().map(sanitize_path))
-        } else if let Some(path) = &self.repair {
-            Action::Repair(sanitize_path(path))
         } else {
             unreachable!("clap ArgGroup guarantees exactly one action is set")
         }

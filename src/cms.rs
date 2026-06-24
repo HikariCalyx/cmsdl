@@ -770,9 +770,32 @@ pub fn download_client(target_dir: &Path, wz_only: bool, skip_create_shortcut: b
         bail!("{} file(s) failed to download", failures.len());
     }
 
+    // Record the downloaded version at <target_dir>/mxd/cmsdl.ver.
+    if let Err(e) = write_version_file(target_dir, &version) {
+        eprintln!("warning: failed to write version file: {e:#}");
+    }
+
     // On Windows, create launcher shortcuts now that the client is in place.
     create_shortcuts(target_dir, skip_create_shortcut);
 
+    Ok(())
+}
+
+/// Name of the file recording the downloaded client version.
+const VERSION_FILE_NAME: &str = "cmsdl.ver";
+
+/// Write the client `version` (e.g. `0.0.0.15`) to
+/// `<target_dir>/mxd/cmsdl.ver`, creating the `mxd` directory if needed.
+fn write_version_file(target_dir: &Path, version: &str) -> Result<()> {
+    let mxd_dir = target_dir.join("mxd");
+    std::fs::create_dir_all(&mxd_dir)
+        .with_context(|| format!("failed to create directory {}", mxd_dir.display()))?;
+
+    let path = mxd_dir.join(VERSION_FILE_NAME);
+    std::fs::write(&path, version)
+        .with_context(|| format!("failed to write {}", path.display()))?;
+
+    println!("wrote version {version} to {}", path.display());
     Ok(())
 }
 

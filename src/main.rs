@@ -19,7 +19,6 @@ fn main() -> Result<()> {
         Action::GetBitTorrent(output) => {
             downloader::get_bit_torrent(cli.region, output.as_deref())?
         }
-        Action::Repair(path) => downloader::repair(cli.region, &path)?,
     }
 
     Ok(())
