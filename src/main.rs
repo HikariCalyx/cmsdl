@@ -13,7 +13,9 @@ fn main() -> Result<()> {
 
     match cli.action() {
         Action::Check => downloader::check(cli.region)?,
-        Action::Download(path) => downloader::download(cli.region, &path, cli.download_wz_only)?,
+        Action::Download(path) => {
+            downloader::download(cli.region, &path, cli.download_wz_only, cli.skip_create_shortcut)?
+        }
         Action::GetBitTorrent(output) => {
             downloader::get_bit_torrent(cli.region, output.as_deref())?
         }

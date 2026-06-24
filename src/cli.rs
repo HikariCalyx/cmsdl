@@ -40,6 +40,12 @@ pub struct Cli {
     #[arg(long)]
     pub download_wz_only: bool,
 
+    /// Do not create shortcuts on the desktop and Start Menu after a CMS
+    /// download. A shortcut next to the cmsdl binary is still created.
+    /// (Windows only.)
+    #[arg(long)]
+    pub skip_create_shortcut: bool,
+
     /// Increase output verbosity (can be repeated, e.g. -vv).
     #[arg(short, long, action = clap::ArgAction::Count, global = true, hide = true)]
     pub verbose: u8,

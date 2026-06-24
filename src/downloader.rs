@@ -42,14 +42,23 @@ pub fn check(region: Region) -> Result<()> {
 ///
 /// When `wz_only` is set, only data files are downloaded (for CMS, paths under
 /// `mxd/Data`).
-pub fn download(region: Region, path: &Path, wz_only: bool) -> Result<()> {
+///
+/// When `skip_create_shortcut` is set, the CMS post-download step skips creating
+/// the desktop and Start Menu shortcuts (the one next to the binary is still
+/// created). This flag does not apply to TMS.
+pub fn download(
+    region: Region,
+    path: &Path,
+    wz_only: bool,
+    skip_create_shortcut: bool,
+) -> Result<()> {
     println!(
         "cmsdl: downloading client for region '{region}' into '{}'.",
         path.display()
     );
 
     match region {
-        Region::Cms => cms::download_client(path, wz_only)?,
+        Region::Cms => cms::download_client(path, wz_only, skip_create_shortcut)?,
         Region::Tms => tms::download_client(path, wz_only)?,
     }
 

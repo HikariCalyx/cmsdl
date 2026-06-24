@@ -585,7 +585,12 @@ fn is_up_to_date(path: &Path, entry: &FileEntry) -> Result<bool> {
 /// each large file is fetched in up to [`SEGMENTS_PER_FILE`] parallel byte-range
 /// segments. Files already present with the expected size and checksum are
 /// skipped. Progress and download speed are shown with live progress bars.
-pub fn download_client(target_dir: &Path, wz_only: bool) -> Result<()> {
+///
+/// On Windows, once the download succeeds, launcher shortcuts are created (see
+/// [`create_shortcuts`]). When `skip_create_shortcut` is set, the desktop and
+/// Start Menu shortcuts are skipped, but the one next to the cmsdl binary is
+/// still created.
+pub fn download_client(target_dir: &Path, wz_only: bool, skip_create_shortcut: bool) -> Result<()> {
     // Step 1: obtain the challenge code and keep it for the whole session.
     let challenge = get_challenge_key().context("failed to obtain challenge code")?;
 
@@ -763,6 +768,144 @@ pub fn download_client(target_dir: &Path, wz_only: bool) -> Result<()> {
             eprintln!("  failed: {f}");
         }
         bail!("{} file(s) failed to download", failures.len());
+    }
+
+    // On Windows, create launcher shortcuts now that the client is in place.
+    create_shortcuts(target_dir, skip_create_shortcut);
+
+    Ok(())
+}
+
+/// File name used for every launcher shortcut.
+const SHORTCUT_FILE_NAME: &str = "MapleStory CN.lnk";
+
+/// Create launcher shortcuts pointing at `<target_dir>\mxd\MapleStory.exe` with
+/// the `--sqLauncher` switch.
+///
+/// A shortcut is always created next to the running cmsdl binary. Unless
+/// `skip_desktop_and_start_menu` is set, shortcuts are also created on the
+/// desktop and under Start Menu > Programs.
+///
+/// This is a no-op on non-Windows platforms. Failures are reported as warnings
+/// rather than failing the (already successful) download.
+#[cfg(windows)]
+fn create_shortcuts(target_dir: &Path, skip_desktop_and_start_menu: bool) {
+    use std::path::PathBuf;
+
+    let target = target_dir.join("mxd").join("MapleStory.exe");
+    let working_dir = target_dir.join("mxd");
+
+    // Always create a shortcut next to the cmsdl binary.
+    let binary_lnk = match std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join(SHORTCUT_FILE_NAME)))
+    {
+        Some(p) => Some(p),
+        None => {
+            eprintln!("warning: could not determine the cmsdl binary location; skipping its shortcut.");
+            None
+        }
+    };
+
+    // Explicit destinations resolved here; the desktop and Start Menu folders
+    // are resolved inside PowerShell (via [Environment]::GetFolderPath).
+    let explicit: Vec<PathBuf> = binary_lnk.into_iter().collect();
+
+    if let Err(e) = run_shortcut_script(
+        &target,
+        "--sqLauncher",
+        &working_dir,
+        &explicit,
+        !skip_desktop_and_start_menu,
+    ) {
+        eprintln!("warning: failed to create shortcuts: {e:#}");
+    } else if skip_desktop_and_start_menu {
+        println!("created launcher shortcut next to cmsdl (desktop/Start Menu skipped).");
+    } else {
+        println!("created launcher shortcuts (binary location, desktop, Start Menu).");
+    }
+}
+
+/// No-op shortcut creation on non-Windows platforms.
+#[cfg(not(windows))]
+fn create_shortcuts(_target_dir: &Path, _skip_desktop_and_start_menu: bool) {}
+
+/// Drive the WScript.Shell COM object via PowerShell to create the `.lnk` files.
+///
+/// `explicit_paths` are full `.lnk` destinations resolved by the caller. When
+/// `include_desktop_and_start_menu` is set, the current user's desktop and
+/// Start Menu > Programs folders (resolved inside PowerShell) get a shortcut
+/// named [`SHORTCUT_FILE_NAME`] as well.
+#[cfg(windows)]
+fn run_shortcut_script(
+    target: &Path,
+    arguments: &str,
+    working_dir: &Path,
+    explicit_paths: &[std::path::PathBuf],
+    include_desktop_and_start_menu: bool,
+) -> Result<()> {
+    use std::process::Command;
+
+    // Single-quote a value for PowerShell by doubling embedded single quotes.
+    fn ps_single_quote(s: &str) -> String {
+        format!("'{}'", s.replace('\'', "''"))
+    }
+
+    let target_q = ps_single_quote(&target.to_string_lossy());
+    let args_q = ps_single_quote(arguments);
+    let wd_q = ps_single_quote(&working_dir.to_string_lossy());
+    let name_q = ps_single_quote(SHORTCUT_FILE_NAME);
+
+    let mut path_exprs: Vec<String> = explicit_paths
+        .iter()
+        .map(|p| ps_single_quote(&p.to_string_lossy()))
+        .collect();
+
+    if include_desktop_and_start_menu {
+        path_exprs.push(format!(
+            "(Join-Path ([Environment]::GetFolderPath('Desktop')) {name_q})"
+        ));
+        path_exprs.push(format!(
+            "(Join-Path ([Environment]::GetFolderPath('Programs')) {name_q})"
+        ));
+    }
+
+    if path_exprs.is_empty() {
+        return Ok(());
+    }
+
+    let paths_array = path_exprs.join(", ");
+
+    let script = format!(
+        "$ErrorActionPreference = 'Stop'; \
+         $ws = New-Object -ComObject WScript.Shell; \
+         $paths = @({paths_array}); \
+         foreach ($p in $paths) {{ \
+           $dir = Split-Path -Parent $p; \
+           if ($dir -and -not (Test-Path $dir)) {{ New-Item -ItemType Directory -Path $dir -Force | Out-Null }}; \
+           $s = $ws.CreateShortcut($p); \
+           $s.TargetPath = {target_q}; \
+           $s.Arguments = {args_q}; \
+           $s.WorkingDirectory = {wd_q}; \
+           $s.IconLocation = {target_q}; \
+           $s.Save(); \
+         }}"
+    );
+
+    let status = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &script,
+        ])
+        .status()
+        .context("failed to launch PowerShell to create shortcuts")?;
+
+    if !status.success() {
+        bail!("PowerShell exited with status {status}");
     }
 
     Ok(())
