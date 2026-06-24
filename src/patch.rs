@@ -35,6 +35,12 @@ const VERSION_FILE_NAME: &str = "cmsdl.ver";
 /// Number of files patched concurrently within a single zip part.
 const PARALLEL_FILES: usize = 10;
 
+/// Maximum number of byte-range segments used per zip download.
+const SEGMENTS_PER_FILE: usize = 5;
+
+/// Files smaller than this are downloaded with a single stream.
+const MIN_SEGMENT_SIZE: u64 = 1 << 20; // 1 MiB
+
 /// If no data arrives for this long, the connection is treated as stalled.
 const STALL_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -862,8 +868,9 @@ fn download_signed_text(agent: &ureq::Agent, challenge: &str, path: &str) -> Res
     Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
-/// Download a signed `path` to `dest`, resuming (with a freshly-signed URL) on
-/// stalls, then verifying the MD5 against `expected_md5`.
+/// Download a signed `path` to `dest` using up to [`SEGMENTS_PER_FILE`] parallel
+/// byte-range segments (falling back to a single resumable stream for small
+/// files or servers without range support), then verify against `expected_md5`.
 fn download_signed_to_file(
     agent: &ureq::Agent,
     challenge: &str,
@@ -887,6 +894,75 @@ fn download_signed_to_file(
     );
     pb.enable_steady_tick(Duration::from_millis(120));
 
+    let segments = effective_segments(size, SEGMENTS_PER_FILE);
+    let probe_url = cms::build_signed_url(challenge, cms::get_current_utc8_time(), path);
+
+    if segments <= 1 || size == 0 || !supports_ranges(agent, &probe_url) {
+        // Single resumable stream.
+        download_single_stream(agent, challenge, path, dest, size, &pb)?;
+    } else {
+        // Pre-allocate the file so segments can be written at their offsets.
+        {
+            let file = std::fs::File::create(dest)
+                .with_context(|| format!("failed to create {}", dest.display()))?;
+            file.set_len(size)
+                .with_context(|| format!("failed to size {}", dest.display()))?;
+        }
+
+        let ranges = compute_ranges(size, segments);
+        let first_err: Mutex<Option<anyhow::Error>> = Mutex::new(None);
+
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = ranges
+                .into_iter()
+                .map(|(start, end)| {
+                    let pb = &pb;
+                    let first_err = &first_err;
+                    scope.spawn(move || {
+                        if let Err(e) =
+                            download_segment(agent, challenge, path, dest, start, end, pb)
+                        {
+                            let mut slot = first_err.lock().unwrap();
+                            if slot.is_none() {
+                                *slot = Some(e);
+                            }
+                        }
+                    })
+                })
+                .collect();
+            for h in handles {
+                let _ = h.join();
+            }
+        });
+
+        if let Some(e) = first_err.into_inner().unwrap() {
+            pb.finish_and_clear();
+            return Err(e);
+        }
+    }
+
+    pb.finish_and_clear();
+
+    // Verify integrity.
+    if !expected_md5.is_empty() {
+        let got = md5_file_upper(dest)?;
+        if !got.eq_ignore_ascii_case(expected_md5) {
+            bail!("downloaded file checksum mismatch (expected {expected_md5}, got {got})");
+        }
+    }
+    Ok(())
+}
+
+/// Download the whole file as one resumable stream, re-signing the URL on each
+/// stall. Used for small files and servers that ignore range requests.
+fn download_single_stream(
+    agent: &ureq::Agent,
+    challenge: &str,
+    path: &str,
+    dest: &Path,
+    size: u64,
+    pb: &ProgressBar,
+) -> Result<()> {
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .write(true)
@@ -899,9 +975,8 @@ fn download_signed_to_file(
 
     while size == 0 || pos < size {
         let before = pos;
-        let t = cms::get_current_utc8_time();
-        let url = cms::build_signed_url(challenge, t, path);
-        let _ = stream_range(agent, &url, &mut file, &mut pos, &pb);
+        let url = cms::build_signed_url(challenge, cms::get_current_utc8_time(), path);
+        let _ = stream_range(agent, &url, &mut file, &mut pos, pb);
 
         if size != 0 && pos >= size {
             break;
@@ -916,29 +991,93 @@ fn download_signed_to_file(
         } else {
             stalls += 1;
             if stalls > MAX_STALL_RETRIES {
-                pb.finish_and_clear();
                 bail!("download stalled with no progress after {MAX_STALL_RETRIES} retries");
             }
         }
         std::thread::sleep(RESUME_BACKOFF);
     }
-    pb.finish_and_clear();
     file.flush().ok();
-    drop(file);
+    Ok(())
+}
 
-    // Verify integrity.
-    if !expected_md5.is_empty() {
-        let got = md5_file_upper(dest)?;
-        if !got.eq_ignore_ascii_case(expected_md5) {
-            bail!("downloaded file checksum mismatch (expected {expected_md5}, got {got})");
+/// Download a single byte range `[start, end]` of a signed `path` into `dest`,
+/// resuming (with a freshly-signed URL) from the current offset on each stall.
+fn download_segment(
+    agent: &ureq::Agent,
+    challenge: &str,
+    path: &str,
+    dest: &Path,
+    start: u64,
+    end: u64,
+    pb: &ProgressBar,
+) -> Result<()> {
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(dest)
+        .with_context(|| format!("failed to open {}", dest.display()))?;
+
+    let mut pos = start;
+    let mut stalls = 0usize;
+
+    while pos <= end {
+        let before = pos;
+        let url = cms::build_signed_url(challenge, cms::get_current_utc8_time(), path);
+        let _ = stream_bounded(agent, &url, &mut file, &mut pos, end, pb);
+
+        if pos > end {
+            return Ok(());
         }
+        if pos > before {
+            stalls = 0;
+        } else {
+            stalls += 1;
+            if stalls > MAX_STALL_RETRIES {
+                bail!("download segment stalled after {MAX_STALL_RETRIES} retries");
+            }
+        }
+        std::thread::sleep(RESUME_BACKOFF);
     }
     Ok(())
 }
 
-/// Stream a range request starting at `*pos` into `file`, advancing `*pos` as
-/// bytes arrive. If the server ignores the range (HTTP 200 with `*pos > 0`),
-/// the download restarts from the beginning.
+/// Probe whether the server honours HTTP range requests for `url`.
+fn supports_ranges(agent: &ureq::Agent, url: &str) -> bool {
+    match agent.get(url).set("Range", "bytes=0-0").call() {
+        Ok(resp) => resp.status() == 206,
+        Err(_) => false,
+    }
+}
+
+/// Split `size` bytes into `segments` contiguous inclusive `[start, end]` ranges.
+fn compute_ranges(size: u64, segments: usize) -> Vec<(u64, u64)> {
+    let segments = segments.max(1) as u64;
+    let chunk = size / segments;
+    let mut ranges = Vec::with_capacity(segments as usize);
+    let mut start = 0u64;
+    for i in 0..segments {
+        let end = if i == segments - 1 {
+            size - 1
+        } else {
+            start + chunk - 1
+        };
+        ranges.push((start, end));
+        start = end + 1;
+    }
+    ranges
+}
+
+/// Decide how many segments to use for a file of the given size.
+fn effective_segments(size: u64, max_segments: usize) -> usize {
+    if max_segments <= 1 || size == 0 {
+        return 1;
+    }
+    let by_size = (size / MIN_SEGMENT_SIZE).max(1) as usize;
+    by_size.min(max_segments).max(1)
+}
+
+/// Stream a range request starting at `*pos` (open-ended) into `file`, advancing
+/// `*pos` as bytes arrive. If the server ignores the range (HTTP 200 with
+/// `*pos > 0`), the download restarts from the beginning.
 fn stream_range(
     agent: &ureq::Agent,
     url: &str,
@@ -971,6 +1110,48 @@ fn stream_range(
         file.write_all(&buf[..n]).context("failed to write to disk")?;
         *pos += n as u64;
         pb.set_position(*pos);
+    }
+    Ok(())
+}
+
+/// Stream a bounded range request from `*pos` to `end` (inclusive) into `file`,
+/// advancing `*pos` and incrementing the shared progress bar as bytes arrive.
+fn stream_bounded(
+    agent: &ureq::Agent,
+    url: &str,
+    file: &mut std::fs::File,
+    pos: &mut u64,
+    end: u64,
+    pb: &ProgressBar,
+) -> Result<()> {
+    let resp = agent
+        .get(url)
+        .set("Range", &format!("bytes={}-{}", *pos, end))
+        .call()
+        .context("HTTP range request failed")?;
+    let mut reader = resp.into_reader();
+
+    file.seek(SeekFrom::Start(*pos))
+        .context("failed to seek before resuming")?;
+
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = reader.read(&mut buf).context("failed to read response body")?;
+        if n == 0 {
+            break;
+        }
+        // Never write past the segment boundary.
+        let remaining = (end + 1).saturating_sub(*pos) as usize;
+        if remaining == 0 {
+            break;
+        }
+        let take = n.min(remaining);
+        file.write_all(&buf[..take]).context("failed to write to disk")?;
+        *pos += take as u64;
+        pb.inc(take as u64);
+        if take < n {
+            break;
+        }
     }
     Ok(())
 }
