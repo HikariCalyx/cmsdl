@@ -82,9 +82,13 @@ Which would do the following:
 1. Get the current UTC8 time value.
 2. Get the current challenge code.
 3. Calculate the MD5 checksum of following string:
+```
 <challengeCode><UTC8TimeValue>/v3client/build/5/8848/apppc/1020/client_all_files_list.dat
+```
 4. Combine it into an URL:
+```
 https://mxdver0.jijiagames.com/<UTC8TimeValue>/<calculated_md5>/v3client/build/5/8848/apppc/1020/client_all_files_list.dat
+```
 5. Download the file from following URL, and return contents inside.
 
 ---
