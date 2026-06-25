@@ -130,13 +130,37 @@ fn fetch_ctrl_xml(agent: &ureq::Agent) -> Result<String> {
 }
 
 /// Perform a GET request and return the response body as (lossy) UTF-8 text.
+///
+/// Retries up to [`HTTP_GET_TEXT_RETRIES`] times on transient failures (timeouts,
+/// connection errors, read errors). The last error is returned if all attempts fail.
 fn http_get_text(agent: &ureq::Agent, url: &str) -> Result<String> {
-    let mut reader = agent.get(url).call().context("HTTP request failed")?.into_reader();
+    const HTTP_GET_TEXT_RETRIES: usize = 10;
 
-    let mut buf = Vec::new();
-    std::io::Read::read_to_end(&mut reader, &mut buf).context("failed to read response body")?;
+    let mut last_err = anyhow!("no attempts made");
 
-    Ok(String::from_utf8_lossy(&buf).into_owned())
+    for _ in 0..=HTTP_GET_TEXT_RETRIES {
+        let resp = match agent.get(url).call().context("HTTP request failed") {
+            Ok(r) => r,
+            Err(e) => {
+                last_err = e;
+                continue;
+            }
+        };
+
+        let mut reader = resp.into_reader();
+        let mut buf = Vec::new();
+        match std::io::Read::read_to_end(&mut reader, &mut buf)
+            .context("failed to read response body")
+        {
+            Ok(_) => return Ok(String::from_utf8_lossy(&buf).into_owned()),
+            Err(e) => {
+                last_err = e;
+                continue;
+            }
+        }
+    }
+
+    Err(last_err)
 }
 
 /// Extract the `server-let` and `client` md5key hex strings from the XML.
@@ -363,29 +387,43 @@ pub(crate) fn build_signed_url(challenge_code: &str, utc8_time: u64, path: &str)
 /// Fetch the client file list for a specific build `number`.
 ///
 /// Returns `Ok(Some(contents))` when the list exists (HTTP 200), `Ok(None)` when
-/// the server reports it as unavailable (HTTP 403 or 404), and `Err` for any
-/// other transport or HTTP failure.
+/// the server reports it as unavailable (HTTP 403 or 404), and `Ok(None)` when
+/// all retries are exhausted due to transient transport failures (treated as an
+/// invalid/unavailable version). Up to [`FETCH_FILE_LIST_RETRIES`] retries are
+/// attempted; the URL is re-signed on each attempt since it embeds a timestamp.
 fn fetch_client_file_list_for(
     agent: &ureq::Agent,
     challenge_code: &str,
     number: u32,
 ) -> Result<Option<String>> {
-    let utc8_time = get_current_utc8_time();
-    let url = build_signed_url(challenge_code, utc8_time, &client_file_list_path(number));
+    const FETCH_FILE_LIST_RETRIES: usize = 10;
 
-    match agent.get(&url).call() {
-        Ok(resp) => {
-            let mut reader = resp.into_reader();
-            let mut buf = Vec::new();
-            reader
-                .read_to_end(&mut buf)
-                .context("failed to read response body")?;
-            Ok(Some(String::from_utf8_lossy(&buf).into_owned()))
+    for attempt in 0..=FETCH_FILE_LIST_RETRIES {
+        let utc8_time = get_current_utc8_time();
+        let url = build_signed_url(challenge_code, utc8_time, &client_file_list_path(number));
+
+        let resp = match agent.get(&url).call() {
+            Ok(r) => r,
+            // The build is simply not published (yet): not an error, just a stop signal.
+            Err(ureq::Error::Status(403, _)) | Err(ureq::Error::Status(404, _)) => {
+                return Ok(None);
+            }
+            Err(_) if attempt < FETCH_FILE_LIST_RETRIES => continue,
+            // All retries exhausted: treat as an invalid version rather than a hard error.
+            Err(_) => return Ok(None),
+        };
+
+        let mut reader = resp.into_reader();
+        let mut buf = Vec::new();
+        match reader.read_to_end(&mut buf) {
+            Ok(_) => return Ok(Some(String::from_utf8_lossy(&buf).into_owned())),
+            Err(_) if attempt < FETCH_FILE_LIST_RETRIES => continue,
+            // All retries exhausted: treat as an invalid version rather than a hard error.
+            Err(_) => return Ok(None),
         }
-        // The build is simply not published (yet): not an error, just a stop signal.
-        Err(ureq::Error::Status(403, _)) | Err(ureq::Error::Status(404, _)) => Ok(None),
-        Err(e) => Err(e).with_context(|| format!("request for build {number} failed")),
     }
+
+    Ok(None)
 }
 
 /// Discover the highest available build number by exhaustive search, reusing an

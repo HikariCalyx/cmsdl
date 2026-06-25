@@ -170,17 +170,35 @@ pub fn download_torrent(output: Option<&Path>, allow_insecure: bool, proxy: Opti
 }
 
 /// Perform a GET request and return the raw response body.
+///
+/// Retries up to [`HTTP_GET_BYTES_RETRIES`] times on transient failures (timeouts,
+/// connection errors, read errors). The last error is returned if all attempts fail.
 fn http_get_bytes(agent: &ureq::Agent, url: &str) -> Result<Vec<u8>> {
-    let mut reader = agent
-        .get(url)
-        .call()
-        .context("HTTP request failed")?
-        .into_reader();
-    let mut buf = Vec::new();
-    reader
-        .read_to_end(&mut buf)
-        .context("failed to read response body")?;
-    Ok(buf)
+    const HTTP_GET_BYTES_RETRIES: usize = 10;
+
+    let mut last_err = anyhow!("no attempts made");
+
+    for _ in 0..=HTTP_GET_BYTES_RETRIES {
+        let resp = match agent.get(url).call().context("HTTP request failed") {
+            Ok(r) => r,
+            Err(e) => {
+                last_err = e;
+                continue;
+            }
+        };
+
+        let mut reader = resp.into_reader();
+        let mut buf = Vec::new();
+        match reader.read_to_end(&mut buf).context("failed to read response body") {
+            Ok(_) => return Ok(buf),
+            Err(e) => {
+                last_err = e;
+                continue;
+            }
+        }
+    }
+
+    Err(last_err)
 }
 
 /// A single resolved download: its remote URL, local destination (relative,
