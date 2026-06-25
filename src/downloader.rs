@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 
 use crate::cli::Region;
 use crate::cms;
@@ -57,12 +57,23 @@ pub fn download(
         path.display()
     );
 
+    // Ensure the target directory exists so the sentinel file can be placed inside it.
+    std::fs::create_dir_all(path)
+        .with_context(|| format!("failed to create target directory {}", path.display()))?;
+
+    // Create a sentinel file that signals an in-progress or incomplete download.
+    // It is removed only on success, so a leftover file indicates a failed run.
+    let sentinel = path.join(format!(".incomplete_{region}"));
+    std::fs::File::create(&sentinel)
+        .with_context(|| format!("failed to create sentinel file {}", sentinel.display()))?;
+
     match region {
-        Region::Cms => {
-            cms::download_client(path, wz_only, allow_insecure, proxy)?
-        }
+        Region::Cms => cms::download_client(path, wz_only, allow_insecure, proxy)?,
         Region::Tms => tms::download_client(path, wz_only, allow_insecure, proxy)?,
     }
+
+    std::fs::remove_file(&sentinel)
+        .with_context(|| format!("failed to remove sentinel file {}", sentinel.display()))?;
 
     Ok(())
 }
@@ -134,6 +145,24 @@ pub fn patch_apply(
 ) -> Result<()> {
     match region {
         Region::Cms => {
+            // If a sentinel file from a previous incomplete download exists,
+            // the client directory may be in an inconsistent state. Fall back
+            // to a full download rather than attempting to patch.
+            let sentinel = target.join(format!(".incomplete_{region}"));
+            if sentinel.exists() {
+                println!(
+                    "cmsdl: incomplete download marker detected at '{}'; \
+                     performing a full client download instead of patching.",
+                    sentinel.display()
+                );
+                download(Region::Cms, target, false, allow_insecure, proxy)?;
+                create_shortcut(Region::Cms, target)?;
+                if launch_after {
+                    crate::patch::launch_client(target)?;
+                }
+                return Ok(());
+            }
+
             println!(
                 "cmsdl: patching region '{region}' client at '{}' up to '{version}'.",
                 target.display()
