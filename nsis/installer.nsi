@@ -12,7 +12,7 @@
 !include "nsDialogs.nsh"
 
 ; Version
-!define VERSION "4.226.1.0"
+!define VERSION "4.226.1.1"
 
 ; Product Info (English)
 !define PRODUCT_NAME "MapleStory CN"
@@ -40,12 +40,14 @@
 ; Variables
 ; ============================================================================
 
-; Operation mode: "1" = Install (full download), "2" = Update (patch)
+; Operation mode: "1" = Install (full download), "2" = Update (patch), "3" = Update CMSDL, "4" = MSVC
 Var InstallMode
 Var Dialog
 Var RadioInstall
 Var RadioUpdate
-Var ShortcutIcon
+Var RadioUpdateCMSDL
+Var RadioMSVC
+Var LinkTroubleshooting
 
 ; ============================================================================
 ; MUI2 Settings
@@ -54,6 +56,7 @@ Var ShortcutIcon
 ; Installer pages
 !insertmacro MUI_PAGE_WELCOME
 Page custom ModeSelectPage ModeSelectPageLeave
+!define MUI_PAGE_CUSTOMFUNCTION_PRE DirectoryPagePre
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
 !insertmacro MUI_PAGE_FINISH
@@ -74,8 +77,10 @@ Page custom ModeSelectPage ModeSelectPageLeave
 
 LangString STR_DOWNLOADING ${LANG_ENGLISH} "Downloading game files..."
 LangString STR_PATCHING ${LANG_ENGLISH} "Updating game files..."
-LangString STR_DOWNLOAD_FAILED ${LANG_ENGLISH} "Game file download failed with error code $0. Installation will continue."
+LangString STR_DOWNLOAD_FAILED ${LANG_ENGLISH} "Game file download failed with error code $0."
 LangString STR_PATCH_FAILED ${LANG_ENGLISH} "Game update failed with error code $0."
+LangString STR_MSVC_FAILED ${LANG_ENGLISH} "MSVC runtime installation failed with error code $0."
+LangString STR_SHORTCUT_FAILED ${LANG_ENGLISH} "Shortcut creation failed with error code $0."
 LangString STR_LAUNCH_PROMPT ${LANG_ENGLISH} "Installation completed. Would you like to launch the game now?"
 LangString STR_UNSUPPORTED_OS ${LANG_ENGLISH} "This application requires Windows 10 or later on x64 architecture.$\nYour system does not meet the requirements."
 LangString STR_UNSUPPORTED_ARCH ${LANG_ENGLISH} "This application requires x64 architecture.$\nYour system is not x64 compatible."
@@ -84,6 +89,9 @@ LangString STR_MODE_TITLE ${LANG_ENGLISH} "Choose Operation"
 LangString STR_MODE_SUBTITLE ${LANG_ENGLISH} "Select whether to install or update the game."
 LangString STR_MODE_INSTALL ${LANG_ENGLISH} "Install (download the full game)"
 LangString STR_MODE_UPDATE ${LANG_ENGLISH} "Update (update an existing game installation)"
+LangString STR_MODE_UPDATE_CMSDL ${LANG_ENGLISH} "Update CMSDL"
+LangString STR_MODE_MSVC ${LANG_ENGLISH} "Repair Runtime (VCRUNTIME140.dll missing, etc)"
+LangString STR_LINK_TROUBLESHOOTING ${LANG_ENGLISH} "Troubleshooting (Simplified Chinese only)"
 LangString STR_UPDATE_ABORT ${LANG_ENGLISH} "No existing game installation was found in the selected directory. Update cannot continue."
 
 ; ============================================================================
@@ -92,16 +100,21 @@ LangString STR_UPDATE_ABORT ${LANG_ENGLISH} "No existing game installation was f
 
 LangString STR_DOWNLOADING ${LANG_SIMPCHINESE} "正在下载游戏文件..."
 LangString STR_PATCHING ${LANG_SIMPCHINESE} "正在更新游戏文件..."
-LangString STR_DOWNLOAD_FAILED ${LANG_SIMPCHINESE} "游戏文件下载失败，错误代码：$0。安装将继续。"
+LangString STR_DOWNLOAD_FAILED ${LANG_SIMPCHINESE} "游戏文件下载失败，错误代码：$0。"
 LangString STR_PATCH_FAILED ${LANG_SIMPCHINESE} "游戏更新失败，错误代码：$0。"
+LangString STR_MSVC_FAILED ${LANG_SIMPCHINESE} "MSVC 运行时安装失败，错误代码：$0。"
+LangString STR_SHORTCUT_FAILED ${LANG_SIMPCHINESE} "创建快捷方式失败，错误代码：$0。"
 LangString STR_LAUNCH_PROMPT ${LANG_SIMPCHINESE} "安装完成。您要立即启动游戏吗？"
-LangString STR_UNSUPPORTED_OS ${LANG_SIMPCHINESE} "此应用程序需要 Windows 10 或更高版本（x64 架构）。$\n您的系统不符合要求。"
+LangString STR_UNSUPPORTED_OS ${LANG_SIMPCHINESE} "此应用程序需要 Windows 10 或更高版本（x64 架构）。$\n请升级操作系统后再使用。"
 LangString STR_UNSUPPORTED_ARCH ${LANG_SIMPCHINESE} "此应用程序需要 x64 架构。$\n您的系统不兼容 x64。"
 LangString STR_PRODUCT_NAME ${LANG_SIMPCHINESE} "${PRODUCT_NAME_ZH}"
 LangString STR_MODE_TITLE ${LANG_SIMPCHINESE} "选择操作"
 LangString STR_MODE_SUBTITLE ${LANG_SIMPCHINESE} "请选择是安装还是更新游戏。"
 LangString STR_MODE_INSTALL ${LANG_SIMPCHINESE} "安装（下载完整游戏）"
 LangString STR_MODE_UPDATE ${LANG_SIMPCHINESE} "更新（更新现有游戏）"
+LangString STR_MODE_UPDATE_CMSDL ${LANG_SIMPCHINESE} "升级 CMSDL"
+LangString STR_MODE_MSVC ${LANG_SIMPCHINESE} "修复运行时（VCRUNTIME140.dll 丢失等错误）"
+LangString STR_LINK_TROUBLESHOOTING ${LANG_SIMPCHINESE} "使用遇到问题了？点击查看帮助"
 LangString STR_UPDATE_ABORT ${LANG_SIMPCHINESE} "在所选目录中未找到现有的游戏安装。无法继续更新。"
 
 ; ============================================================================
@@ -163,13 +176,29 @@ Function ModeSelectPage
   Pop $RadioInstall
   ${NSD_CreateRadioButton} 10u 40u 95% 12u "$(STR_MODE_UPDATE)"
   Pop $RadioUpdate
+  ${NSD_CreateRadioButton} 10u 60u 95% 12u "$(STR_MODE_UPDATE_CMSDL)"
+  Pop $RadioUpdateCMSDL
+  ${NSD_CreateRadioButton} 10u 80u 95% 12u "$(STR_MODE_MSVC)"
+  Pop $RadioMSVC
+
+  ${NSD_CreateLink} 10u 102u 95% 12u "$(STR_LINK_TROUBLESHOOTING)"
+  Pop $LinkTroubleshooting
+  ${NSD_OnClick} $LinkTroubleshooting OpenTroubleshootingLink
 
   ; Restore previous selection
   StrCmp $InstallMode "2" selUpdate
+  StrCmp $InstallMode "3" selUpdateCMSDL
+  StrCmp $InstallMode "4" selMSVC
     ${NSD_Check} $RadioInstall
     Goto modeShow
   selUpdate:
     ${NSD_Check} $RadioUpdate
+    Goto modeShow
+  selUpdateCMSDL:
+    ${NSD_Check} $RadioUpdateCMSDL
+    Goto modeShow
+  selMSVC:
+    ${NSD_Check} $RadioMSVC
 
   modeShow:
   nsDialogs::Show
@@ -179,11 +208,31 @@ FunctionEnd
 Function ModeSelectPageLeave
   ${NSD_GetState} $RadioUpdate $0
   StrCmp $0 "1" setUpdate
+  ${NSD_GetState} $RadioUpdateCMSDL $0
+  StrCmp $0 "1" setUpdateCMSDL
+  ${NSD_GetState} $RadioMSVC $0
+  StrCmp $0 "1" setMSVC
     StrCpy $InstallMode "1"
     Goto leaveDone
   setUpdate:
     StrCpy $InstallMode "2"
+    Goto leaveDone
+  setUpdateCMSDL:
+    StrCpy $InstallMode "3"
+    Goto leaveDone
+  setMSVC:
+    StrCpy $InstallMode "4"
   leaveDone:
+FunctionEnd
+
+Function OpenTroubleshootingLink
+  ExecShell "open" "https://wiki.biligame.com/maplestory/CMSDL故障排除"
+FunctionEnd
+
+; Skip the directory page for MSVC mode — no install path is needed.
+Function DirectoryPagePre
+  StrCmp $InstallMode "4" 0 +2
+    Abort
 FunctionEnd
 
 ; ============================================================================
@@ -216,7 +265,10 @@ Section "Install"
   SetOutPath "$INSTDIR"
 
   ; Branch on operation mode
-  StrCmp $InstallMode "2" modeUpdate modeInstall
+  StrCmp $InstallMode "2" modeUpdate
+  StrCmp $InstallMode "3" modeUpdateCMSDL
+  StrCmp $InstallMode "4" modeMSVC
+  Goto modeInstall
 
   ; ----------------------------------------------------------------------
   ; UPDATE MODE
@@ -286,8 +338,8 @@ Section "Install"
       DetailPrint "$(STR_PATCHING)"
       ExecWait '"$INSTDIR\cmsdl.exe" cms --patch latest "$INSTDIR"' $0
       StrCmp $0 "0" makeShortcuts
-        MessageBox MB_ICONEXCLAMATION "$(STR_PATCH_FAILED)"
-      Goto makeShortcuts
+        MessageBox MB_ICONSTOP "$(STR_PATCH_FAILED)"
+        Abort
 
   ; ----------------------------------------------------------------------
   ; INSTALL MODE
@@ -304,27 +356,40 @@ Section "Install"
     DetailPrint "$(STR_DOWNLOADING)"
     ExecWait '"$INSTDIR\cmsdl.exe" cms --download "$INSTDIR" --skip-create-shortcut' $0
     StrCmp $0 "0" makeShortcuts
-      MessageBox MB_ICONEXCLAMATION "$(STR_DOWNLOAD_FAILED)"
+      MessageBox MB_ICONSTOP "$(STR_DOWNLOAD_FAILED)"
+      Abort
+
+  ; ----------------------------------------------------------------------
+  ; UPDATE CMSDL MODE
+  ; ----------------------------------------------------------------------
+  modeUpdateCMSDL:
+    ; Only replace cmsdl.exe. Do not update registry or write an uninstaller.
+    File "..\target\release\cmsdl.exe"
+    Goto sectionDone
+
+  ; ----------------------------------------------------------------------
+  ; MSVC MODE
+  ; ----------------------------------------------------------------------
+  modeMSVC:
+    SetOutPath "$TEMP"
+    File "..\nsis\get_msvc.ps1"
+    ${DisableX64FSRedirection}
+    ExecWait 'powershell.exe -ExecutionPolicy Bypass -Command "Start-Process powershell -Verb RunAs -Wait -ArgumentList @(\"-NoProfile\",\"-ExecutionPolicy\",\"Bypass\",\"-File\",\"$TEMP\get_msvc.ps1\")"' $0
+    ${EnableX64FSRedirection}
+    StrCmp $0 "0" sectionDone
+      MessageBox MB_ICONSTOP "$(STR_MSVC_FAILED)"
+      Abort
 
   ; ----------------------------------------------------------------------
   ; SHARED: shortcuts
   ; ----------------------------------------------------------------------
   makeShortcuts:
-    ; Choose the shortcut icon: prefer the game's MapleStory.exe (first icon)
-    ; if it exists under mxd, otherwise fall back to cmsdl.exe.
-    StrCpy $ShortcutIcon "$INSTDIR\cmsdl.exe"
-    IfFileExists "$INSTDIR\mxd\MapleStory.exe" 0 +2
-      StrCpy $ShortcutIcon "$INSTDIR\mxd\MapleStory.exe"
+    ExecWait '"$INSTDIR\cmsdl.exe" cms --create-shortcut "$INSTDIR"' $0
+    StrCmp $0 "0" sectionDone
+      MessageBox MB_ICONSTOP "$(STR_SHORTCUT_FAILED)"
+      Abort
 
-    ; Create Start Menu folder
-    CreateDirectory "$SMPROGRAMS\$(STR_PRODUCT_NAME)"
-
-    ; Create Desktop shortcut
-    CreateShortcut "$DESKTOP\$(STR_PRODUCT_NAME).lnk" "$INSTDIR\cmsdl.exe" "cms --patch latest $\"$INSTDIR$\" --launch-after-patching" "$ShortcutIcon" 0
-
-    ; Create Start Menu shortcuts
-    CreateShortcut "$SMPROGRAMS\$(STR_PRODUCT_NAME)\$(STR_PRODUCT_NAME).lnk" "$INSTDIR\cmsdl.exe" "cms --patch latest $\"$INSTDIR$\" --launch-after-patching" "$ShortcutIcon" 0
-    CreateShortcut "$SMPROGRAMS\$(STR_PRODUCT_NAME)\Uninstall.lnk" "$INSTDIR\Uninstall.exe"
+  sectionDone:
 
 SectionEnd
 
@@ -333,6 +398,8 @@ SectionEnd
 ; ============================================================================
 
 Function .onInstSuccess
+  StrCmp $InstallMode "3" done
+  StrCmp $InstallMode "4" done
   MessageBox MB_YESNO|MB_ICONQUESTION "$(STR_LAUNCH_PROMPT)" /SD IDYES IDNO done
   ExecShell "open" "$INSTDIR\cmsdl.exe" "cms --patch latest $\"$INSTDIR$\" --launch-after-patching"
   done:
