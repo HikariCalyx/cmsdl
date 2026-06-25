@@ -43,17 +43,12 @@ pub fn check(region: Region, allow_insecure: bool, proxy: Option<&str>) -> Resul
 /// When `wz_only` is set, only data files are downloaded (for CMS, paths under
 /// `mxd/Data`).
 ///
-/// When `skip_create_shortcut` is set, the CMS post-download step skips creating
-/// the desktop and Start Menu shortcuts (the one next to the binary is still
-/// created). This flag does not apply to TMS.
-///
 /// When `allow_insecure` is set, TLS certificate verification is disabled for
 /// all requests. When `proxy` is given, all requests are routed through it.
 pub fn download(
     region: Region,
     path: &Path,
     wz_only: bool,
-    skip_create_shortcut: bool,
     allow_insecure: bool,
     proxy: Option<&str>,
 ) -> Result<()> {
@@ -64,7 +59,7 @@ pub fn download(
 
     match region {
         Region::Cms => {
-            cms::download_client(path, wz_only, skip_create_shortcut, allow_insecure, proxy)?
+            cms::download_client(path, wz_only, allow_insecure, proxy)?
         }
         Region::Tms => tms::download_client(path, wz_only, allow_insecure, proxy)?,
     }
@@ -153,6 +148,17 @@ pub fn patch_apply(
         }
     }
 
+    Ok(())
+}
+
+/// Create a launcher shortcut for the CMS client at `target_path`.
+///
+/// Only supported for the CMS region on Windows.
+pub fn create_shortcut(region: Region, target_path: &Path) -> Result<()> {
+    match region {
+        Region::Cms => cms::create_shortcut(target_path)?,
+        Region::Tms => bail!("region '{region}' does not support shortcut creation"),
+    }
     Ok(())
 }
 

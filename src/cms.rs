@@ -689,7 +689,6 @@ fn is_up_to_date(path: &Path, entry: &FileEntry) -> Result<bool> {
 pub fn download_client(
     target_dir: &Path,
     wz_only: bool,
-    skip_create_shortcut: bool,
     allow_insecure: bool,
     proxy: Option<&str>,
 ) -> Result<()> {
@@ -878,9 +877,6 @@ pub fn download_client(
         eprintln!("warning: failed to write version file: {e:#}");
     }
 
-    // On Windows, create launcher shortcuts now that the client is in place.
-    create_shortcuts(target_dir, skip_create_shortcut);
-
     Ok(())
 }
 
@@ -902,118 +898,156 @@ fn write_version_file(target_dir: &Path, version: &str) -> Result<()> {
     Ok(())
 }
 
-/// File name used for every launcher shortcut.
-const SHORTCUT_FILE_NAME: &str = "MapleStory CN.lnk";
-
-/// Create launcher shortcuts pointing at `<target_dir>\mxd\MapleStory.exe` with
-/// the `--sqLauncher` switch.
+/// Create a launcher shortcut for the CMS client at `target_dir`.
 ///
-/// A shortcut is always created next to the running cmsdl binary. Unless
-/// `skip_desktop_and_start_menu` is set, shortcuts are also created on the
-/// desktop and under Start Menu > Programs.
-///
-/// This is a no-op on non-Windows platforms. Failures are reported as warnings
-/// rather than failing the (already successful) download.
+/// Steps:
+///   1. Verify `<target_dir>/mxd/MapleStory.exe` exists.
+///   2. Copy cmsdl to `<target_dir>/cmsdl.exe` unless it is already there.
+///   3. Choose the shortcut name by OS UI language: Simplified Chinese →
+///      `"冒险岛"`; any other language → `"MapleStory CN"`.
+///   4. Create a shortcut pointing at
+///      `<target_dir>\cmsdl.exe cms --patch latest <target_dir> --launch-after-patching`
+///      with the icon taken from `<target_dir>\mxd\MapleStory.exe`.
+///   5. Place shortcuts on the desktop, Start Menu > Programs, and in `target_dir`.
 #[cfg(windows)]
-fn create_shortcuts(target_dir: &Path, skip_desktop_and_start_menu: bool) {
-    use std::path::PathBuf;
+pub fn create_shortcut(target_dir: &Path) -> Result<()> {
+    // Step 1: verify that the client executable exists.
+    let maple_exe = target_dir.join("mxd").join("MapleStory.exe");
+    if !maple_exe.exists() {
+        bail!(
+            "MapleStory.exe not found at '{}'; \
+             ensure the client is downloaded before creating a shortcut",
+            maple_exe.display()
+        );
+    }
 
-    let target = target_dir.join("mxd").join("MapleStory.exe");
-    let working_dir = target_dir.join("mxd");
+    // Canonicalize for reliable directory comparisons.
+    let target_dir = target_dir
+        .canonicalize()
+        .with_context(|| format!("failed to resolve '{}'", target_dir.display()))?;
 
-    // Always create a shortcut next to the cmsdl binary.
-    let binary_lnk = match std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join(SHORTCUT_FILE_NAME)))
-    {
-        Some(p) => Some(p),
-        None => {
-            eprintln!("warning: could not determine the cmsdl binary location; skipping its shortcut.");
-            None
-        }
-    };
+    // Step 2: copy cmsdl to target_dir if it is not already there.
+    let current_exe = std::env::current_exe().context("failed to determine cmsdl binary path")?;
+    let cmsdl_in_target = target_dir.join("cmsdl.exe");
 
-    // Explicit destinations resolved here; the desktop and Start Menu folders
-    // are resolved inside PowerShell (via [Environment]::GetFolderPath).
-    let explicit: Vec<PathBuf> = binary_lnk.into_iter().collect();
+    let same_dir = current_exe
+        .parent()
+        .and_then(|p| p.canonicalize().ok())
+        .map(|p| p == target_dir)
+        .unwrap_or(false);
 
-    if let Err(e) = run_shortcut_script(
-        &target,
-        "--sqLauncher",
-        &working_dir,
-        &explicit,
-        !skip_desktop_and_start_menu,
-    ) {
-        eprintln!("warning: failed to create shortcuts: {e:#}");
-    } else if skip_desktop_and_start_menu {
-        println!("created launcher shortcut next to cmsdl (desktop/Start Menu skipped).");
+    if !same_dir {
+        println!("copying cmsdl.exe to '{}'...", target_dir.display());
+        std::fs::copy(&current_exe, &cmsdl_in_target)
+            .with_context(|| format!("failed to copy cmsdl to '{}'", cmsdl_in_target.display()))?;
+    }
+
+    // Step 3: choose shortcut name by OS UI language.
+    let shortcut_name = if os_locale_is_simplified_chinese() {
+        "冒险岛"
     } else {
-        println!("created launcher shortcuts (binary location, desktop, Start Menu).");
+        "MapleStory CN"
+    };
+    let lnk_name = format!("{shortcut_name}.lnk");
+
+    // Steps 4 & 5: create shortcuts via PowerShell.
+    run_create_shortcut_script(&target_dir, &cmsdl_in_target, &maple_exe, &lnk_name)
+}
+
+/// Stub for non-Windows platforms.
+#[cfg(not(windows))]
+pub fn create_shortcut(_target_dir: &Path) -> Result<()> {
+    bail!("--create-shortcut is only supported on Windows")
+}
+
+/// Return `true` if the OS UI language is Simplified Chinese (zh-CN / zh-SG).
+#[cfg(windows)]
+fn os_locale_is_simplified_chinese() -> bool {
+    use std::process::Command;
+    let output = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            "[System.Globalization.CultureInfo]::CurrentUICulture.LCID",
+        ])
+        .output();
+    match output {
+        Ok(o) if o.status.success() => {
+            let lcid: u32 = String::from_utf8_lossy(&o.stdout)
+                .trim()
+                .parse()
+                .unwrap_or(0);
+            // 2052 = zh-CN (Simplified Chinese, China)
+            // 4100 = zh-SG (Simplified Chinese, Singapore)
+            lcid == 2052 || lcid == 4100
+        }
+        _ => false,
     }
 }
 
-/// No-op shortcut creation on non-Windows platforms.
-#[cfg(not(windows))]
-fn create_shortcuts(_target_dir: &Path, _skip_desktop_and_start_menu: bool) {}
-
-/// Drive the WScript.Shell COM object via PowerShell to create the `.lnk` files.
-///
-/// `explicit_paths` are full `.lnk` destinations resolved by the caller. When
-/// `include_desktop_and_start_menu` is set, the current user's desktop and
-/// Start Menu > Programs folders (resolved inside PowerShell) get a shortcut
-/// named [`SHORTCUT_FILE_NAME`] as well.
+/// Strip the `\\?\` extended-length path prefix that `Path::canonicalize()`
+/// produces on Windows. WScript.Shell's COM API rejects paths with this prefix.
 #[cfg(windows)]
-fn run_shortcut_script(
-    target: &Path,
-    arguments: &str,
-    working_dir: &Path,
-    explicit_paths: &[std::path::PathBuf],
-    include_desktop_and_start_menu: bool,
+fn strip_extended_prefix(path: &Path) -> String {
+    let s = path.to_string_lossy();
+    s.strip_prefix(r"\\?\").unwrap_or(&s).to_owned()
+}
+
+/// Drive WScript.Shell via PowerShell to write `.lnk` files at the desktop,
+/// Start Menu > Programs, and `target_dir`.
+#[cfg(windows)]
+fn run_create_shortcut_script(
+    target_dir: &Path,
+    cmsdl_exe: &Path,
+    icon_exe: &Path,
+    lnk_name: &str,
 ) -> Result<()> {
     use std::process::Command;
 
-    // Single-quote a value for PowerShell by doubling embedded single quotes.
+    // Encode a string as a PowerShell single-quoted literal.
     fn ps_single_quote(s: &str) -> String {
         format!("'{}'", s.replace('\'', "''"))
     }
 
-    let target_q = ps_single_quote(&target.to_string_lossy());
-    let args_q = ps_single_quote(arguments);
-    let wd_q = ps_single_quote(&working_dir.to_string_lossy());
-    let name_q = ps_single_quote(SHORTCUT_FILE_NAME);
+    // Strip the \\?\ extended-length prefix so WScript.Shell accepts the paths.
+    let cmsdl_s = strip_extended_prefix(cmsdl_exe);
+    let target_dir_s = strip_extended_prefix(target_dir);
+    let icon_s = strip_extended_prefix(icon_exe);
+    let explicit_lnk_s = strip_extended_prefix(&target_dir.join(lnk_name));
 
-    let mut path_exprs: Vec<String> = explicit_paths
-        .iter()
-        .map(|p| ps_single_quote(&p.to_string_lossy()))
-        .collect();
+    let cmsdl_q = ps_single_quote(&cmsdl_s);
+    let wd_q = ps_single_quote(&target_dir_s);
 
-    if include_desktop_and_start_menu {
-        path_exprs.push(format!(
-            "(Join-Path ([Environment]::GetFolderPath('Desktop')) {name_q})"
-        ));
-        path_exprs.push(format!(
-            "(Join-Path ([Environment]::GetFolderPath('Programs')) {name_q})"
-        ));
-    }
+    // Windows paths cannot contain `"`, so the inner path needs no further escaping.
+    let args = format!("cms --patch latest \"{target_dir_s}\" --launch-after-patching");
+    let args_q = ps_single_quote(&args);
 
-    if path_exprs.is_empty() {
-        return Ok(());
-    }
+    // IconLocation is "<exe path>,<icon index>".
+    let icon_location = format!("{icon_s},0");
+    let icon_q = ps_single_quote(&icon_location);
 
-    let paths_array = path_exprs.join(", ");
+    let explicit_q = ps_single_quote(&explicit_lnk_s);
+    let name_q = ps_single_quote(lnk_name);
 
     let script = format!(
         "$ErrorActionPreference = 'Stop'; \
          $ws = New-Object -ComObject WScript.Shell; \
-         $paths = @({paths_array}); \
+         $paths = @( \
+           {explicit_q}, \
+           (Join-Path ([Environment]::GetFolderPath('Desktop')) {name_q}), \
+           (Join-Path ([Environment]::GetFolderPath('Programs')) {name_q}) \
+         ); \
          foreach ($p in $paths) {{ \
            $dir = Split-Path -Parent $p; \
            if ($dir -and -not (Test-Path $dir)) {{ New-Item -ItemType Directory -Path $dir -Force | Out-Null }}; \
            $s = $ws.CreateShortcut($p); \
-           $s.TargetPath = {target_q}; \
+           $s.TargetPath = {cmsdl_q}; \
            $s.Arguments = {args_q}; \
            $s.WorkingDirectory = {wd_q}; \
-           $s.IconLocation = {target_q}; \
+           $s.IconLocation = {icon_q}; \
            $s.Save(); \
          }}"
     );
@@ -1034,6 +1068,10 @@ fn run_shortcut_script(
         bail!("PowerShell exited with status {status}");
     }
 
+    println!(
+        "created shortcut '{lnk_name}' at the desktop, Start Menu, and '{}'.",
+        target_dir.display()
+    );
     Ok(())
 }
 

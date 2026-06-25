@@ -30,7 +30,6 @@ fn main() -> Result<()> {
             cli.region,
             &path,
             cli.download_wz_only,
-            cli.skip_create_shortcut,
             cli.allow_insecure,
             proxy,
         )?,
@@ -48,6 +47,7 @@ fn main() -> Result<()> {
             cli.allow_insecure,
             proxy,
         )?,
+        Action::CreateShortcut(path) => downloader::create_shortcut(cli.region, &path)?,
     }
 
     Ok(())

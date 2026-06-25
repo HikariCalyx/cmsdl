@@ -8,7 +8,7 @@ use clap::{ArgGroup, Parser, ValueEnum};
 #[command(group(
     ArgGroup::new("action")
         .required(true)
-        .args(["check", "download", "get_bit_torrent", "patch"]),
+        .args(["check", "download", "get_bit_torrent", "patch", "create_shortcut"]),
 ))]
 pub struct Cli {
     /// The region to operate on (case-insensitive).
@@ -52,11 +52,10 @@ pub struct Cli {
     #[arg(long)]
     pub download_wz_only: bool,
 
-    /// Do not create shortcuts on the desktop and Start Menu after a CMS
-    /// download. A shortcut next to the cmsdl binary is still created.
+    /// Create a launcher shortcut for the CMS client at the given directory.
     /// (Windows only.)
-    #[arg(long)]
-    pub skip_create_shortcut: bool,
+    #[arg(long, value_name = "PATH")]
+    pub create_shortcut: Option<PathBuf>,
 
     /// Increase output verbosity (can be repeated, e.g. -vv).
     #[arg(short, long, action = clap::ArgAction::Count, global = true, hide = true)]
@@ -115,6 +114,7 @@ pub enum Action {
     Download(PathBuf),
     GetBitTorrent(Option<PathBuf>),
     Patch(PatchAction),
+    CreateShortcut(PathBuf),
 }
 
 impl Cli {
@@ -128,6 +128,14 @@ impl Cli {
             Action::Download(sanitize_path(path))
         } else if self.get_bit_torrent {
             Action::GetBitTorrent(self.output.as_deref().map(sanitize_path))
+        } else if let Some(path) = &self.create_shortcut {
+            if self.region == Region::Tms {
+                anyhow::bail!(
+                    "--create-shortcut is not supported for region 'tms'; \
+                     shortcut creation is only available for 'cms'"
+                );
+            }
+            Action::CreateShortcut(sanitize_path(path))
         } else if let Some(patch) = &self.patch {
             if self.region == Region::Tms {
                 anyhow::bail!(
