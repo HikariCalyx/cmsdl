@@ -319,6 +319,13 @@ pub struct ClientFileList {
 /// The build number is discovered by exhaustive search so the newest published
 /// list is summarized.
 pub fn get_client_file_list_info(allow_insecure: bool, proxy: Option<&str>) -> Result<ClientFileList> {
+    let (info, _) = get_client_file_list_full(allow_insecure, proxy)?;
+    Ok(info)
+}
+
+/// Download and parse the client file list, returning both the summary and the
+/// full list of `(forward-slash path, size)` pairs for every file entry.
+pub fn get_client_file_list_full(allow_insecure: bool, proxy: Option<&str>) -> Result<(ClientFileList, Vec<(String, u64)>)> {
     let agent = crate::net::agent(allow_insecure, proxy);
     let challenge_code = get_challenge_key(&agent).context("failed to obtain challenge code")?;
 
@@ -329,17 +336,14 @@ pub fn get_client_file_list_info(allow_insecure: bool, proxy: Option<&str>) -> R
     let url = build_signed_url(&challenge_code, utc8_time, &client_file_list_path(number));
     let contents = http_get_text(&agent, &url).context("failed to download client file list")?;
 
-    let mut info = parse_client_file_list(&contents)?;
+    let (mut info, entries) = parse_client_file_list_with_paths(&contents)?;
     info.build_number = number;
-    Ok(info)
+    Ok((info, entries))
 }
 
-/// Parse a client file list into its version, total size and file count.
-///
-/// The first non-empty line is a header whose last `|`-separated field is the
-/// version. Every following non-empty line is `path|size|md5`; the sizes are
-/// summed and the entries counted.
-fn parse_client_file_list(contents: &str) -> Result<ClientFileList> {
+/// Parse a client file list, returning both the summary and a
+/// `(forward-slash path, size)` pair for every file entry.
+fn parse_client_file_list_with_paths(contents: &str) -> Result<(ClientFileList, Vec<(String, u64)>)> {
     let mut lines = contents.lines().filter(|l| !l.trim().is_empty());
 
     let header = lines.next().context("client file list is empty")?;
@@ -352,25 +356,35 @@ fn parse_client_file_list(contents: &str) -> Result<ClientFileList> {
         .to_owned();
 
     let mut total_size: u64 = 0;
-    let mut file_count: usize = 0;
+    let mut entries: Vec<(String, u64)> = Vec::new();
     for line in lines {
-        let size = line
-            .split('|')
-            .nth(1)
+        let mut parts = line.split('|');
+        let raw_path = parts
+            .next()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| anyhow!("missing path field in entry: {line}"))?;
+        let size_str = parts
+            .next()
+            .map(str::trim)
             .ok_or_else(|| anyhow!("missing size field in entry: {line}"))?;
-        total_size += size
-            .trim()
+        let size = size_str
             .parse::<u64>()
             .with_context(|| format!("invalid size field in entry: {line}"))?;
-        file_count += 1;
+        total_size += size;
+        entries.push((raw_path.replace('\\', "/"), size));
     }
 
-    Ok(ClientFileList {
-        build_number: 0,
-        version,
-        total_size,
-        file_count,
-    })
+    let file_count = entries.len();
+    Ok((
+        ClientFileList {
+            build_number: 0,
+            version,
+            total_size,
+            file_count,
+        },
+        entries,
+    ))
 }
 
 /// Build a signed download URL for an arbitrary `path` (relative to the host).
@@ -689,6 +703,7 @@ fn is_up_to_date(path: &Path, entry: &FileEntry) -> Result<bool> {
 pub fn download_client(
     target_dir: &Path,
     wz_only: bool,
+    filter: Option<&crate::filter::FileFilter>,
     allow_insecure: bool,
     proxy: Option<&str>,
 ) -> Result<()> {
@@ -751,6 +766,21 @@ pub fn download_client(
             "Limiting download to {} WZ file(s) under mxd/Data.",
             kept.len()
         );
+        kept
+    } else {
+        entries
+    };
+
+    // Apply the user-supplied path filter, if any.
+    let entries: Vec<FileEntry> = if let Some(f) = filter {
+        let kept: Vec<FileEntry> = entries
+            .into_iter()
+            .filter(|e| {
+                let path = format!("{}{}", e.file_location, e.file_name);
+                f.matches(&path)
+            })
+            .collect();
+        println!("Filter applied: {} file(s) match.", kept.len());
         kept
     } else {
         entries

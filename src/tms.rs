@@ -103,15 +103,24 @@ pub fn get_product_info(agent: &ureq::Agent) -> Result<ProductInfo> {
 
 /// Fetch the product manifest and summarize it.
 pub fn get_product_info_summary(allow_insecure: bool, proxy: Option<&str>) -> Result<ProductSummary> {
+    let (summary, _) = get_product_info_full(allow_insecure, proxy)?;
+    Ok(summary)
+}
+
+/// Fetch the product manifest and return both the summary and the list of
+/// `(forward-slash path, size)` pairs for every file entry.
+pub fn get_product_info_full(allow_insecure: bool, proxy: Option<&str>) -> Result<(ProductSummary, Vec<(String, u64)>)> {
     let agent = crate::net::agent(allow_insecure, proxy);
     let info = get_product_info(&agent)?;
     let total_size = info.files.iter().map(|f| f.size_in_bytes).sum();
-    Ok(ProductSummary {
+    let entries = info.files.iter().map(|f| (f.path.clone(), f.size_in_bytes)).collect();
+    let summary = ProductSummary {
         product_name: info.product_name,
         version: info.version,
         file_count: info.files.len(),
         total_size,
-    })
+    };
+    Ok((summary, entries))
 }
 
 /// The default file name for the torrent (e.g. `MS_V280.torrent`).
@@ -307,8 +316,9 @@ fn local_path(root: &Path, rel: &str) -> PathBuf {
 /// each large file is fetched in up to [`SEGMENTS_PER_FILE`] parallel byte-range
 /// segments. Files already present with the expected size and checksum are
 /// skipped. When `wz_only` is set, only data files (paths under `Data/`) are
-/// downloaded.
-pub fn download_client(target_dir: &Path, wz_only: bool, allow_insecure: bool, proxy: Option<&str>) -> Result<()> {
+/// downloaded. When `filter` is given, only files whose path matches the filter
+/// are downloaded.
+pub fn download_client(target_dir: &Path, wz_only: bool, filter: Option<&crate::filter::FileFilter>, allow_insecure: bool, proxy: Option<&str>) -> Result<()> {
     // A shared HTTP agent with a read timeout, so a connection that stops
     // delivering data surfaces as an error (instead of hanging forever) and can
     // be resumed from its current byte offset. The same agent is reused for the
@@ -332,6 +342,13 @@ pub fn download_client(target_dir: &Path, wz_only: bool, allow_insecure: bool, p
             "Limiting download to {} WZ file(s) under Data/.",
             items.len()
         );
+    }
+
+    // Apply the user-supplied path filter, if any.
+    if let Some(f) = filter {
+        let before = items.len();
+        items.retain(|item| f.matches(&item.local_path));
+        println!("Filter applied: {} / {} file(s) match.", items.len(), before);
     }
 
     // Resolve any unknown sizes (e.g. the execution path) so the total progress

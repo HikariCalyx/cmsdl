@@ -57,9 +57,33 @@ pub struct Cli {
     #[arg(long, value_name = "PATH")]
     pub create_shortcut: Option<PathBuf>,
 
-    /// Increase output verbosity (can be repeated, e.g. -vv).
-    #[arg(short, long, action = clap::ArgAction::Count, global = true, hide = true)]
+    /// Enable verbose output.
+    ///
+    /// With `--check`, also lists the files that would be downloaded (filtered
+    /// when `--filter` or `--filter-regex` is supplied).
+    #[arg(short, long, action = clap::ArgAction::Count, global = true)]
     pub verbose: u8,
+
+    /// Keep only files whose path contains one of the given substrings.
+    ///
+    /// Pass a colon-separated list of conditions, e.g.
+    /// `--filter="Base:Character:Etc"`. Backslashes are treated as forward
+    /// slashes when matching. Cannot be combined with `--filter-regex`.
+    #[arg(long, value_name = "COND1[:COND2...]", require_equals = true)]
+    pub filter: Option<String>,
+
+    /// Keep only files whose path matches one of the given regex patterns.
+    ///
+    /// Pass a colon-separated list of patterns, e.g.
+    /// `--filter-regex="^mxd/Base":".wz$"`. Cannot be combined with `--filter`.
+    #[arg(long, value_name = "PAT1[:PAT2...]", require_equals = true)]
+    pub filter_regex: Option<String>,
+
+    /// Invert the filter: keep only files that do NOT match.
+    ///
+    /// Can be used together with `--filter` or `--filter-regex`.
+    #[arg(long)]
+    pub invert_filter: bool,
 
     /// Skip TLS certificate verification for all downloads (INSECURE).
     ///

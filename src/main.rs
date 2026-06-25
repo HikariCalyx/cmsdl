@@ -1,6 +1,7 @@
 mod cli;
 mod cms;
 mod downloader;
+mod filter;
 mod net;
 mod patch;
 mod tms;
@@ -9,6 +10,7 @@ use anyhow::Result;
 use clap::Parser;
 
 use cli::{Action, Cli, PatchAction};
+use filter::FileFilter;
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -21,15 +23,19 @@ fn main() -> Result<()> {
         );
     }
 
+    let file_filter = build_filter(&cli)?;
+
     let proxy = net::resolve_proxy(cli.proxy.as_ref());
     let proxy = proxy.as_deref();
+    let verbose = cli.verbose > 0;
 
     match cli.action()? {
-        Action::Check => downloader::check(cli.region, cli.allow_insecure, proxy)?,
+        Action::Check => downloader::check(cli.region, file_filter.as_ref(), verbose, cli.allow_insecure, proxy)?,
         Action::Download(path) => downloader::download(
             cli.region,
             &path,
             cli.download_wz_only,
+            file_filter.as_ref(),
             cli.allow_insecure,
             proxy,
         )?,
@@ -51,4 +57,21 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Validate and build a [`FileFilter`] from the CLI arguments.
+fn build_filter(cli: &Cli) -> Result<Option<FileFilter>> {
+    match (&cli.filter, &cli.filter_regex) {
+        (Some(_), Some(_)) => {
+            anyhow::bail!("--filter and --filter-regex cannot be used together");
+        }
+        (Some(f), None) => Ok(Some(FileFilter::from_substrings(f, cli.invert_filter)?)),
+        (None, Some(r)) => Ok(Some(FileFilter::from_regexes(r, cli.invert_filter)?)),
+        (None, None) => {
+            if cli.invert_filter {
+                anyhow::bail!("--invert-filter requires --filter or --filter-regex");
+            }
+            Ok(None)
+        }
+    }
 }
