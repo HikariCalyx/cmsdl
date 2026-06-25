@@ -87,7 +87,7 @@ LangString STR_UNSUPPORTED_ARCH ${LANG_ENGLISH} "This application requires x64 a
 LangString STR_PRODUCT_NAME ${LANG_ENGLISH} "${PRODUCT_NAME}"
 LangString STR_MODE_TITLE ${LANG_ENGLISH} "Choose Operation"
 LangString STR_MODE_SUBTITLE ${LANG_ENGLISH} "Select whether to install or update the game."
-LangString STR_MODE_INSTALL ${LANG_ENGLISH} "Install (download the full game)"
+LangString STR_MODE_INSTALL ${LANG_ENGLISH} "Install or repair (download the full game)"
 LangString STR_MODE_UPDATE ${LANG_ENGLISH} "Update (update an existing game installation)"
 LangString STR_MODE_UPDATE_CMSDL ${LANG_ENGLISH} "Update CMSDL"
 LangString STR_MODE_MSVC ${LANG_ENGLISH} "Repair Runtime (VCRUNTIME140.dll missing, etc)"
@@ -110,7 +110,7 @@ LangString STR_UNSUPPORTED_ARCH ${LANG_SIMPCHINESE} "此应用程序需要 x64 �
 LangString STR_PRODUCT_NAME ${LANG_SIMPCHINESE} "${PRODUCT_NAME_ZH}"
 LangString STR_MODE_TITLE ${LANG_SIMPCHINESE} "选择操作"
 LangString STR_MODE_SUBTITLE ${LANG_SIMPCHINESE} "请选择是安装还是更新游戏。"
-LangString STR_MODE_INSTALL ${LANG_SIMPCHINESE} "安装（下载完整游戏）"
+LangString STR_MODE_INSTALL ${LANG_SIMPCHINESE} "安装或修复（下载完整游戏）"
 LangString STR_MODE_UPDATE ${LANG_SIMPCHINESE} "更新（更新现有游戏）"
 LangString STR_MODE_UPDATE_CMSDL ${LANG_SIMPCHINESE} "升级 CMSDL"
 LangString STR_MODE_MSVC ${LANG_SIMPCHINESE} "修复运行时（VCRUNTIME140.dll 丢失等错误）"
@@ -354,7 +354,7 @@ Section "Install"
     ; Execute download command. ExecWait gives cmsdl.exe a real console
     ; window where its indicatif progress bars can render.
     DetailPrint "$(STR_DOWNLOADING)"
-    ExecWait '"$INSTDIR\cmsdl.exe" cms --download "$INSTDIR" --skip-create-shortcut' $0
+    ExecWait '"$INSTDIR\cmsdl.exe" cms --download "$INSTDIR"' $0
     StrCmp $0 "0" makeShortcuts
       MessageBox MB_ICONSTOP "$(STR_DOWNLOAD_FAILED)"
       Abort
