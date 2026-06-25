@@ -10,7 +10,9 @@ I'd like to implement the switch "--patch" for module cms.
 First of all, I'd like to implement this command:
 cmsdl cms --patch list
 It will fetch JSON body from following URL, without any challenges:
+```
 https://v3launcher.jijiagames.com/v3launcher/build/ver2data/5/8848/-1/ver2.dat
+```
 And list available patches with from, to, versionView displayed.
 
 ---
@@ -65,9 +67,13 @@ if exists: read the version number written inside, and see if it's in all availa
 if not exist: select all patches until the final version.
 Following is the procedure of applying one patch.
 1. Download the FileList.dat with signed URL, e.g:
+```
 https://mxdver0.jijiagames.com/<utc8_time>/<md5>/v3client/build/5/8848/diff/0.0.0.14-0.0.0.15-02c012823140469880c530ff0418cde8/5_0.0.0.14-0.0.0.15_FileList.dat
+```
 2. Create a directory named patchdata at /path/to/cms/client, download the first zip file there inside that is combined with baseUrl and url, and signed too, e.g.:
+```
 https://mxdver0.jijiagames.com/<utc8_time>/<md5>/v3client/build/5/8848/diff/0.0.0.14-0.0.0.15-02c012823140469880c530ff0418cde8/5_0.0.0.14-0.0.0.15.zip
+```
 3. Extract and read patch_delta_direct.dat first, which is a XML file. It contains what file needs to apply which hdiff patch file, checksum of hdiff file, source file, patched file, as well as what files need to be added, or deleted.
 4. The procedure of applying patches would be this.
 - calculate checksum of source file:

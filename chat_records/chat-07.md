@@ -16,9 +16,13 @@ It will fetch these parts.
 - BasePath of execution Path, in this case, P2P2dQtkA2f8rU3
 - Every paths in files section.
 When download, it will combine url like these.
+```
 <baseUrl><basePath>/<path_of_every_files>
+```
 As well as:
+```
 <baseUrl><executionPath>
+```
 And download them to respective directories with 10 parallels, 5 segments.
 Unlike cms module, you don't need to regenerate url for stall detection.
 3. For --download-wz-only switch, only let it download paths start with Data/.

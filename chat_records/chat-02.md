@@ -196,17 +196,30 @@ fileSize: 236513
 md5Checksum: 1CF163EDA833A9E5515494DA52057B6
 4. The first line contains the version number, store it into a variable.
 5. Calculate MD5 of following string in UTF-16LE encoding and get an uppercased MD5 string:
+```
 5_<version_number>_mxd\<fileName>
+```
 For example, string 5_0.0.0.9_mxd\bdvid64.dll would return 3A3BFEC833C1EA8EA541F20593ABFB0A .
-6. Remove the domain from the first line and only reserve the basepath. For example, the base path of current result would be: /v3client/build/5/8848/apppc/1020 .
+6. Remove the domain from the first line and only reserve the basepath. For example, the base path of current result would be: 
+```
+/v3client/build/5/8848/apppc/1020
+```
 7. Calculate the md5 checksum of following string:
+```
 <challenge><current_utc8_time_value><basepath>/<filePath><fileName_MD5_calculated_in_previous_procedure>
+```
 For example, you should convert string like this:
+```
 A9D8rTV72Fh7O8w75E983L7758vajQSz202605131120/v3client/build/5/8848/apppc/961/mxd/Data/Character/Coat/_Canvas/3A3BFEC833C1EA8EA541F20593ABFB0A
+```
 8. Construct the full URL:
+```
 <domain_in_first_line>/<currentTime>/<previously_calculated_md5_checksum>/<filePath>/<fileName_MD5_calculated_in_previous_procedure>
+```
 9. Download the specific file from URL to following path:
+```
 /path/to/cms/client/<filePath>/<fileName>
+```
 Before download, check if filesize is same as expected, and if the file checksum is same as expected when target file exists. If both are expected, skip this file. Otherwise, redownload the file.
 
 ---
