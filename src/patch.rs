@@ -543,23 +543,46 @@ struct PatchFileList {
 }
 
 /// Read the installed version recorded at `<target>/mxd/cmsdl.ver`, if any.
+/// Falls back to parsing `LocalVersion3.xml` when `cmsdl.ver` is absent or empty.
 fn read_installed_version(target_dir: &Path) -> Option<String> {
     let path = target_dir.join("mxd").join(VERSION_FILE_NAME);
-    let v = std::fs::read_to_string(path).ok()?.trim().to_owned();
-    if v.is_empty() {
-        None
-    } else {
-        Some(v)
+    if let Ok(v) = std::fs::read_to_string(&path) {
+        let v = v.trim().to_owned();
+        if !v.is_empty() {
+            return Some(v);
+        }
     }
+    // Fall back to LocalVersion3.xml when cmsdl.ver is absent or empty.
+    read_version_from_local_xml(target_dir)
 }
 
-/// Write the installed `version` to `<target>/mxd/cmsdl.ver`.
-fn write_installed_version(target_dir: &Path, version: &str) -> Result<()> {
+/// Parse the installed version from `<target>/mxd/LocalVersion3.xml`, if any.
+fn read_version_from_local_xml(target_dir: &Path) -> Option<String> {
+    let path = target_dir.join("mxd").join("LocalVersion3.xml");
+    let contents = std::fs::read_to_string(path).ok()?;
+    let tag = "<zone5_8848_v3>";
+    let start = contents.find(tag)? + tag.len();
+    let end = contents.find("</zone5_8848_v3>")?;
+    let json: serde_json::Value = serde_json::from_str(&contents[start..end]).ok()?;
+    let v = json.get("version")?.get("v")?.as_str()?.to_owned();
+    if v.is_empty() { None } else { Some(v) }
+}
+
+/// Write the installed `version` and `version_view` to `<target>/mxd/cmsdl.ver`
+/// and `<target>/mxd/LocalVersion3.xml`.
+fn write_installed_version(target_dir: &Path, version: &str, version_view: &str) -> Result<()> {
     let mxd = target_dir.join("mxd");
     std::fs::create_dir_all(&mxd)
         .with_context(|| format!("failed to create {}", mxd.display()))?;
     let path = mxd.join(VERSION_FILE_NAME);
-    std::fs::write(&path, version).with_context(|| format!("failed to write {}", path.display()))
+    std::fs::write(&path, version)
+        .with_context(|| format!("failed to write {}", path.display()))?;
+    let xml_path = mxd.join("LocalVersion3.xml");
+    let xml = format!(
+        r#"<?xmlversion="1.0"encoding="utf-8"?><Root><zone5_8848_v3>{{"product_name":"zone5_8848_v3","version":{{"v":"{version}","view":"{version_view}"}}}}</zone5_8848_v3></Root>"#
+    );
+    std::fs::write(&xml_path, &xml)
+        .with_context(|| format!("failed to write {}", xml_path.display()))
 }
 
 /// Launch the patched client (`<target>/mxd/MapleStory.exe --sqLauncher`).
@@ -713,7 +736,7 @@ pub fn apply_patches(
         let mut corrupted = Vec::new();
         apply_one_patch(&agent, &challenge, &ver2_base, pkg, target_dir, &mut corrupted)?;
         if corrupted.is_empty() {
-            write_installed_version(target_dir, &pkg.to)?;
+            write_installed_version(target_dir, &pkg.to, &pkg.version_view)?;
             println!("  patched to {} ({})", pkg.to, pkg.version_view);
         } else {
             println!(
@@ -748,7 +771,11 @@ pub fn apply_patches(
         let still_failed =
             cms::replace_files_from_latest(target_dir, &last_corrupted, allow_insecure, proxy)?;
         if still_failed.is_empty() {
-            write_installed_version(target_dir, &final_version)?;
+            let final_view = data.packages.iter()
+                .find(|p| p.to == final_version)
+                .map(|p| p.version_view.as_str())
+                .unwrap_or("");
+            write_installed_version(target_dir, &final_version, final_view)?;
             println!("all corrupted files were repaired; now at version {final_version}.");
         } else {
             println!("{} file(s) still could not be repaired:", still_failed.len());

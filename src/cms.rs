@@ -872,8 +872,13 @@ pub fn download_client(
         bail!("{} file(s) failed to download", failures.len());
     }
 
-    // Record the downloaded version at <target_dir>/mxd/cmsdl.ver.
-    if let Err(e) = write_version_file(target_dir, &version) {
+    // Look up the version view (e.g. "V226.1") from the patch metadata so
+    // LocalVersion3.xml can be written with the correct display version.
+    let version_view = fetch_version_view_for(&agent, &version).unwrap_or_default();
+
+    // Record the downloaded version at <target_dir>/mxd/cmsdl.ver and
+    // write a matching LocalVersion3.xml for the launcher.
+    if let Err(e) = write_version_file(target_dir, &version, &version_view) {
         eprintln!("warning: failed to write version file: {e:#}");
     }
 
@@ -883,18 +888,41 @@ pub fn download_client(
 /// Name of the file recording the downloaded client version.
 const VERSION_FILE_NAME: &str = "cmsdl.ver";
 
+/// Fetch the version view string (e.g. `"V226.1"`) for a given client
+/// `version` (e.g. `"0.0.0.15"`) from the patch metadata.
+///
+/// Returns `None` when the patch data cannot be fetched or the version is not
+/// listed.
+fn fetch_version_view_for(agent: &ureq::Agent, version: &str) -> Option<String> {
+    let body = http_get_text(agent, PATCH_DATA_URL).ok()?;
+    let data: PatchData = serde_json::from_str(&body).ok()?;
+    data.packages
+        .iter()
+        .find(|p| p.to == version)
+        .map(|p| p.version_view.clone())
+}
+
 /// Write the client `version` (e.g. `0.0.0.15`) to
-/// `<target_dir>/mxd/cmsdl.ver`, creating the `mxd` directory if needed.
-fn write_version_file(target_dir: &Path, version: &str) -> Result<()> {
+/// `<target_dir>/mxd/cmsdl.ver` and write a matching `LocalVersion3.xml`
+/// for the launcher, creating the `mxd` directory if needed.
+fn write_version_file(target_dir: &Path, version: &str, version_view: &str) -> Result<()> {
     let mxd_dir = target_dir.join("mxd");
     std::fs::create_dir_all(&mxd_dir)
         .with_context(|| format!("failed to create directory {}", mxd_dir.display()))?;
 
-    let path = mxd_dir.join(VERSION_FILE_NAME);
-    std::fs::write(&path, version)
-        .with_context(|| format!("failed to write {}", path.display()))?;
+    let ver_path = mxd_dir.join(VERSION_FILE_NAME);
+    std::fs::write(&ver_path, version)
+        .with_context(|| format!("failed to write {}", ver_path.display()))?;
+    println!("wrote version {version} to {}", ver_path.display());
 
-    println!("wrote version {version} to {}", path.display());
+    let xml_path = mxd_dir.join("LocalVersion3.xml");
+    let xml = format!(
+        r#"<?xmlversion="1.0"encoding="utf-8"?><Root><zone5_8848_v3>{{"product_name":"zone5_8848_v3","version":{{"v":"{version}","view":"{version_view}"}}}}</zone5_8848_v3></Root>"#
+    );
+    std::fs::write(&xml_path, &xml)
+        .with_context(|| format!("failed to write {}", xml_path.display()))?;
+    println!("wrote LocalVersion3.xml to {}", xml_path.display());
+
     Ok(())
 }
 
