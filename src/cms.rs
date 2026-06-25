@@ -329,7 +329,6 @@ pub fn get_client_file_list_full(allow_insecure: bool, proxy: Option<&str>) -> R
     let agent = crate::net::agent(allow_insecure, proxy);
     let challenge_code = get_challenge_key(&agent).context("failed to obtain challenge code")?;
 
-    println!("scanning for the latest build version...");
     let number = discover_latest_client_number_with(&agent, &challenge_code)?;
 
     let utc8_time = get_current_utc8_time();

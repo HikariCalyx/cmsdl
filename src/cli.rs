@@ -57,6 +57,13 @@ pub struct Cli {
     #[arg(long, value_name = "PATH")]
     pub create_shortcut: Option<PathBuf>,
 
+    /// Output the result of --check as JSON (suppresses informational messages).
+    ///
+    /// Only valid with `--check`. Prints a single JSON object with `region`,
+    /// `build`, `version`, `files`, and `total_size` fields, or `{}` on failure.
+    #[arg(long)]
+    pub json: bool,
+
     /// Enable verbose output.
     ///
     /// With `--check`, also lists the files that would be downloaded (filtered

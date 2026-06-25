@@ -7,18 +7,41 @@ use crate::cms;
 use crate::filter::FileFilter;
 use crate::tms;
 
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 /// Check for available updates from the given region.
 ///
 /// When a `filter` is supplied the displayed file count and total size reflect
 /// only the matching files.  When `verbose` is set, the matching file paths are
 /// also listed.  Either condition requires fetching the full file list; without
 /// either, only the lightweight summary is fetched.
-pub fn check(region: Region, filter: Option<&FileFilter>, verbose: bool, allow_insecure: bool, proxy: Option<&str>) -> Result<()> {
-    println!("cmsdl: checking for updates from region '{region}'.");
+///
+/// When `json` is set, output is emitted as a single JSON object and all
+/// informational messages are suppressed.  On failure `{}` is printed and the
+/// function returns `Ok(())`.
+pub fn check(region: Region, filter: Option<&FileFilter>, verbose: bool, json: bool, allow_insecure: bool, proxy: Option<&str>) -> Result<()> {
+    if !json {
+        println!("cmsdl {VERSION}: checking for updates from region '{region}'.");
+    }
 
     match region {
         Region::Cms => {
-            if verbose || filter.is_some() {
+            if json {
+                match cms::get_client_file_list_info(allow_insecure, proxy) {
+                    Ok(info) => {
+                        let output = serde_json::json!({
+                            "region": "cms",
+                            "build": info.build_number,
+                            "version": info.version,
+                            "files": info.file_count,
+                            "total_size": info.total_size,
+                        });
+                        println!("{output}");
+                    }
+                    Err(_) => println!("{{}}"),
+                }
+            } else if verbose || filter.is_some() {
+                println!("scanning for the latest build version...");
                 let (info, entries) = cms::get_client_file_list_full(allow_insecure, proxy)?;
                 let (show_count, show_size) = filtered_totals(&entries, filter, info.file_count, info.total_size);
                 println!("  build:      {}", info.build_number);
@@ -34,6 +57,7 @@ pub fn check(region: Region, filter: Option<&FileFilter>, verbose: bool, allow_i
                     print_matching_files(&entries, filter);
                 }
             } else {
+                println!("scanning for the latest build version...");
                 let info = cms::get_client_file_list_info(allow_insecure, proxy)?;
                 println!("  build:      {}", info.build_number);
                 println!("  version:    {}", info.version);
@@ -46,7 +70,21 @@ pub fn check(region: Region, filter: Option<&FileFilter>, verbose: bool, allow_i
             }
         }
         Region::Tms => {
-            if verbose || filter.is_some() {
+            if json {
+                match tms::get_product_info_summary(allow_insecure, proxy) {
+                    Ok(info) => {
+                        let output = serde_json::json!({
+                            "region": "tms",
+                            "build": 0,
+                            "version": info.version,
+                            "files": info.file_count,
+                            "total_size": info.total_size,
+                        });
+                        println!("{output}");
+                    }
+                    Err(_) => println!("{{}}"),
+                }
+            } else if verbose || filter.is_some() {
                 let (info, entries) = tms::get_product_info_full(allow_insecure, proxy)?;
                 let (show_count, show_size) = filtered_totals(&entries, filter, info.file_count, info.total_size);
                 println!("  product:    {}", info.product_name);
@@ -134,7 +172,7 @@ pub fn download(
     proxy: Option<&str>,
 ) -> Result<()> {
     println!(
-        "cmsdl: downloading client for region '{region}' into '{}'.",
+        "cmsdl {VERSION}: downloading client for region '{region}' into '{}'.",
         path.display()
     );
 
@@ -170,7 +208,7 @@ pub fn get_bit_torrent(
 ) -> Result<()> {
     match region {
         Region::Tms => {
-            println!("cmsdl: fetching torrent file for region '{region}'.");
+            println!("cmsdl {VERSION}: fetching torrent file for region '{region}'.");
             tms::download_torrent(output, allow_insecure, proxy)?;
         }
         Region::Cms => {
@@ -187,7 +225,7 @@ pub fn get_bit_torrent(
 pub fn patch_list(region: Region, allow_insecure: bool, proxy: Option<&str>) -> Result<()> {
     match region {
         Region::Cms => {
-            println!("cmsdl: listing patches for region '{region}'.");
+            println!("cmsdl {VERSION}: listing patches for region '{region}'.");
             let patches = cms::get_patch_data(allow_insecure, proxy)?.packages;
 
             if patches.is_empty() {
@@ -232,7 +270,7 @@ pub fn patch_apply(
             let sentinel = target.join(format!(".incomplete_{region}"));
             if sentinel.exists() {
                 println!(
-                    "cmsdl: incomplete download marker detected at '{}'; \
+                    "cmsdl {VERSION}: incomplete download marker detected at '{}'; \
                      performing a full client download instead of patching.",
                     sentinel.display()
                 );
@@ -245,7 +283,7 @@ pub fn patch_apply(
             }
 
             println!(
-                "cmsdl: patching region '{region}' client at '{}' up to '{version}'.",
+                "cmsdl {VERSION}: patching region '{region}' client at '{}' up to '{version}'.",
                 target.display()
             );
             crate::patch::apply_patches(target, version, allow_insecure, proxy)?;
