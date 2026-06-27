@@ -170,7 +170,6 @@ jobs:
           prerelease: ${{ contains(github.ref_name, '-') }}
 
       - name: Publish Gitee release
-        if: false # Temporarily disabled due to Gitee API issues
         uses: nicennnnnnnlee/action-gitee-release@master
         with:
           gitee_action: create_release
@@ -179,7 +178,7 @@ jobs:
           gitee_token: ${{ secrets.GITEE_TOKEN }}
           gitee_tag_name: ${{ github.ref_name }}
           gitee_release_name: ${{ github.ref_name }}
-          gitee_target_commitish: ${{ github.sha }}
+          gitee_target_commitish: master
           gitee_release_body: 'cmsdl release mirror of this version: ${{ github.ref_name }}'
           gitee_upload_retry_times: 3
           gitee_files: |
