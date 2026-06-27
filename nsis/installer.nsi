@@ -26,8 +26,8 @@
 !define PRODUCT_PUBLISHER "Hikari Calyx Tech"
 !define PRODUCT_WEB_SITE "https://github.com/HikariCalyx/cmsdl"
 
-; Installation Directory
-!define INSTALL_DIR "$%SystemDrive%"
+; Installation Directory default (resolved to the actual system drive at runtime)
+!define INSTALL_DIR "C:"
 
 ; Required Space: 70,780,930,990 bytes (approximately 65.92 GB)
 !define REQUIRED_SPACE "70780930990"
@@ -139,6 +139,17 @@ BrandingText "Powered by CMSDL"
 ; ============================================================================
 
 Function .onInit
+  ; Resolve the install directory to the actual system drive (e.g. D:) when
+  ; no previous installation path is stored in the registry. This cannot be
+  ; done at compile time because $%SystemDrive% is a Windows-only env var.
+  ReadRegStr $R0 HKCU "Software\${REG_KEY}" "InstallDir"
+  ${If} $R0 == ""
+    ReadEnvStr $R0 SystemDrive
+    ${If} $R0 != ""
+      StrCpy $INSTDIR $R0
+    ${EndIf}
+  ${EndIf}
+
   ; Default operation mode is Install
   StrCpy $InstallMode "1"
 
