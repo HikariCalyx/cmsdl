@@ -10,12 +10,12 @@
 ### 国服
 - 检查最新的CMS客户端：
 ```bash
-~/cmsdl cms --check
+./cmsdl cms --check
 ```
 
 - 下载/修复/检查CMS客户端：
 ```bash
-~/cmsdl cms --download /path/to/cms/client
+./cmsdl cms --download /path/to/cms/client
 ```
 
 如果下载中断，重新开启时会从中断的地方继续。
@@ -42,29 +42,29 @@
 
 - 查看已有的补丁文件
 ```bash
-~/cmsdl cms --patch list
+./cmsdl cms --patch list
 ```
 
 - 更新CMS客户端到最新版本（包括minor patch），如果需要，请在更新完成后启动客户端：
 ```bash
-~/cmsdl cms --patch latest /path/to/cms/client [--launch-after-patching]
+./cmsdl cms --patch latest /path/to/cms/client [--launch-after-patching]
 ```
 
 - 创建启动快捷方式（仅限 Windows）：
 ```bash
-~/cmsdl cms --create-shortcut /path/to/cms/client
+./cmsdl cms --create-shortcut /path/to/cms/client
 ```
 
 
 ### 台服
 - 检查最新的TMS客户端：
 ```bash
-~/cmsdl tms --check
+./cmsdl tms --check
 ```
 
 - 下载/修复/检查TMS客户端：
 ```bash
-~/cmsdl tms --download /path/to/tms/client
+./cmsdl tms --download /path/to/tms/client
 ```
 
 - 只下载所有路径中包含_Canvas，String，Reactor的文件到 /path/to/tms/client：

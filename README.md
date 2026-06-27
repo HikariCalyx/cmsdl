@@ -38,34 +38,34 @@ If the download was interrupted, you can rerun and it will continue to download.
 ```
 
 - Download only files from all paths that do not end with .wz and do not start with "Maple" to /path/to/cms/client:
-``bash
+```bash
 ./cmsdl cms --download /path/to/cms/client --filter-regex=".wz$":"^Maple" --invert-filter
 ```
 
 - List all available CMS patches
 ```bash
-~/cmsdl cms --patch list
+./cmsdl cms --patch list
 ```
 
 - Patch CMS client to latest version (including minor patches), and/or launch the game after patching:
 ```bash
-~/cmsdl cms --patch latest /path/to/cms/client [--launch-after-patching]
+./cmsdl cms --patch latest /path/to/cms/client [--launch-after-patching]
 ```
 
 - Create launch shortcut (Windows only)：
 ```bash
-~/cmsdl cms --create-shortcut /path/to/cms/client
+./cmsdl cms --create-shortcut /path/to/cms/client
 ```
 
 ### TMS
 - Get latest TMS client:
 ```bash
-~/cmsdl tms --check
+./cmsdl tms --check
 ```
 
 - Download, or checksum check, or repair TMS client:
 ```bash
-~/cmsdl tms --download /path/to/tms/client
+./cmsdl tms --download /path/to/tms/client
 ```
 
 - Download only files containing "_Canvas", "String", or "Reactor" in any path to /path/to/tms/client:
@@ -84,7 +84,7 @@ If the download was interrupted, you can rerun and it will continue to download.
 ```
 
 - Download only files from all paths that do not end with .wz and do not start with "Maple" to /path/to/tms/client:
-``bash
+```bash
 ./cmsdl tms --download /path/to/tms/client --filter-regex=".wz$":"^Maple" --invert-filter
 ```
 
