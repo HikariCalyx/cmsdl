@@ -4,6 +4,7 @@ mod downloader;
 mod filter;
 mod net;
 mod patch;
+mod resume;
 mod tms;
 
 use anyhow::Result;

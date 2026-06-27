@@ -507,6 +507,11 @@ fn remote_size(url: &str, agent: &ureq::Agent) -> Option<u64> {
 }
 
 /// Download `url` to `dest`, using parallel byte-range segments for large files.
+///
+/// When a `.cmsdl` sidecar file exists next to `dest` and `dest` itself is
+/// present with the expected size, the download is resumed from the saved
+/// per-segment byte offsets (shifted back by 16 bytes for safety).  On
+/// success the sidecar file is deleted.
 fn download_file(
     url: &str,
     dest: &Path,
@@ -524,30 +529,64 @@ fn download_file(
     // A multi-segment download needs a known size and server range support.
     let size = match size {
         Some(s) if s > 0 => s,
-        _ => return download_single(url, dest, pb, total, agent),
+        _ => {
+            let _ = std::fs::remove_file(crate::resume::progress_path(dest));
+            return download_single(url, dest, pb, total, agent);
+        }
     };
 
     let segments = effective_segments(size, max_segments);
     if segments <= 1 || !supports_ranges(url, agent) {
+        // Single-threaded path: remove any stale progress file then download.
+        let _ = std::fs::remove_file(crate::resume::progress_path(dest));
         return download_single(url, dest, pb, total, agent);
     }
 
-    // Pre-allocate the destination file so segments can be written at offsets.
+    // --- Determine ranges: resume from saved progress or start fresh. ---
+    let progress_path = crate::resume::progress_path(dest);
+    let saved_opt = crate::resume::read_progress(&progress_path)
+        .filter(|_| dest.exists())
+        .filter(|_| dest.metadata().map_or(false, |m| m.len() == size));
+
+    let ranges: Vec<(u64, u64)>;
+    let progress: crate::resume::FileProgress;
+
+    if let Some(saved) = saved_opt
+        .and_then(|s| crate::resume::build_resume_ranges(&s, size).map(|(r, pre)| (s, r, pre)))
     {
-        let file = std::fs::File::create(dest)
-            .with_context(|| format!("failed to create file {}", dest.display()))?;
-        file.set_len(size)
-            .with_context(|| format!("failed to size file {}", dest.display()))?;
+        let (saved_segs, resume_ranges, pre_completed) = saved;
+        // Fast-forward progress bars for the bytes already on disk.
+        pb.inc(pre_completed);
+        total.inc(pre_completed);
+        // Reuse the existing (pre-allocated) destination file.
+        progress = crate::resume::FileProgress::from_saved(dest, &saved_segs, &resume_ranges)
+            .with_context(|| format!("failed to write progress file {}", progress_path.display()))?;
+        ranges = resume_ranges;
+    } else {
+        // Fresh download: pre-allocate the destination file.
+        {
+            let file = std::fs::File::create(dest)
+                .with_context(|| format!("failed to create file {}", dest.display()))?;
+            file.set_len(size)
+                .with_context(|| format!("failed to size file {}", dest.display()))?;
+        }
+        let fresh_ranges = compute_ranges(size, segments);
+        progress = crate::resume::FileProgress::new(dest, &fresh_ranges)
+            .with_context(|| format!("failed to create progress file {}", progress_path.display()))?;
+        ranges = fresh_ranges;
     }
 
-    let ranges = compute_ranges(size, segments);
     let mut first_err: Option<anyhow::Error> = None;
 
     std::thread::scope(|scope| {
+        let progress = &progress;
         let handles: Vec<_> = ranges
-            .into_iter()
-            .map(|(start, end)| {
-                scope.spawn(move || download_range(url, dest, start, end, pb, total, agent))
+            .iter()
+            .enumerate()
+            .map(|(slot, &(start, end))| {
+                scope.spawn(move || {
+                    download_range(url, dest, start, end, pb, total, agent, progress, slot)
+                })
             })
             .collect();
 
@@ -570,7 +609,10 @@ fn download_file(
 
     match first_err {
         Some(e) => Err(e),
-        None => Ok(()),
+        None => {
+            progress.delete();
+            Ok(())
+        }
     }
 }
 
@@ -584,6 +626,8 @@ fn download_range(
     pb: &ProgressBar,
     total: &ProgressBar,
     agent: &ureq::Agent,
+    progress: &crate::resume::FileProgress,
+    slot: usize,
 ) -> Result<()> {
     let mut file = std::fs::OpenOptions::new()
         .write(true)
@@ -595,7 +639,10 @@ fn download_range(
 
     while pos <= end {
         let before = pos;
-        let _ = stream_segment(agent, url, &mut file, &mut pos, end, pb, total);
+        let _ = stream_segment(agent, url, &mut file, &mut pos, end, pb, total, progress, slot);
+
+        // Record progress at every reconnect boundary (coarse-grained safety net).
+        progress.update(slot, pos);
 
         if pos > end {
             return Ok(());
@@ -622,6 +669,9 @@ fn download_range(
 
 /// Stream a range request from `*pos` to `end` into `file`, advancing `*pos` and
 /// both progress bars as bytes arrive.
+///
+/// Progress is flushed to `progress` every [`crate::resume::PROGRESS_FLUSH_INTERVAL`]
+/// bytes so that an interruption loses at most one flush interval of work.
 fn stream_segment(
     agent: &ureq::Agent,
     url: &str,
@@ -630,6 +680,8 @@ fn stream_segment(
     end: u64,
     pb: &ProgressBar,
     total: &ProgressBar,
+    progress: &crate::resume::FileProgress,
+    slot: usize,
 ) -> Result<()> {
     let resp = agent
         .get(url)
@@ -642,6 +694,7 @@ fn stream_segment(
         .with_context(|| "failed to seek before resuming")?;
 
     let mut buf = [0u8; 64 * 1024];
+    let mut since_flush: u64 = 0;
     loop {
         let n = reader.read(&mut buf).context("failed to read response body")?;
         if n == 0 {
@@ -649,8 +702,13 @@ fn stream_segment(
         }
         file.write_all(&buf[..n]).context("failed to write to disk")?;
         *pos += n as u64;
+        since_flush += n as u64;
         pb.inc(n as u64);
         total.inc(n as u64);
+        if since_flush >= crate::resume::PROGRESS_FLUSH_INTERVAL {
+            progress.update(slot, *pos);
+            since_flush = 0;
+        }
     }
     Ok(())
 }

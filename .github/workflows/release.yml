@@ -170,6 +170,7 @@ jobs:
           prerelease: ${{ contains(github.ref_name, '-') }}
 
       - name: Publish Gitee release
+        if: false # Temporarily disabled due to Gitee API issues
         uses: nicennnnnnnlee/action-gitee-release@master
         with:
           gitee_action: create_release

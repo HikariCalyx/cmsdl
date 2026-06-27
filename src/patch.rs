@@ -796,6 +796,21 @@ pub fn apply_patches(
 }
 
 /// Download, then apply, every zip part of a single patch.
+///
+/// # Resume behaviour
+///
+/// After the first zip is downloaded and its manifest extracted, two files are
+/// written to `<target>/patchdata/`:
+///
+/// * `patch_delta_direct.dat` — the raw manifest XML, so it is available
+///   without re-downloading zip 0 on resume.
+/// * `.incomplete` — a plain-text file; each time a zip is fully applied its
+///   name is appended as a new line.
+///
+/// On the next run the function detects these two files, loads the manifest
+/// from disk, skips every zip already listed in `.incomplete`, and continues
+/// from where patching stopped.  Both files are removed once the patch
+/// completes successfully.
 fn apply_one_patch(
     agent: &ureq::Agent,
     challenge: &str,
@@ -818,27 +833,64 @@ fn apply_one_patch(
     std::fs::create_dir_all(&patchdata)
         .with_context(|| format!("failed to create {}", patchdata.display()))?;
 
-    let mut manifest: Option<Manifest> = None;
+    let incomplete_path = patchdata.join(".incomplete");
+    let saved_manifest_path = patchdata.join(MANIFEST_NAME);
 
+    // --- Determine resume state. ---
+    let resuming = incomplete_path.exists() && saved_manifest_path.exists();
+    let completed_zips: std::collections::HashSet<String>;
+    let mut manifest: Option<Manifest>;
+
+    if resuming {
+        completed_zips = read_completed_zips(&incomplete_path);
+        let xml = std::fs::read_to_string(&saved_manifest_path)
+            .with_context(|| format!("failed to read saved manifest {}", saved_manifest_path.display()))?;
+        manifest = Some(parse_manifest(&xml)
+            .context("failed to parse saved patch manifest")?);
+        println!("  resuming: {}/{} zip(s) already applied.",
+            completed_zips.len(), filelist.file_list.len());
+    } else {
+        completed_zips = std::collections::HashSet::new();
+        manifest = None;
+    }
+
+    let total = filelist.file_list.len();
     for (i, zip) in filelist.file_list.iter().enumerate() {
+        let zip_name = zip.url.rsplit(['/', '\\']).next().unwrap_or("part.zip").to_owned();
+
+        // Skip zip parts that were fully applied in a previous run.
+        if completed_zips.contains(&zip_name) {
+            println!("  [{}/{}] skipping {zip_name} (already applied).", i + 1, total);
+            continue;
+        }
+
         let size: u64 = zip.size.trim().parse().unwrap_or(0);
-        let zip_name = zip.url.rsplit(['/', '\\']).next().unwrap_or("part.zip");
-        let zip_path = patchdata.join(zip_name);
+        let zip_path = patchdata.join(&zip_name);
         let sign_path = format!("{zip_base}{}", zip.url);
 
         println!(
             "  [{}/{}] downloading {zip_name} ({:.2} MiB)...",
             i + 1,
-            filelist.file_list.len(),
+            total,
             size as f64 / (1024.0 * 1024.0)
         );
         download_signed_to_file(agent, challenge, &sign_path, &zip_path, size, &zip.md5)
             .with_context(|| format!("failed to download {zip_name}"))?;
 
-        // The manifest lives in the first zip and drives every part.
+        // The manifest lives in the first zip.  Save it to disk so a resumed
+        // run can load it without re-downloading zip 0, then create the
+        // `.incomplete` sentinel.
         if i == 0 {
-            manifest = Some(read_manifest_from_zip(&zip_path)?);
+            let xml = read_manifest_xml_from_zip(&zip_path)?;
+            std::fs::write(&saved_manifest_path, &xml)
+                .with_context(|| format!("failed to save manifest to {}", saved_manifest_path.display()))?;
+            if !incomplete_path.exists() {
+                std::fs::write(&incomplete_path, "")
+                    .with_context(|| format!("failed to create {}", incomplete_path.display()))?;
+            }
+            manifest = Some(parse_manifest(&xml)?);
         }
+
         let m = manifest
             .as_ref()
             .ok_or_else(|| anyhow!("patch manifest missing from the first zip"))?;
@@ -849,6 +901,9 @@ fn apply_one_patch(
             stats.patched, stats.added, stats.skipped, stats.corrupted
         );
 
+        // Record this zip as done, then remove it from disk.
+        append_completed_zip(&incomplete_path, &zip_name)
+            .with_context(|| format!("failed to record {zip_name} as applied"))?;
         let _ = std::fs::remove_file(&zip_path);
     }
 
@@ -862,14 +917,16 @@ fn apply_one_patch(
         }
     }
 
-    // Drop the per-patch working files (keep patchdata for the next patch).
+    // Drop the per-patch working files and resume state.
     let _ = std::fs::remove_dir_all(patchdata.join("patchfile"));
     let _ = std::fs::remove_dir_all(patchdata.join("patched"));
+    let _ = std::fs::remove_file(&incomplete_path);
+    let _ = std::fs::remove_file(&saved_manifest_path);
     Ok(())
 }
 
-/// Read and parse `patch_delta_direct.dat` from a zip part.
-fn read_manifest_from_zip(zip_path: &Path) -> Result<Manifest> {
+/// Extract the raw XML text of `patch_delta_direct.dat` from a zip part.
+fn read_manifest_xml_from_zip(zip_path: &Path) -> Result<String> {
     let file = std::fs::File::open(zip_path)
         .with_context(|| format!("failed to open {}", zip_path.display()))?;
     let mut archive = zip::ZipArchive::new(file)
@@ -881,7 +938,34 @@ fn read_manifest_from_zip(zip_path: &Path) -> Result<Manifest> {
     entry
         .read_to_string(&mut xml)
         .context("failed to read patch manifest")?;
-    parse_manifest(&xml)
+    Ok(xml)
+}
+
+/// Read and parse `patch_delta_direct.dat` from a zip part.
+// fn read_manifest_from_zip(zip_path: &Path) -> Result<Manifest> {
+//     parse_manifest(&read_manifest_xml_from_zip(zip_path)?)
+// }
+
+/// Return the set of zip file names already fully applied, as recorded in the
+/// `.incomplete` sidecar (one name per line).
+fn read_completed_zips(path: &Path) -> std::collections::HashSet<String> {
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .map(|l| l.trim().to_owned())
+        .filter(|l| !l.is_empty())
+        .collect()
+}
+
+/// Append `zip_name` as a new line to the `.incomplete` sidecar file.
+fn append_completed_zip(path: &Path, zip_name: &str) -> Result<()> {
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .with_context(|| format!("failed to open {}", path.display()))?;
+    writeln!(file, "{zip_name}")
+        .with_context(|| format!("failed to write to {}", path.display()))
 }
 
 /// GET a signed `path` and return its body as text.
@@ -898,6 +982,10 @@ fn download_signed_text(agent: &ureq::Agent, challenge: &str, path: &str) -> Res
 /// Download a signed `path` to `dest` using up to [`SEGMENTS_PER_FILE`] parallel
 /// byte-range segments (falling back to a single resumable stream for small
 /// files or servers without range support), then verify against `expected_md5`.
+///
+/// When a `.cmsdl` sidecar file exists next to `dest` and `dest` is present
+/// with the expected size, each segment is resumed from its saved offset (minus
+/// a 16-byte safety margin).  The sidecar is removed on success.
 fn download_signed_to_file(
     agent: &ureq::Agent,
     challenge: &str,
@@ -925,33 +1013,61 @@ fn download_signed_to_file(
     let probe_url = cms::build_signed_url(challenge, cms::get_current_utc8_time(), path);
 
     if segments <= 1 || size == 0 || !supports_ranges(agent, &probe_url) {
-        // Single resumable stream.
+        // Single resumable stream: remove any stale progress sidecar then download.
+        let _ = std::fs::remove_file(crate::resume::progress_path(dest));
         download_single_stream(agent, challenge, path, dest, size, &pb)?;
     } else {
-        // Pre-allocate the file so segments can be written at their offsets.
+        // --- Determine ranges: resume from saved progress or start fresh. ---
+        let progress_path = crate::resume::progress_path(dest);
+        let saved_opt = crate::resume::read_progress(&progress_path)
+            .filter(|_| dest.exists())
+            .filter(|_| dest.metadata().map_or(false, |m| m.len() == size));
+
+        let ranges: Vec<(u64, u64)>;
+        let progress: crate::resume::FileProgress;
+
+        if let Some(saved) = saved_opt
+            .and_then(|s| crate::resume::build_resume_ranges(&s, size).map(|(r, pre)| (s, r, pre)))
         {
-            let file = std::fs::File::create(dest)
-                .with_context(|| format!("failed to create {}", dest.display()))?;
-            file.set_len(size)
-                .with_context(|| format!("failed to size {}", dest.display()))?;
+            let (saved_segs, resume_ranges, pre_completed) = saved;
+            pb.inc(pre_completed);
+            progress = crate::resume::FileProgress::from_saved(dest, &saved_segs, &resume_ranges)
+                .with_context(|| {
+                    format!("failed to write progress file {}", progress_path.display())
+                })?;
+            ranges = resume_ranges;
+        } else {
+            // Fresh download: pre-allocate the file so segments can write at offsets.
+            {
+                let file = std::fs::File::create(dest)
+                    .with_context(|| format!("failed to create {}", dest.display()))?;
+                file.set_len(size)
+                    .with_context(|| format!("failed to size {}", dest.display()))?;
+            }
+            let fresh_ranges = compute_ranges(size, segments);
+            progress = crate::resume::FileProgress::new(dest, &fresh_ranges).with_context(
+                || format!("failed to create progress file {}", progress_path.display()),
+            )?;
+            ranges = fresh_ranges;
         }
 
-        let ranges = compute_ranges(size, segments);
         let first_err: Mutex<Option<anyhow::Error>> = Mutex::new(None);
 
         std::thread::scope(|scope| {
+            let progress = &progress;
             let handles: Vec<_> = ranges
-                .into_iter()
-                .map(|(start, end)| {
+                .iter()
+                .enumerate()
+                .map(|(slot, &(start, end))| {
                     let pb = &pb;
                     let first_err = &first_err;
                     scope.spawn(move || {
                         if let Err(e) =
-                            download_segment(agent, challenge, path, dest, start, end, pb)
+                            download_segment(agent, challenge, path, dest, start, end, pb, progress, slot)
                         {
-                            let mut slot = first_err.lock().unwrap();
-                            if slot.is_none() {
-                                *slot = Some(e);
+                            let mut s = first_err.lock().unwrap();
+                            if s.is_none() {
+                                *s = Some(e);
                             }
                         }
                     })
@@ -966,6 +1082,8 @@ fn download_signed_to_file(
             pb.finish_and_clear();
             return Err(e);
         }
+
+        progress.delete();
     }
 
     pb.finish_and_clear();
@@ -1037,6 +1155,8 @@ fn download_segment(
     start: u64,
     end: u64,
     pb: &ProgressBar,
+    progress: &crate::resume::FileProgress,
+    slot: usize,
 ) -> Result<()> {
     let mut file = std::fs::OpenOptions::new()
         .write(true)
@@ -1049,7 +1169,10 @@ fn download_segment(
     while pos <= end {
         let before = pos;
         let url = cms::build_signed_url(challenge, cms::get_current_utc8_time(), path);
-        let _ = stream_bounded(agent, &url, &mut file, &mut pos, end, pb);
+        let _ = stream_bounded(agent, &url, &mut file, &mut pos, end, pb, progress, slot);
+
+        // Record progress at every reconnect boundary.
+        progress.update(slot, pos);
 
         if pos > end {
             return Ok(());
@@ -1143,6 +1266,9 @@ fn stream_range(
 
 /// Stream a bounded range request from `*pos` to `end` (inclusive) into `file`,
 /// advancing `*pos` and incrementing the shared progress bar as bytes arrive.
+///
+/// Progress is flushed to `progress` every [`crate::resume::PROGRESS_FLUSH_INTERVAL`]
+/// bytes so that an interruption loses at most one flush interval of work.
 fn stream_bounded(
     agent: &ureq::Agent,
     url: &str,
@@ -1150,6 +1276,8 @@ fn stream_bounded(
     pos: &mut u64,
     end: u64,
     pb: &ProgressBar,
+    progress: &crate::resume::FileProgress,
+    slot: usize,
 ) -> Result<()> {
     let resp = agent
         .get(url)
@@ -1162,6 +1290,7 @@ fn stream_bounded(
         .context("failed to seek before resuming")?;
 
     let mut buf = [0u8; 64 * 1024];
+    let mut since_flush: u64 = 0;
     loop {
         let n = reader.read(&mut buf).context("failed to read response body")?;
         if n == 0 {
@@ -1175,7 +1304,12 @@ fn stream_bounded(
         let take = n.min(remaining);
         file.write_all(&buf[..take]).context("failed to write to disk")?;
         *pos += take as u64;
+        since_flush += take as u64;
         pb.inc(take as u64);
+        if since_flush >= crate::resume::PROGRESS_FLUSH_INTERVAL {
+            progress.update(slot, *pos);
+            since_flush = 0;
+        }
         if take < n {
             break;
         }
