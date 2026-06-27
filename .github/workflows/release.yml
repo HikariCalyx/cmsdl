@@ -57,7 +57,7 @@ jobs:
           key: ${{ matrix.target }}
 
       - name: Build
-        run: cargo build --release --locked --target ${{ matrix.target }}
+        run: cargo build --release --target ${{ matrix.target }}
 
       - name: Stage binary
         shell: bash
@@ -90,10 +90,10 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Build (aarch64-apple-darwin)
-        run: cargo build --release --locked --target aarch64-apple-darwin
+        run: cargo build --release --target aarch64-apple-darwin
 
       - name: Build (x86_64-apple-darwin)
-        run: cargo build --release --locked --target x86_64-apple-darwin
+        run: cargo build --release --target x86_64-apple-darwin
 
       - name: Create universal binary with lipo
         run: |
