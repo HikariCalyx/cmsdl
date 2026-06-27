@@ -999,6 +999,23 @@ fn download_signed_to_file(
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
 
+    // Early resume: if the ZIP is already fully on disk with matching size + MD5,
+    // skip re-download (covers the case where download succeeded but patching
+    // was interrupted before the zip was marked complete in `.incomplete`).
+    if dest.exists() {
+        if let Ok(meta) = dest.metadata() {
+            if meta.len() == size && !expected_md5.is_empty() {
+                if let Ok(got) = md5_file_upper(dest) {
+                    if got.eq_ignore_ascii_case(expected_md5) {
+                        println!("  {} already present and verified (skipping download).", 
+                            dest.file_name().unwrap_or_default().to_string_lossy());
+                        return Ok(());
+                    }
+                }
+            }
+        }
+    }
+
     let pb = ProgressBar::new(size);
     pb.set_style(
         ProgressStyle::with_template(
