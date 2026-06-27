@@ -62,7 +62,7 @@ Alternately, you can add this in shortcut properties.
 - https://git-scm.com/install/windows
 
 2. Install Rust by downloading rustup-init.exe from Rust website.
-https://rust-lang.org/learn/get-started/
+- https://rust-lang.org/learn/get-started/
 
 3. Clone this repository.
 ```pwsh
