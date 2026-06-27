@@ -12,7 +12,7 @@
 !include "nsDialogs.nsh"
 
 ; Version
-!define VERSION "4.226.1.2"
+!define VERSION "4.226.1.3"
 
 ; Product Info (English)
 !define PRODUCT_NAME "MapleStory CN"
@@ -345,7 +345,7 @@ Section "Install"
       ; Run the patch. ExecWait gives cmsdl.exe a real console for its
       ; indicatif progress bars.
       DetailPrint "$(STR_PATCHING)"
-      ExecWait '"$INSTDIR\cmsdl.exe" cms --patch latest "$INSTDIR"' $0
+      ExecWait '"$INSTDIR\cmsdl.exe" cms --patch latest "$INSTDIR" --purge-wz-files' $0
       StrCmp $0 "0" makeShortcuts
         MessageBox MB_ICONSTOP "$(STR_PATCH_FAILED)"
         Abort
@@ -363,7 +363,7 @@ Section "Install"
     ; Execute download command. ExecWait gives cmsdl.exe a real console
     ; window where its indicatif progress bars can render.
     DetailPrint "$(STR_DOWNLOADING)"
-    ExecWait '"$INSTDIR\cmsdl.exe" cms --download "$INSTDIR"' $0
+    ExecWait '"$INSTDIR\cmsdl.exe" cms --download "$INSTDIR" --purge-wz-files' $0
     StrCmp $0 "0" makeShortcuts
       MessageBox MB_ICONSTOP "$(STR_DOWNLOAD_FAILED)"
       Abort
