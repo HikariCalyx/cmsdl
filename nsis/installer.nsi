@@ -132,6 +132,7 @@ RequestExecutionLevel user
 
 ShowInstDetails show
 ShowUnInstDetails show
+BrandingText "Powered by CMSDL"
 
 ; ============================================================================
 ; Initialize
