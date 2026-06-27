@@ -109,10 +109,51 @@ jobs:
           path: cmsdl_darwin
           if-no-files-found: error
 
+  # Build the Windows NSIS installer from the x86-64 binary.
+  nsis-installer:
+    name: cmsdl_nsis_installer
+    needs: [build]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download x86-64 Windows binary
+        uses: actions/download-artifact@v4
+        with:
+          name: cmsdl_x86-64-windows.exe
+
+      - name: Prepare build inputs
+        run: |
+          mkdir -p target/release
+          mv cmsdl_x86-64-windows.exe target/release/cmsdl.exe
+          cp src/icon.ico nsis/icon.ico
+
+      - name: Install NSIS
+        run: sudo apt-get install -y nsis
+
+      - name: Build installer
+        working-directory: nsis
+        run: makensis installer.nsi
+
+      - name: Add tag suffix to installer filename
+        if: startsWith(github.ref, 'refs/tags/')
+        working-directory: nsis
+        run: |
+          for f in MapleStoryCN-*-installer.exe; do
+            mv "$f" "${f%.exe}_${{ github.ref_name }}.exe"
+          done
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cmsdl_nsis_installer
+          path: nsis/MapleStoryCN-*-installer*.exe
+          if-no-files-found: error
+
   # Attach all binaries to a GitHub Release when a tag is pushed.
   release:
     name: Release
-    needs: [build, macos-universal]
+    needs: [build, macos-universal, nsis-installer]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-22.04
     steps:
@@ -126,3 +167,4 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: artifacts/*
+          prerelease: ${{ contains(github.ref_name, '-') }}
