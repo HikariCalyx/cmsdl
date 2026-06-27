@@ -58,8 +58,8 @@ Alternately, you can add this in shortcut properties.
 ## Building
 ### Windows
 1. Download and install Visual Studio Build Tools and Git.
-https://aka.ms/vs/stable/vs_BuildTools.exe
-https://git-scm.com/install/windows
+- https://aka.ms/vs/stable/vs_BuildTools.exe
+- https://git-scm.com/install/windows
 
 2. Install Rust by downloading rustup-init.exe from Rust website.
 https://rust-lang.org/learn/get-started/
