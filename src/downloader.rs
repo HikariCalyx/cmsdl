@@ -179,6 +179,7 @@ pub fn download(
     allow_insecure: bool,
     proxy: Option<&str>,
     build: Option<u32>,
+    purge_wz_files: bool,
 ) -> Result<()> {
     if build.is_some() && region != Region::Cms {
         bail!("--build is only supported for region 'cms'");
@@ -199,8 +200,8 @@ pub fn download(
         .with_context(|| format!("failed to create sentinel file {}", sentinel.display()))?;
 
     match region {
-        Region::Cms => cms::download_client(path, wz_only, filter, allow_insecure, proxy, build)?,
-        Region::Tms => tms::download_client(path, wz_only, filter, allow_insecure, proxy)?,
+        Region::Cms => cms::download_client(path, wz_only, filter, allow_insecure, proxy, build, purge_wz_files)?,
+        Region::Tms => tms::download_client(path, wz_only, filter, allow_insecure, proxy, purge_wz_files)?,
     }
 
     std::fs::remove_file(&sentinel)
@@ -273,6 +274,7 @@ pub fn patch_apply(
     launch_after: bool,
     allow_insecure: bool,
     proxy: Option<&str>,
+    purge_wz_files: bool,
 ) -> Result<()> {
     match region {
         Region::Cms => {
@@ -286,7 +288,7 @@ pub fn patch_apply(
                      performing a full client download instead of patching.",
                     sentinel.display()
                 );
-                download(Region::Cms, target, false, None, allow_insecure, proxy, None)?;
+                download(Region::Cms, target, false, None, allow_insecure, proxy, None, false)?;
                 create_shortcut(Region::Cms, target)?;
                 if launch_after {
                     crate::patch::launch_client(target)?;
@@ -298,7 +300,7 @@ pub fn patch_apply(
                 "cmsdl {VERSION}: patching region '{region}' client at '{}' up to '{version}'.",
                 target.display()
             );
-            crate::patch::apply_patches(target, version, allow_insecure, proxy)?;
+            crate::patch::apply_patches(target, version, allow_insecure, proxy, purge_wz_files)?;
             if launch_after {
                 crate::patch::launch_client(target)?;
             }

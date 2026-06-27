@@ -734,6 +734,7 @@ pub fn download_client(
     allow_insecure: bool,
     proxy: Option<&str>,
     build: Option<u32>,
+    purge_wz_files: bool,
 ) -> Result<()> {
     // A shared HTTP agent with a read timeout, so a connection that stops
     // delivering data surfaces as an error (instead of hanging forever) and can
@@ -776,6 +777,11 @@ pub fn download_client(
         // .take(MAX_FILES_FOR_TESTING)
         .map(parse_entry)
         .collect::<Result<_>>()?;
+
+    // Purge stray files in mxd/Data/ before downloading (full manifest, pre-filter).
+    if purge_wz_files {
+        purge_data_files(target_dir, &entries)?;
+    }
 
     // When `--download-wz-only` is set, keep only the data files (paths under
     // `mxd/Data`). The published paths use backslashes, but `file_location`
@@ -1158,6 +1164,105 @@ fn run_create_shortcut_script(
         target_dir.display()
     );
     Ok(())
+}
+
+/// Delete files under `<target_dir>/mxd/Data/` that are not listed in `entries`.
+///
+/// `entries` should be the full (unfiltered) list parsed from the client file
+/// list. Only the directory `<target_dir>/mxd/Data/` is examined; files outside
+/// it are left untouched.
+fn purge_data_files(target_dir: &Path, entries: &[FileEntry]) -> Result<()> {
+    let data_dir = target_dir.join("mxd").join("Data");
+    if !data_dir.is_dir() {
+        return Ok(());
+    }
+
+    // Build the set of expected paths (forward slashes, relative to target_dir).
+    let expected: std::collections::HashSet<String> = entries
+        .iter()
+        .map(|e| format!("{}{}", e.file_location, e.file_name))
+        .filter(|p| p.to_ascii_lowercase().starts_with("mxd/data/"))
+        .collect();
+
+    let mut deleted = 0usize;
+    purge_dir_recursive(&data_dir, &expected, &data_dir, &mut deleted)?;
+
+    if deleted > 0 {
+        println!(
+            "purged {deleted} stray file(s) from '{}'.",
+            data_dir.display()
+        );
+    } else {
+        println!("no stray files in '{}'.", data_dir.display());
+    }
+
+    Ok(())
+}
+
+/// Recursively walk `dir`, deleting any file whose path (relative to
+/// `data_dir`, forward-slash, prepended with `mxd/Data/`) is absent from
+/// `expected`. Empty subdirectories are removed after their children have been
+/// processed.
+fn purge_dir_recursive(
+    dir: &Path,
+    expected: &std::collections::HashSet<String>,
+    data_dir: &Path,
+    deleted: &mut usize,
+) -> Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            purge_dir_recursive(&path, expected, data_dir, deleted)?;
+        } else {
+            let rel = path
+                .strip_prefix(data_dir)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            let manifest_key = format!("mxd/Data/{rel}");
+            if !expected.contains(&manifest_key) {
+                std::fs::remove_file(&path).with_context(|| {
+                    format!("failed to delete stray file {}", path.display())
+                })?;
+                *deleted += 1;
+            }
+        }
+    }
+
+    // Remove the directory itself if it is now empty (but never the root data_dir).
+    if dir != data_dir {
+        let _ = std::fs::remove_dir(dir);
+    }
+
+    Ok(())
+}
+
+/// Fetch the latest client manifest and purge stray files from
+/// `<target_dir>/mxd/Data/`.
+///
+/// Used after patching to clean up files that are no longer referenced by the
+/// latest full client index.
+pub fn purge_wz_files_after_patch(
+    target_dir: &Path,
+    allow_insecure: bool,
+    proxy: Option<&str>,
+) -> Result<()> {
+    let agent = crate::net::agent(allow_insecure, proxy);
+    let challenge = get_challenge_key(&agent).context("failed to obtain challenge code")?;
+    println!("purging stray WZ files not in the latest manifest...");
+    let number =
+        discover_latest_client_number_with(&agent, &challenge).context("failed to discover latest build")?;
+    let utc8_time = get_current_utc8_time();
+    let url = build_signed_url(&challenge, utc8_time, &client_file_list_path(number));
+    let contents =
+        http_get_text(&agent, &url).context("failed to download client file list for purge")?;
+
+    let mut lines = contents.lines().filter(|l| !l.trim().is_empty());
+    let _header = lines.next().context("client file list is empty")?;
+    let entries: Vec<FileEntry> = lines.map(parse_entry).collect::<Result<_>>()?;
+
+    purge_data_files(target_dir, &entries)
 }
 
 /// Builds a freshly-signed download URL for a single client file on demand.

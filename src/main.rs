@@ -40,6 +40,7 @@ fn main() -> Result<()> {
             cli.allow_insecure,
             proxy,
             cli.build,
+            cli.purge_wz_files,
         )?,
         Action::GetBitTorrent(output) => {
             downloader::get_bit_torrent(cli.region, output.as_deref(), cli.allow_insecure, proxy)?
@@ -54,6 +55,7 @@ fn main() -> Result<()> {
             cli.launch_after_patching,
             cli.allow_insecure,
             proxy,
+            cli.purge_wz_files,
         )?,
         Action::CreateShortcut(path) => downloader::create_shortcut(cli.region, &path)?,
     }

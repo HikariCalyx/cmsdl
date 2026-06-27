@@ -662,6 +662,7 @@ pub fn apply_patches(
     max_version: &str,
     allow_insecure: bool,
     proxy: Option<&str>,
+    purge_wz_files: bool,
 ) -> Result<()> {
     // 1. The client must already be present.
     if !target_dir.join("mxd").is_dir() {
@@ -790,6 +791,12 @@ pub fn apply_patches(
              re-run with `--patch latest` to repair them",
             last_corrupted.len()
         );
+    }
+
+    // Purge stray files under mxd/Data/ that are not in the latest manifest.
+    if purge_wz_files && max_version.eq_ignore_ascii_case("latest") {
+        println!();
+        cms::purge_wz_files_after_patch(target_dir, allow_insecure, proxy)?;
     }
 
     Ok(())
@@ -1392,7 +1399,8 @@ mod tests {
         )
         .unwrap();
 
-        let manifest = read_manifest_from_zip(&zip_path).unwrap();
+        let xml = read_manifest_xml_from_zip(&zip_path).unwrap();
+        let manifest = parse_manifest(&xml).unwrap();
         let mut corrupted = Vec::new();
         let stats = apply_zip(&zip_path, &manifest, work, &patchdata, &mut corrupted).unwrap();
         eprintln!("stats: {stats:?}");

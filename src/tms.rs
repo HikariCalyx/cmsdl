@@ -310,6 +310,79 @@ fn local_path(root: &Path, rel: &str) -> PathBuf {
     path
 }
 
+/// Delete files under `<target_dir>/Data/` that are not listed in `items`.
+///
+/// `items` should be the full (unfiltered) download list. Only the directory
+/// `<target_dir>/Data/` is examined; files outside it are left untouched.
+fn purge_data_files(target_dir: &Path, items: &[DownloadItem]) -> Result<()> {
+    let data_dir = target_dir.join("Data");
+    if !data_dir.is_dir() {
+        return Ok(());
+    }
+
+    // Build the set of expected paths (forward slashes, relative to target_dir).
+    let expected: std::collections::HashSet<&str> = items
+        .iter()
+        .map(|i| i.local_path.as_str())
+        .filter(|p| {
+            let normalized = p.replace('\\', "/");
+            normalized.to_ascii_lowercase().starts_with("data/")
+        })
+        .collect();
+
+    let mut deleted = 0usize;
+    purge_dir_recursive_tms(&data_dir, &expected, &data_dir, &mut deleted)?;
+
+    if deleted > 0 {
+        println!(
+            "purged {deleted} stray file(s) from '{}'.",
+            data_dir.display()
+        );
+    } else {
+        println!("no stray files in '{}'.", data_dir.display());
+    }
+
+    Ok(())
+}
+
+/// Recursively walk `dir`, deleting files whose path (relative to `data_dir`,
+/// forward-slash, prepended with `Data/`) is absent from `expected`. Empty
+/// subdirectories are removed after their children have been processed.
+fn purge_dir_recursive_tms(
+    dir: &Path,
+    expected: &std::collections::HashSet<&str>,
+    data_dir: &Path,
+    deleted: &mut usize,
+) -> Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            purge_dir_recursive_tms(&path, expected, data_dir, deleted)?;
+        } else {
+            let rel = path
+                .strip_prefix(data_dir)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            let manifest_key = format!("Data/{rel}");
+            if !expected.contains(manifest_key.as_str()) {
+                std::fs::remove_file(&path).with_context(|| {
+                    format!("failed to delete stray file {}", path.display())
+                })?;
+                *deleted += 1;
+            }
+        }
+    }
+
+    // Remove the directory itself if it is now empty (but never the root data_dir).
+    if dir != data_dir {
+        let _ = std::fs::remove_dir(dir);
+    }
+
+    Ok(())
+}
+
 /// Download (or update) all client files for the TMS region into `target_dir`.
 ///
 /// Files are downloaded with up to [`PARALLEL_FILES`] running concurrently, and
@@ -318,7 +391,14 @@ fn local_path(root: &Path, rel: &str) -> PathBuf {
 /// skipped. When `wz_only` is set, only data files (paths under `Data/`) are
 /// downloaded. When `filter` is given, only files whose path matches the filter
 /// are downloaded.
-pub fn download_client(target_dir: &Path, wz_only: bool, filter: Option<&crate::filter::FileFilter>, allow_insecure: bool, proxy: Option<&str>) -> Result<()> {
+pub fn download_client(
+    target_dir: &Path,
+    wz_only: bool,
+    filter: Option<&crate::filter::FileFilter>,
+    allow_insecure: bool,
+    proxy: Option<&str>,
+    purge_wz_files: bool,
+) -> Result<()> {
     // A shared HTTP agent with a read timeout, so a connection that stops
     // delivering data surfaces as an error (instead of hanging forever) and can
     // be resumed from its current byte offset. The same agent is reused for the
@@ -336,13 +416,28 @@ pub fn download_client(target_dir: &Path, wz_only: bool, filter: Option<&crate::
         info.size_in_bytes as f64 / 1_073_741_824.0,
     );
 
-    let mut items = build_download_items(&info, wz_only);
-    if wz_only {
+    // Build the full (unfiltered) download list first so the purge sees every
+    // manifest entry; apply --download-wz-only afterwards.
+    let all_items = build_download_items(&info, false);
+
+    // Purge stray files in Data/ before downloading (full manifest, pre-filter).
+    if purge_wz_files {
+        purge_data_files(target_dir, &all_items)?;
+    }
+
+    let mut items: Vec<DownloadItem> = if wz_only {
+        let kept: Vec<DownloadItem> = all_items
+            .into_iter()
+            .filter(|i| is_data_path(&i.local_path))
+            .collect();
         println!(
             "Limiting download to {} WZ file(s) under Data/.",
-            items.len()
+            kept.len()
         );
-    }
+        kept
+    } else {
+        all_items
+    };
 
     // Apply the user-supplied path filter, if any.
     if let Some(f) = filter {

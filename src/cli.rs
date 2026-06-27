@@ -52,6 +52,17 @@ pub struct Cli {
     #[arg(long)]
     pub download_wz_only: bool,
 
+    /// Delete files in the Data directory that are not listed in the manifest.
+    ///
+    /// With `--download`: runs after fetching the manifest and before downloading,
+    /// removing any local files under `mxd/Data` (CMS) or `Data` (TMS) that are
+    /// absent from the manifest.
+    ///
+    /// With `--patch latest`: runs after patching completes, removing stray files
+    /// under `mxd/Data` that are not in the latest full client manifest.
+    #[arg(long)]
+    pub purge_wz_files: bool,
+
     /// Create a launcher shortcut for the CMS client at the given directory.
     /// (Windows only.)
     #[arg(long, value_name = "PATH")]
@@ -161,6 +172,12 @@ impl Cli {
     ///
     /// The arg group guarantees exactly one of the flags is set.
     pub fn action(&self) -> anyhow::Result<Action> {
+        if self.purge_wz_files && self.download.is_none() && self.patch.is_none() {
+            anyhow::bail!(
+                "--purge-wz-files requires --download or --patch"
+            );
+        }
+
         let action = if self.check {
             Action::Check
         } else if let Some(path) = &self.download {
