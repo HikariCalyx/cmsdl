@@ -19,7 +19,11 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// When `json` is set, output is emitted as a single JSON object and all
 /// informational messages are suppressed.  On failure `{}` is printed and the
 /// function returns `Ok(())`.
-pub fn check(region: Region, filter: Option<&FileFilter>, verbose: bool, json: bool, allow_insecure: bool, proxy: Option<&str>) -> Result<()> {
+pub fn check(region: Region, filter: Option<&FileFilter>, verbose: bool, json: bool, allow_insecure: bool, proxy: Option<&str>, build: Option<u32>) -> Result<()> {
+    if build.is_some() && region != Region::Cms {
+        bail!("--build is only supported for region 'cms'");
+    }
+
     if !json {
         println!("cmsdl {VERSION}: checking for updates from region '{region}'.");
     }
@@ -27,7 +31,7 @@ pub fn check(region: Region, filter: Option<&FileFilter>, verbose: bool, json: b
     match region {
         Region::Cms => {
             if json {
-                match cms::get_client_file_list_info(allow_insecure, proxy) {
+                match cms::get_client_file_list_info(allow_insecure, proxy, build) {
                     Ok(info) => {
                         let output = serde_json::json!({
                             "region": "cms",
@@ -41,8 +45,10 @@ pub fn check(region: Region, filter: Option<&FileFilter>, verbose: bool, json: b
                     Err(_) => println!("{{}}"),
                 }
             } else if verbose || filter.is_some() {
-                println!("scanning for the latest build version...");
-                let (info, entries) = cms::get_client_file_list_full(allow_insecure, proxy)?;
+                if build.is_none() {
+                    println!("scanning for the latest build version...");
+                }
+                let (info, entries) = cms::get_client_file_list_full(allow_insecure, proxy, build)?;
                 let (show_count, show_size) = filtered_totals(&entries, filter, info.file_count, info.total_size);
                 println!("  build:      {}", info.build_number);
                 println!("  version:    {}", info.version);
@@ -57,8 +63,10 @@ pub fn check(region: Region, filter: Option<&FileFilter>, verbose: bool, json: b
                     print_matching_files(&entries, filter);
                 }
             } else {
-                println!("scanning for the latest build version...");
-                let info = cms::get_client_file_list_info(allow_insecure, proxy)?;
+                if build.is_none() {
+                    println!("scanning for the latest build version...");
+                }
+                let info = cms::get_client_file_list_info(allow_insecure, proxy, build)?;
                 println!("  build:      {}", info.build_number);
                 println!("  version:    {}", info.version);
                 println!("  files:      {}", info.file_count);
@@ -170,7 +178,11 @@ pub fn download(
     filter: Option<&FileFilter>,
     allow_insecure: bool,
     proxy: Option<&str>,
+    build: Option<u32>,
 ) -> Result<()> {
+    if build.is_some() && region != Region::Cms {
+        bail!("--build is only supported for region 'cms'");
+    }
     println!(
         "cmsdl {VERSION}: downloading client for region '{region}' into '{}'.",
         path.display()
@@ -187,7 +199,7 @@ pub fn download(
         .with_context(|| format!("failed to create sentinel file {}", sentinel.display()))?;
 
     match region {
-        Region::Cms => cms::download_client(path, wz_only, filter, allow_insecure, proxy)?,
+        Region::Cms => cms::download_client(path, wz_only, filter, allow_insecure, proxy, build)?,
         Region::Tms => tms::download_client(path, wz_only, filter, allow_insecure, proxy)?,
     }
 
@@ -274,7 +286,7 @@ pub fn patch_apply(
                      performing a full client download instead of patching.",
                     sentinel.display()
                 );
-                download(Region::Cms, target, false, None, allow_insecure, proxy)?;
+                download(Region::Cms, target, false, None, allow_insecure, proxy, None)?;
                 create_shortcut(Region::Cms, target)?;
                 if launch_after {
                     crate::patch::launch_client(target)?;

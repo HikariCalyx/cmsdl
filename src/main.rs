@@ -30,7 +30,7 @@ fn main() -> Result<()> {
     let verbose = cli.verbose > 0;
 
     match cli.action()? {
-        Action::Check => downloader::check(cli.region, file_filter.as_ref(), verbose, cli.json, cli.allow_insecure, proxy)?,
+        Action::Check => downloader::check(cli.region, file_filter.as_ref(), verbose, cli.json, cli.allow_insecure, proxy, cli.build)?,
         Action::Download(path) => downloader::download(
             cli.region,
             &path,
@@ -38,6 +38,7 @@ fn main() -> Result<()> {
             file_filter.as_ref(),
             cli.allow_insecure,
             proxy,
+            cli.build,
         )?,
         Action::GetBitTorrent(output) => {
             downloader::get_bit_torrent(cli.region, output.as_deref(), cli.allow_insecure, proxy)?

@@ -92,6 +92,14 @@ pub struct Cli {
     #[arg(long)]
     pub invert_filter: bool,
 
+    /// Use a specific build number instead of searching for the latest.
+    ///
+    /// Only valid with `--download` and `--check` for the `cms` region.
+    /// The manifest for the given build number is fetched directly; an error is
+    /// returned if the build does not exist on the server.
+    #[arg(long, value_name = "NUMBER")]
+    pub build: Option<u32>,
+
     /// Skip TLS certificate verification for all downloads (INSECURE).
     ///
     /// Use only when a download fails because the server's certificate cannot

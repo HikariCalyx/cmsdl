@@ -316,28 +316,56 @@ pub struct ClientFileList {
 
 /// Download and parse the client file list summary.
 ///
-/// The build number is discovered by exhaustive search so the newest published
-/// list is summarized.
-pub fn get_client_file_list_info(allow_insecure: bool, proxy: Option<&str>) -> Result<ClientFileList> {
-    let (info, _) = get_client_file_list_full(allow_insecure, proxy)?;
+/// When `build` is `Some(n)`, the manifest for build `n` is fetched directly
+/// and an error is returned if that build does not exist on the server.
+/// When `build` is `None`, the latest build is discovered by exhaustive search.
+pub fn get_client_file_list_info(allow_insecure: bool, proxy: Option<&str>, build: Option<u32>) -> Result<ClientFileList> {
+    let (info, _) = get_client_file_list_full(allow_insecure, proxy, build)?;
     Ok(info)
 }
 
 /// Download and parse the client file list, returning both the summary and the
 /// full list of `(forward-slash path, size)` pairs for every file entry.
-pub fn get_client_file_list_full(allow_insecure: bool, proxy: Option<&str>) -> Result<(ClientFileList, Vec<(String, u64)>)> {
+///
+/// When `build` is `Some(n)`, the manifest for build `n` is fetched directly
+/// and an error is returned if that build does not exist on the server.
+/// When `build` is `None`, the latest build is discovered by exhaustive search.
+pub fn get_client_file_list_full(allow_insecure: bool, proxy: Option<&str>, build: Option<u32>) -> Result<(ClientFileList, Vec<(String, u64)>)> {
     let agent = crate::net::agent(allow_insecure, proxy);
     let challenge_code = get_challenge_key(&agent).context("failed to obtain challenge code")?;
 
-    let number = discover_latest_client_number_with(&agent, &challenge_code)?;
-
-    let utc8_time = get_current_utc8_time();
-    let url = build_signed_url(&challenge_code, utc8_time, &client_file_list_path(number));
-    let contents = http_get_text(&agent, &url).context("failed to download client file list")?;
+    let (number, contents) = fetch_build_and_contents(&agent, &challenge_code, build)?;
 
     let (mut info, entries) = parse_client_file_list_with_paths(&contents)?;
     info.build_number = number;
     Ok((info, entries))
+}
+
+/// Resolve a build number and fetch the corresponding file-list contents.
+///
+/// When `build` is `Some(n)`, the manifest for `n` is fetched directly; an
+/// error is returned when the build does not exist on the server.
+/// When `build` is `None`, the latest build is discovered by exhaustive search
+/// (see [`discover_latest_client_number_with`]) and its manifest is fetched.
+fn fetch_build_and_contents(
+    agent: &ureq::Agent,
+    challenge: &str,
+    build: Option<u32>,
+) -> Result<(u32, String)> {
+    match build {
+        Some(n) => match fetch_client_file_list_for(agent, challenge, n)? {
+            Some(contents) => Ok((n, contents)),
+            None => bail!("build {n} does not exist or is not available on the server"),
+        },
+        None => {
+            let number = discover_latest_client_number_with(agent, challenge)?;
+            let utc8_time = get_current_utc8_time();
+            let url = build_signed_url(challenge, utc8_time, &client_file_list_path(number));
+            let contents =
+                http_get_text(agent, &url).context("failed to download client file list")?;
+            Ok((number, contents))
+        }
+    }
 }
 
 /// Parse a client file list, returning both the summary and a
@@ -705,6 +733,7 @@ pub fn download_client(
     filter: Option<&crate::filter::FileFilter>,
     allow_insecure: bool,
     proxy: Option<&str>,
+    build: Option<u32>,
 ) -> Result<()> {
     // A shared HTTP agent with a read timeout, so a connection that stops
     // delivering data surfaces as an error (instead of hanging forever) and can
@@ -718,13 +747,12 @@ pub fn download_client(
     // Step 1: obtain the challenge code and keep it for the whole session.
     let challenge = get_challenge_key(&agent).context("failed to obtain challenge code")?;
 
-    // Step 2: find the newest build by exhaustive search, then fetch its file
-    // list (signed with the stored challenge).
-    println!("scanning for the latest build version...");
-    let number = discover_latest_client_number_with(&agent, &challenge)?;
-    let list_time = get_current_utc8_time();
-    let list_url = build_signed_url(&challenge, list_time, &client_file_list_path(number));
-    let contents = http_get_text(&agent, &list_url).context("failed to download client file list")?;
+    // Step 2: resolve the build number (discover the latest, or use the one
+    // provided via --build), then fetch its file list.
+    if build.is_none() {
+        println!("scanning for the latest build version...");
+    }
+    let (number, contents) = fetch_build_and_contents(&agent, &challenge, build)?;
 
     let mut lines = contents.lines().filter(|l| !l.trim().is_empty());
     let header = lines.next().context("client file list is empty")?;
