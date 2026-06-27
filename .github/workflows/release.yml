@@ -163,8 +163,22 @@ jobs:
           path: artifacts
           merge-multiple: true
 
-      - name: Publish release
+      - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
           files: artifacts/*
           prerelease: ${{ contains(github.ref_name, '-') }}
+
+      - name: Publish Gitee release
+        uses: nicennnnnnnlee/action-gitee-release@master
+        with:
+          gitee_action: create_release
+          gitee_owner: ${{ github.repository_owner }}
+          gitee_repo: ${{ github.event.repository.name }}
+          gitee_token: ${{ secrets.GITEE_TOKEN }}
+          gitee_tag_name: ${{ github.ref_name }}
+          gitee_release_name: ${{ github.ref_name }}
+          gitee_target_commitish: ${{ github.sha }}
+          gitee_upload_retry_times: 3
+          gitee_files: |
+            artifacts/*
