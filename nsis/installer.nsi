@@ -12,7 +12,7 @@
 !include "nsDialogs.nsh"
 
 ; Version
-!define VERSION "4.226.1.1"
+!define VERSION "4.226.1.2"
 
 ; Product Info (English)
 !define PRODUCT_NAME "MapleStory CN"
@@ -28,9 +28,6 @@
 
 ; Installation Directory default (resolved to the actual system drive at runtime)
 !define INSTALL_DIR "C:"
-
-; Required Space: 70,780,930,990 bytes (approximately 65.92 GB)
-!define REQUIRED_SPACE "70780930990"
 
 ; Installer Icon - must be defined before MUI2 settings
 !define MUI_ICON "icon.ico"
