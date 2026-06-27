@@ -179,6 +179,7 @@ jobs:
           gitee_tag_name: ${{ github.ref_name }}
           gitee_release_name: ${{ github.ref_name }}
           gitee_target_commitish: ${{ github.sha }}
+          gitee_release_body: ${{ github.event.release.body }}
           gitee_upload_retry_times: 3
           gitee_files: |
             artifacts/*
