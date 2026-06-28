@@ -1,6 +1,6 @@
 [package]
 name = "cmsdl"
-version = "0.2.1-prerelease2"
+version = "0.2.1-prerelease3"
 edition = "2021"
 description = "A downloader designed for Greater China region mushroom game"
 license = "MIT"

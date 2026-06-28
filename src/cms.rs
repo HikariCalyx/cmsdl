@@ -1003,6 +1003,12 @@ fn write_version_file(target_dir: &Path, version: &str, version_view: &str) -> R
 ///   5. Place shortcuts on the desktop, Start Menu > Programs, and in `target_dir`.
 #[cfg(windows)]
 pub fn create_shortcut(target_dir: &Path, lrhook: bool) -> Result<()> {
+    // Canonicalize early so the icon path in the shortcut is absolute,
+    // which works regardless of where the .lnk is placed.
+    let target_dir = target_dir
+        .canonicalize()
+        .with_context(|| format!("failed to resolve '{}'", target_dir.display()))?;
+
     // Step 1: verify that the client executable exists.
     let maple_exe = target_dir.join("mxd").join("MapleStory.exe");
     if !maple_exe.exists() {
@@ -1014,18 +1020,13 @@ pub fn create_shortcut(target_dir: &Path, lrhook: bool) -> Result<()> {
     }
 
     // Step 1.5: if --lrhook is requested, verify LocaleRemulator files exist.
-    let use_lrhook = lrhook && locale_remulator_available(target_dir);
+    let use_lrhook = lrhook && locale_remulator_available(&target_dir);
     if lrhook && !use_lrhook {
         println!(
             "warning: --lrhook was specified but LocaleRemulator files are missing; \
              shortcut will launch without Locale Remulator."
         );
     }
-
-    // Canonicalize for reliable directory comparisons.
-    let target_dir = target_dir
-        .canonicalize()
-        .with_context(|| format!("failed to resolve '{}'", target_dir.display()))?;
 
     // Step 2: copy cmsdl to target_dir if it is not already there.
     let current_exe = std::env::current_exe().context("failed to determine cmsdl binary path")?;

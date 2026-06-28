@@ -635,7 +635,7 @@ fn launch_with_lr(lr_proc: &Path, exe: &Path) -> Result<()> {
 
     let script = format!(
         "Start-Process -FilePath {lr_str} \
-         -ArgumentList '{guid}',{exe_str},--sqLauncher"
+         -ArgumentList '{guid}',{exe_str},--sqLauncher -Verb RunAs"
     );
 
     let status = Command::new("powershell")
