@@ -148,11 +148,11 @@ Function .onInit
   ; Default operation mode is Install
   StrCpy $InstallMode "1"
 
-  ; Select language based on OS language (Traditional Chinese = 0804).
+  ; Select language based on OS language (Traditional Chinese = 0404).
   ; Set this first so the requirement-check message boxes are localized.
   StrCpy $LANGUAGE ${LANG_ENGLISH}
   ReadRegStr $0 HKLM "SYSTEM\CurrentControlSet\Control\Nls\Language" "Default"
-  StrCmp $0 "0804" 0 +2
+  StrCmp $0 "0404" 0 +2
     StrCpy $LANGUAGE ${LANG_TRADCHINESE}
 
   ; Check if system is x64

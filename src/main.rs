@@ -108,8 +108,9 @@ fn main() -> Result<()> {
             cli.allow_insecure,
             proxy,
             cli.purge_wz_files,
+            cli.lrhook,
         )?,
-        Action::CreateShortcut(path) => downloader::create_shortcut(cli.region, &path)?,
+        Action::CreateShortcut(path) => downloader::create_shortcut(cli.region, &path, cli.lrhook)?,
     }
 
     Ok(())

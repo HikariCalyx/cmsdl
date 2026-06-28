@@ -589,14 +589,80 @@ fn write_installed_version(target_dir: &Path, version: &str, version_view: &str)
 ///
 /// The process is spawned without waiting, so cmsdl can exit while the game
 /// keeps running.
-pub fn launch_client(target_dir: &Path) -> Result<()> {
+///
+/// When `lrhook` is true and all LocaleRemulator files exist under
+/// `<target_dir>/LocaleRemulator/`, the game is launched through `LRProc.exe`
+/// with the pre-configured Locale Remulator profile GUID.
+/// Otherwise a warning is printed and the game launches directly.
+pub fn launch_client(target_dir: &Path, lrhook: bool) -> Result<()> {
     let mxd = target_dir.join("mxd");
     let exe = mxd.join("MapleStory.exe");
     if !exe.exists() {
         bail!("cannot launch: {} not found", exe.display());
     }
-    println!("launching {} --sqLauncher", exe.display());
-    launch_exe(&exe, &mxd)
+
+    if lrhook && crate::cms::locale_remulator_available(target_dir) {
+        let lr_proc = target_dir.join("LocaleRemulator").join("LRProc.exe");
+        println!(
+            "launching \"{}\" --sqLauncher with Locale Remulator",
+            exe.display()
+        );
+        launch_with_lr(&lr_proc, &exe)
+    } else {
+        if lrhook {
+            println!("warning: Locale Remulator doesn't exist. launching game directly.");
+        }
+        println!("launching {} --sqLauncher", exe.display());
+        launch_exe(&exe, &mxd)
+    }
+}
+
+/// Launch the game through Locale Remulator.
+///
+/// Uses the pre-configured profile GUID `55fbcb37-1d64-4344-8dd2-731cd6150f52`.
+#[cfg(windows)]
+fn launch_with_lr(lr_proc: &Path, exe: &Path) -> Result<()> {
+    use std::process::Command;
+
+    // Single-quote a value for PowerShell by doubling embedded single quotes.
+    fn ps_q(s: &str) -> String {
+        format!("'{}'", s.replace('\'', "''"))
+    }
+
+    let guid = "55fbcb37-1d64-4344-8dd2-731cd6150f52";
+    let exe_str = ps_q(&exe.to_string_lossy());
+    let lr_str = ps_q(&lr_proc.to_string_lossy());
+
+    let script = format!(
+        "Start-Process -FilePath {lr_str} \
+         -ArgumentList '{guid}',{exe_str},--sqLauncher"
+    );
+
+    let status = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &script,
+        ])
+        .status()
+        .context("failed to launch the client via Locale Remulator")?;
+
+    if !status.success() {
+        bail!(
+            "could not launch the client with Locale Remulator \
+             (the UAC elevation prompt may have been declined)"
+        );
+    }
+    Ok(())
+}
+
+/// Stub for non-Windows platforms.
+#[cfg(not(windows))]
+fn launch_with_lr(_lr_proc: &Path, _exe: &Path) -> Result<()> {
+    bail!("Locale Remulator is only supported on Windows")
 }
 
 /// Launch `exe --sqLauncher` through the Windows shell.

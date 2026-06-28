@@ -45,6 +45,7 @@ Var RadioUpdate
 Var RadioUpdateCMSDL
 Var RadioMSVC
 Var LinkTroubleshooting
+Var LrHookFlag
 
 ; ============================================================================
 ; MUI2 Settings
@@ -156,6 +157,13 @@ Function .onInit
   ReadRegStr $0 HKLM "SYSTEM\CurrentControlSet\Control\Nls\Language" "Default"
   StrCmp $0 "0804" 0 +2
     StrCpy $LANGUAGE ${LANG_SIMPCHINESE}
+
+  ; Locale Remulator is only useful when the system language is NOT
+  ; Simplified Chinese (legacy locale-based app compat is not needed).
+  ; For Simplified Chinese systems, leave the flag empty.
+  StrCpy $LrHookFlag " --lrhook"
+  StrCmp $0 "0804" 0 +2
+    StrCpy $LrHookFlag ""
 
   ; Check if system is x64
   ${IfNot} ${RunningX64}
@@ -273,6 +281,18 @@ FunctionEnd
 Section "Install"
   SetOutPath "$INSTDIR"
 
+  ; Extract LocaleRemulator files (only for non-Simplified-Chinese systems).
+  ; The flag variable is empty on zh-CN systems, contains " --lrhook" otherwise.
+  StrCmp $LrHookFlag "" skipLR
+    SetOutPath "$INSTDIR\LocaleRemulator"
+    File "LRConfig.xml"
+    File "LRHookx32.dll"
+    File "LRHookx64.dll"
+    File "LRProc.exe"
+    File "LRSubMenus.dll"
+    SetOutPath "$INSTDIR"
+  skipLR:
+
   ; Branch on operation mode
   StrCmp $InstallMode "2" modeUpdate
   StrCmp $InstallMode "3" modeUpdateCMSDL
@@ -339,6 +359,17 @@ Section "Install"
       SetOutPath "$INSTDIR"
       File "..\target\release\cmsdl.exe"
 
+      ; Extract LocaleRemulator files (only for non-Simplified-Chinese systems).
+      StrCmp $LrHookFlag "" updSkipLR
+        SetOutPath "$INSTDIR\LocaleRemulator"
+        File "LRConfig.xml"
+        File "LRHookx32.dll"
+        File "LRHookx64.dll"
+        File "LRProc.exe"
+        File "LRSubMenus.dll"
+        SetOutPath "$INSTDIR"
+      updSkipLR:
+
       ; Registry + uninstaller.
       Call WriteRegInfo
 
@@ -393,7 +424,7 @@ Section "Install"
   ; SHARED: shortcuts
   ; ----------------------------------------------------------------------
   makeShortcuts:
-    ExecWait '"$INSTDIR\cmsdl.exe" cms --create-shortcut "$INSTDIR"' $0
+    ExecWait '"$INSTDIR\cmsdl.exe" cms --create-shortcut "$INSTDIR"$LrHookFlag' $0
     StrCmp $0 "0" sectionDone
       MessageBox MB_ICONSTOP "$(STR_SHORTCUT_FAILED)"
       Abort
@@ -410,7 +441,7 @@ Function .onInstSuccess
   StrCmp $InstallMode "3" done
   StrCmp $InstallMode "4" done
   MessageBox MB_YESNO|MB_ICONQUESTION "$(STR_LAUNCH_PROMPT)" /SD IDYES IDNO done
-  ExecShell "open" "$INSTDIR\cmsdl.exe" "cms --patch latest $\"$INSTDIR$\" --launch-after-patching"
+  ExecShell "open" "$INSTDIR\cmsdl.exe" "cms --patch latest $\"$INSTDIR$\" --launch-after-patching$LrHookFlag"
   done:
 FunctionEnd
 

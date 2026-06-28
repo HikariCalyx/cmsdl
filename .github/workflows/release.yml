@@ -128,6 +128,12 @@ jobs:
           mv cmsdl_x86-64-windows.exe target/release/cmsdl.exe
           cp src/icon.ico nsis/icon.ico
 
+      - name: Download Locale Remulator dependencies
+        run: |
+          curl -L -o lr.zip "https://github.com/InWILL/Locale_Remulator/releases/download/v1.6.0/Locale_Remulator.1.6.0.zip"
+          unzip -j lr.zip "Locale_Remulator.1.6.0/LRHookx32.dll" "Locale_Remulator.1.6.0/LRHookx64.dll" "Locale_Remulator.1.6.0/LRProc.exe" "Locale_Remulator.1.6.0/LRSubMenus.dll" -d nsis/
+          rm lr.zip
+
       - name: Install NSIS
         run: sudo apt-get install -y nsis
 

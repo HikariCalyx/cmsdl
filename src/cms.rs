@@ -1002,7 +1002,7 @@ fn write_version_file(target_dir: &Path, version: &str, version_view: &str) -> R
 ///      with the icon taken from `<target_dir>\mxd\MapleStory.exe`.
 ///   5. Place shortcuts on the desktop, Start Menu > Programs, and in `target_dir`.
 #[cfg(windows)]
-pub fn create_shortcut(target_dir: &Path) -> Result<()> {
+pub fn create_shortcut(target_dir: &Path, lrhook: bool) -> Result<()> {
     // Step 1: verify that the client executable exists.
     let maple_exe = target_dir.join("mxd").join("MapleStory.exe");
     if !maple_exe.exists() {
@@ -1010,6 +1010,15 @@ pub fn create_shortcut(target_dir: &Path) -> Result<()> {
             "MapleStory.exe not found at '{}'; \
              ensure the client is downloaded before creating a shortcut",
             maple_exe.display()
+        );
+    }
+
+    // Step 1.5: if --lrhook is requested, verify LocaleRemulator files exist.
+    let use_lrhook = lrhook && locale_remulator_available(target_dir);
+    if lrhook && !use_lrhook {
+        println!(
+            "warning: --lrhook was specified but LocaleRemulator files are missing; \
+             shortcut will launch without Locale Remulator."
         );
     }
 
@@ -1047,12 +1056,23 @@ pub fn create_shortcut(target_dir: &Path) -> Result<()> {
     if arch != "x86_64" && arch != "aarch64" {
         bail!("--create-shortcut is only supported on Windows x64 and ARM64; current architecture is {arch}");
     }
-    run_create_shortcut_script(&target_dir, &cmsdl_in_target, &maple_exe, &lnk_name)
+    run_create_shortcut_script(&target_dir, &cmsdl_in_target, &maple_exe, &lnk_name, use_lrhook)
+}
+
+/// Return `true` if all required LocaleRemulator files exist under
+/// `<target_dir>/LocaleRemulator/`.
+pub fn locale_remulator_available(target_dir: &Path) -> bool {
+    let lr = target_dir.join("LocaleRemulator");
+    lr.join("LRConfig.xml").is_file()
+        && lr.join("LRHookx32.dll").is_file()
+        && lr.join("LRHookx64.dll").is_file()
+        && lr.join("LRProc.exe").is_file()
+        && lr.join("LRSubMenus.dll").is_file()
 }
 
 /// Stub for non-Windows platforms.
 #[cfg(not(windows))]
-pub fn create_shortcut(_target_dir: &Path) -> Result<()> {
+pub fn create_shortcut(_target_dir: &Path, _lrhook: bool) -> Result<()> {
     bail!("--create-shortcut is only supported on Windows")
 }
 
@@ -1100,6 +1120,7 @@ fn run_create_shortcut_script(
     cmsdl_exe: &Path,
     icon_exe: &Path,
     lnk_name: &str,
+    include_lrhook: bool,
 ) -> Result<()> {
     use std::process::Command;
 
@@ -1118,7 +1139,8 @@ fn run_create_shortcut_script(
     let wd_q = ps_single_quote(&target_dir_s);
 
     // Windows paths cannot contain `"`, so the inner path needs no further escaping.
-    let args = format!("cms --patch latest \"{target_dir_s}\" --launch-after-patching");
+    let lrhook_flag = if include_lrhook { " --lrhook" } else { "" };
+    let args = format!("cms --patch latest \"{target_dir_s}\" --launch-after-patching{lrhook_flag}");
     let args_q = ps_single_quote(&args);
 
     // IconLocation is "<exe path>,<icon index>".

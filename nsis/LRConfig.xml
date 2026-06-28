@@ -1,0 +1,15 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<LRConfig>
+  <Profiles Type="exe">
+    <Profile Name="Run in Simplified Chinese (Admin)" Guid="55fbcb37-1d64-4344-8dd2-731cd6150f52">
+      <Location>zh-CN</Location>
+      <CodePage>936</CodePage>
+      <LCID>2052</LCID>
+      <TimeZone>China Standard Time</TimeZone>
+      <Bias>480</Bias>
+      <RunAsAdmin>true</RunAsAdmin>
+      <HookIME>true</HookIME>
+      <HookLCID>true</HookLCID>
+    </Profile>
+  </Profiles>
+</LRConfig>

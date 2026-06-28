@@ -63,6 +63,19 @@ pub struct Cli {
     #[arg(long)]
     pub purge_wz_files: bool,
 
+    /// Launch the game through Locale Remulator when present.
+    ///
+    /// With `--create-shortcut`: if the LocaleRemulator directory with all
+    /// required files exists under the target directory, the created shortcut
+    /// will include `--lrhook` so subsequent launches also use Locale Remulator.
+    ///
+    /// With `--patch --launch-after-patching`: if the LocaleRemulator directory
+    /// is present, the game is launched through `LRProc.exe` with the pre-
+    /// configured profile GUID; otherwise a warning is printed and the game
+    /// launches directly.
+    #[arg(long)]
+    pub lrhook: bool,
+
     /// Create a launcher shortcut for the CMS client at the given directory.
     /// (Windows only.)
     #[arg(long, value_name = "PATH")]

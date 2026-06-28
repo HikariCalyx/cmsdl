@@ -266,7 +266,9 @@ pub fn patch_list(region: Region, allow_insecure: bool, proxy: Option<&str>) -> 
 /// Apply incremental patches up to `version` (or `latest`) into `target`.
 ///
 /// When `launch_after` is set, the client is launched once patching completes
-/// successfully. Only the CMS region supports patching.
+/// successfully. When `lrhook` is also set, the client is launched through
+/// Locale Remulator if its files are present. Only the CMS region supports
+/// patching.
 pub fn patch_apply(
     region: Region,
     version: &str,
@@ -275,6 +277,7 @@ pub fn patch_apply(
     allow_insecure: bool,
     proxy: Option<&str>,
     purge_wz_files: bool,
+    lrhook: bool,
 ) -> Result<()> {
     match region {
         Region::Cms => {
@@ -289,9 +292,9 @@ pub fn patch_apply(
                     sentinel.display()
                 );
                 download(Region::Cms, target, false, None, allow_insecure, proxy, None, false)?;
-                create_shortcut(Region::Cms, target)?;
+                create_shortcut(Region::Cms, target, lrhook)?;
                 if launch_after {
-                    crate::patch::launch_client(target)?;
+                    crate::patch::launch_client(target, lrhook)?;
                 }
                 return Ok(());
             }
@@ -302,7 +305,7 @@ pub fn patch_apply(
             );
             crate::patch::apply_patches(target, version, allow_insecure, proxy, purge_wz_files)?;
             if launch_after {
-                crate::patch::launch_client(target)?;
+                crate::patch::launch_client(target, lrhook)?;
             }
         }
         Region::Tms => {
@@ -315,10 +318,12 @@ pub fn patch_apply(
 
 /// Create a launcher shortcut for the CMS client at `target_path`.
 ///
-/// Only supported for the CMS region on Windows.
-pub fn create_shortcut(region: Region, target_path: &Path) -> Result<()> {
+/// Only supported for the CMS region on Windows. When `lrhook` is true and
+/// LocaleRemulator files are present, the shortcut will include `--lrhook` so
+/// subsequent patch-and-launch operations also use Locale Remulator.
+pub fn create_shortcut(region: Region, target_path: &Path, lrhook: bool) -> Result<()> {
     match region {
-        Region::Cms => cms::create_shortcut(target_path)?,
+        Region::Cms => cms::create_shortcut(target_path, lrhook)?,
         Region::Tms => bail!("region '{region}' does not support shortcut creation"),
     }
     Ok(())

@@ -12,9 +12,9 @@ For chat records about how it was developed, see chat_records directory.
 ## Will I get banned by operator because of this program?
 No. This program is built with minimum previlege requirements in mind, and it does not require elevation at all. When you launch game with cmsdl, cmsdl will close itself after game is launched. Besides, anti-tampering is implemented in all regions of mushroom games since 2023: The server will refuse you from logging into the game if game data are corrupted or modified.
 
-Gaming hackers are unwelcome.
-
 Feel free to review the source code. If you still have concerns, then don't use it.
+
+Gaming hackers are unwelcome.
 
 ## Usage
 ### CMS
@@ -174,3 +174,4 @@ cargo build --release
 
 ## Credits
 @Deneo , for reverse-enginerring job
+@InWILL for Locale Remulator
