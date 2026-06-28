@@ -1309,6 +1309,10 @@ fn purge_dir_recursive(
                 .unwrap_or(&path)
                 .to_string_lossy()
                 .replace('\\', "/");
+            // Never purge resume sidecar files.
+            if rel.to_ascii_lowercase().ends_with(".cmsdl") {
+                continue;
+            }
             let manifest_key = format!("mxd/Data/{rel}");
             if !expected.contains(&manifest_key) {
                 std::fs::remove_file(&path).with_context(|| {
