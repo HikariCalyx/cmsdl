@@ -173,5 +173,5 @@ cargo build --release
 ```
 
 ## Credits
-@Deneo , for reverse-enginerring job
-@InWILL for Locale Remulator
+- @Deneo , for reverse-enginerring job
+- @InWILL for Locale Remulator
