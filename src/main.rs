@@ -13,7 +13,59 @@ use clap::Parser;
 use cli::{Action, Cli, PatchAction};
 use filter::FileFilter;
 
+/// On Windows, disable QuickEdit mode on the console so that a stray mouse
+/// click does not freeze the process (the default "QuickEdit" behaviour
+/// pauses output and blocks the application as soon as the user selects
+/// any text or clicks inside the console window).
+///
+/// This is a fire-and-forget best-effort call; when the standard handle is
+/// not a console (e.g., a pipe), it simply returns.
+fn disable_quick_edit() {
+    #[cfg(windows)]
+    {
+        // External Windows Console functions we need.
+        extern "system" {
+            fn GetStdHandle(nStdHandle: u32) -> isize;
+            fn GetConsoleMode(hConsoleHandle: isize, lpMode: *mut u32) -> i32;
+            fn SetConsoleMode(hConsoleHandle: isize, dwMode: u32) -> i32;
+        }
+
+        const STD_INPUT_HANDLE: u32 = 0xFFFFFFF6u32; // -10
+        const ENABLE_QUICK_EDIT_MODE: u32 = 0x0040;
+        const ENABLE_EXTENDED_FLAGS: u32 = 0x0080;
+
+        // SAFETY: GetStdHandle with STD_INPUT_HANDLE is always safe to call.
+        let handle = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
+        if handle == -1 {
+            // Not a console (redirected / piped input) — nothing to do.
+            return;
+        }
+
+        let mut mode: u32 = 0;
+        // SAFETY: handle has been validated; lpMode points to a valid u32.
+        if unsafe { GetConsoleMode(handle, &mut mode) } == 0 {
+            // Could not query console mode — bail out silently.
+            return;
+        }
+
+        // Clear QuickEdit mode.  On recent Windows builds we must also
+        // set ENABLE_EXTENDED_FLAGS first so that the mode bits are
+        // interpreted correctly.
+        let new_mode = (mode | ENABLE_EXTENDED_FLAGS) & !ENABLE_QUICK_EDIT_MODE;
+        if new_mode == mode {
+            // Already in the desired state.
+            return;
+        }
+
+        // SAFETY: handle is valid; mode flags are well-known console flags.
+        let _ = unsafe { SetConsoleMode(handle, new_mode) };
+        // Failure is deliberately ignored — this is a cosmetic convenience.
+    }
+}
+
 fn main() -> Result<()> {
+    disable_quick_edit();
+
     let cli = Cli::parse();
 
     if cli.allow_insecure {
