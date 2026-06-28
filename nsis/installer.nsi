@@ -206,15 +206,16 @@ Function ModeSelectPage
   ${NSD_OnClick} $LinkTroubleshooting OpenTroubleshootingLink
 
   ; Locale Remulator opt-out checkbox (only visible on non-zh-CN systems).
-  StrCmp $LrHookFlag "" modeShow
+  StrCmp $LrHookFlag "" restoreSelection
     ${NSD_CreateCheckbox} 10u 118u 95% 12u "$(STR_DO_NOT_INCLUDE_LR)"
     Pop $CheckNoLR
     ; Restore previous checkbox state if going back.
     StrCmp $LrHookFlag " --lrhook" 0 +2
       ${NSD_Uncheck} $CheckNoLR
-    StrCmp $LrHookFlag "" 0 modeShow
-      ${NSD_Check} $CheckNoLR
+      Goto restoreSelection
+    ${NSD_Check} $CheckNoLR
 
+  restoreSelection:
   ; Restore previous selection
   StrCmp $InstallMode "2" selUpdate
   StrCmp $InstallMode "3" selUpdateCMSDL
