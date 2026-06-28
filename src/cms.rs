@@ -780,6 +780,7 @@ pub fn download_client(
 
     // Purge stray files in mxd/Data/ before downloading (full manifest, pre-filter).
     if purge_wz_files {
+        purge_junk_dirs(target_dir)?;
         purge_data_files(target_dir, &entries)?;
     }
 
@@ -1166,6 +1167,63 @@ fn run_create_shortcut_script(
     Ok(())
 }
 
+/// Delete junk directories at the root of `target_dir` that are left behind by
+/// launchers: directories whose name ends with `.$$$`, and directories with
+/// short random-looking 8.3 names (e.g. `vkoa9asd.qwv`). Known legitimate
+/// directories (`mxd`, `Data`, `patchdata`) are never touched.
+pub(crate) fn purge_junk_dirs(target_dir: &Path) -> Result<()> {
+    let protected: &[&str] = &["mxd", "Data", "patchdata"];
+
+    let entries: Vec<_> = match std::fs::read_dir(target_dir) {
+        Ok(iter) => iter.filter_map(|e| e.ok()).collect(),
+        Err(_) => return Ok(()),
+    };
+
+    let mut removed = 0usize;
+    for entry in &entries {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if protected.iter().any(|p| p.eq_ignore_ascii_case(name)) {
+            continue;
+        }
+        let lower = name.to_ascii_lowercase();
+        if lower.ends_with(".$$$") || is_junk_83_dir(&lower) {
+            std::fs::remove_dir_all(&path).with_context(|| {
+                format!("failed to remove junk directory {}", path.display())
+            })?;
+            removed += 1;
+        }
+    }
+
+    if removed > 0 {
+        println!(
+            "removed {removed} director(ies) created by legacy patcher at '{}'.",
+            target_dir.display()
+        );
+    }
+
+    Ok(())
+}
+
+/// Return `true` if `name` looks like a random 8.3 directory name (e.g.
+/// `vkoa9asd.qwv`): exactly 8 alphanumeric chars, a dot, then 3 alphanumeric
+/// chars.
+fn is_junk_83_dir(name: &str) -> bool {
+    if let Some((base, ext)) = name.split_once('.') {
+        base.len() == 8
+            && ext.len() == 3
+            && base.chars().all(|c| c.is_ascii_alphanumeric())
+            && ext.chars().all(|c| c.is_ascii_alphanumeric())
+    } else {
+        false
+    }
+}
+
 /// Delete files under `<target_dir>/mxd/Data/` that are not listed in `entries`.
 ///
 /// `entries` should be the full (unfiltered) list parsed from the client file
@@ -1262,6 +1320,7 @@ pub fn purge_wz_files_after_patch(
     let _header = lines.next().context("client file list is empty")?;
     let entries: Vec<FileEntry> = lines.map(parse_entry).collect::<Result<_>>()?;
 
+    purge_junk_dirs(target_dir)?;
     purge_data_files(target_dir, &entries)
 }
 

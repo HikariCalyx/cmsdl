@@ -422,6 +422,7 @@ pub fn download_client(
 
     // Purge stray files in Data/ before downloading (full manifest, pre-filter).
     if purge_wz_files {
+        crate::cms::purge_junk_dirs(target_dir)?;
         purge_data_files(target_dir, &all_items)?;
     }
 
