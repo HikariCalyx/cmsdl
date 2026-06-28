@@ -176,6 +176,7 @@ jobs:
           prerelease: ${{ contains(github.ref_name, '-') }}
 
       - name: Publish Gitee release
+        if: ${{ !contains(github.ref_name, '-') }} # Only publish to Gitee for non-prerelease tags (no hyphen in tag name).
         uses: nicennnnnnnlee/action-gitee-release@master
         with:
           gitee_action: create_release
