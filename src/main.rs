@@ -2,6 +2,7 @@ mod cli;
 mod cms;
 mod downloader;
 mod filter;
+mod manual;
 mod net;
 mod patch;
 mod resume;
@@ -111,6 +112,15 @@ fn main() -> Result<()> {
             cli.lrhook,
         )?,
         Action::CreateShortcut(path) => downloader::create_shortcut(cli.region, &path, cli.lrhook)?,
+        Action::ManualDownload { url, target_dir, output } => downloader::manual_download(
+            &url,
+            &target_dir,
+            output.as_deref(),
+            cli.dry_run,
+            verbose,
+            cli.allow_insecure,
+            proxy,
+        )?,
     }
 
     Ok(())

@@ -5,6 +5,7 @@ use anyhow::{bail, Context, Result};
 use crate::cli::Region;
 use crate::cms;
 use crate::filter::FileFilter;
+use crate::manual;
 use crate::tms;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -119,6 +120,9 @@ pub fn check(region: Region, filter: Option<&FileFilter>, verbose: bool, json: b
                 );
             }
         }
+        Region::Manual => {
+            bail!("--check is not supported for 'manual'; use --download with a URL instead")
+        }
     }
 
     Ok(())
@@ -202,6 +206,9 @@ pub fn download(
     match region {
         Region::Cms => cms::download_client(path, wz_only, filter, allow_insecure, proxy, build, purge_wz_files)?,
         Region::Tms => tms::download_client(path, wz_only, filter, allow_insecure, proxy, purge_wz_files)?,
+        Region::Manual => {
+            bail!("--download with 'manual' requires a URL; use `cmsdl manual --download <url> <dir>`")
+        }
     }
 
     std::fs::remove_file(&sentinel)
@@ -226,6 +233,9 @@ pub fn get_bit_torrent(
         }
         Region::Cms => {
             bail!("region '{region}' does not publish a BitTorrent file");
+        }
+        Region::Manual => {
+            bail!("--get-bit-torrent is not supported for 'manual'");
         }
     }
 
@@ -257,6 +267,9 @@ pub fn patch_list(region: Region, allow_insecure: bool, proxy: Option<&str>) -> 
         }
         Region::Tms => {
             bail!("region '{region}' does not publish patch metadata");
+        }
+        Region::Manual => {
+            bail!("--patch is not supported for 'manual'");
         }
     }
 
@@ -311,9 +324,25 @@ pub fn patch_apply(
         Region::Tms => {
             bail!("region '{region}' does not support patching");
         }
+        Region::Manual => {
+            bail!("--patch is not supported for 'manual'");
+        }
     }
 
     Ok(())
+}
+
+/// Download a single file from a CMS CDN URL (manual mode).
+pub fn manual_download(
+    url: &str,
+    target_dir: &Path,
+    output: Option<&Path>,
+    dry_run: bool,
+    verbose: bool,
+    allow_insecure: bool,
+    proxy: Option<&str>,
+) -> Result<()> {
+    manual::manual_download(url, target_dir, output, dry_run, verbose, allow_insecure, proxy)
 }
 
 /// Create a launcher shortcut for the CMS client at `target_path`.
@@ -325,6 +354,7 @@ pub fn create_shortcut(region: Region, target_path: &Path, lrhook: bool) -> Resu
     match region {
         Region::Cms => cms::create_shortcut(target_path, lrhook)?,
         Region::Tms => bail!("region '{region}' does not support shortcut creation"),
+        Region::Manual => bail!("--create-shortcut is not supported for 'manual'"),
     }
     Ok(())
 }

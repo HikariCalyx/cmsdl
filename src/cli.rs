@@ -20,8 +20,11 @@ pub struct Cli {
     pub check: bool,
 
     /// Download the client from the region into the given directory.
-    #[arg(long, value_name = "PATH")]
-    pub download: Option<PathBuf>,
+    ///
+    /// With `manual` region this is a URL to download (must be under
+    /// mxdver0.jijiagames.com or mxdcclient.jijiagames.com).
+    #[arg(long, value_name = "PATH|URL")]
+    pub download: Option<String>,
 
     /// Download only the BitTorrent (.torrent) file for the latest version.
     #[arg(long)]
@@ -80,6 +83,13 @@ pub struct Cli {
     /// (Windows only.)
     #[arg(long, value_name = "PATH")]
     pub create_shortcut: Option<PathBuf>,
+
+    /// Only validate and print information; do not download anything.
+    ///
+    /// Only valid with `manual --download`.  Combine with `--verbose` to see
+    /// response headers and the resolved signed URL.
+    #[arg(long)]
+    pub dry_run: bool,
 
     /// Output the result of --check as JSON (suppresses informational messages).
     ///
@@ -149,6 +159,8 @@ pub enum Region {
     Cms,
     /// Taiwan and SARs region, officially known as 新楓之谷 in Chinese.
     Tms,
+    /// Manual single-file download from a signed CMS CDN URL.
+    Manual,
 }
 
 impl std::fmt::Display for Region {
@@ -156,6 +168,7 @@ impl std::fmt::Display for Region {
         let code = match self {
             Region::Cms => "CMS",
             Region::Tms => "TMS",
+            Region::Manual => "manual",
         };
         f.write_str(code)
     }
@@ -175,6 +188,12 @@ pub enum PatchAction {
 pub enum Action {
     Check,
     Download(PathBuf),
+    /// Manual single-file download: URL, target directory, custom output filename.
+    ManualDownload {
+        url: String,
+        target_dir: PathBuf,
+        output: Option<PathBuf>,
+    },
     GetBitTorrent(Option<PathBuf>),
     Patch(PatchAction),
     CreateShortcut(PathBuf),
@@ -193,8 +212,22 @@ impl Cli {
 
         let action = if self.check {
             Action::Check
-        } else if let Some(path) = &self.download {
-            Action::Download(sanitize_path(path))
+        } else if let Some(arg) = &self.download {
+            if self.region == Region::Manual {
+                let target_dir = self.patch_target.clone().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "manual download requires a target directory, e.g. \
+                         `cmsdl manual --download <url> /path/to/target`"
+                    )
+                })?;
+                Action::ManualDownload {
+                    url: arg.clone(),
+                    target_dir: sanitize_path(&target_dir),
+                    output: self.output.as_deref().map(sanitize_path),
+                }
+            } else {
+                Action::Download(sanitize_path(Path::new(arg)))
+            }
         } else if self.get_bit_torrent {
             Action::GetBitTorrent(self.output.as_deref().map(sanitize_path))
         } else if let Some(path) = &self.create_shortcut {

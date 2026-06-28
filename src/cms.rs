@@ -419,10 +419,20 @@ fn parse_client_file_list_with_paths(contents: &str) -> Result<(ClientFileList, 
 /// The path is signed with an MD5 of `<challengeCode><utc8Time><path>`, and the
 /// resulting URL is `<host>/<utc8Time>/<md5><path>`.
 pub(crate) fn build_signed_url(challenge_code: &str, utc8_time: u64, path: &str) -> String {
+    build_signed_url_for_host(DOWNLOAD_HOST, challenge_code, utc8_time, path)
+}
+
+/// Like [`build_signed_url`] but uses a custom `host`
+/// (e.g. `https://mxdcclient.jijiagames.com`).
+pub(crate) fn build_signed_url_for_host(
+    host: &str,
+    challenge_code: &str,
+    utc8_time: u64,
+    path: &str,
+) -> String {
     let signature_input = format!("{challenge_code}{utc8_time}{path}");
     let signature = md5_hex(&signature_input);
-
-    format!("{DOWNLOAD_HOST}/{utc8_time}/{signature}{path}")
+    format!("{host}/{utc8_time}/{signature}{path}")
 }
 
 /// Fetch the client file list for a specific build `number`.
