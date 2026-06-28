@@ -45,6 +45,7 @@ Var RadioUpdate
 Var RadioUpdateCMSDL
 Var RadioMSVC
 Var LinkTroubleshooting
+Var CheckNoLR
 Var LrHookFlag
 
 ; ============================================================================
@@ -91,6 +92,7 @@ LangString STR_MODE_UPDATE_CMSDL ${LANG_ENGLISH} "Update CMSDL"
 LangString STR_MODE_MSVC ${LANG_ENGLISH} "Repair Runtime (VCRUNTIME140.dll missing, etc)"
 LangString STR_LINK_TROUBLESHOOTING ${LANG_ENGLISH} "Troubleshooting (Simplified Chinese only)"
 LangString STR_UPDATE_ABORT ${LANG_ENGLISH} "No existing game installation was found in the selected directory. Update cannot continue."
+LangString STR_DO_NOT_INCLUDE_LR ${LANG_ENGLISH} "Do not include Locale Remulator"
 
 ; ============================================================================
 ; Language Strings - Simplified Chinese
@@ -114,6 +116,7 @@ LangString STR_MODE_UPDATE_CMSDL ${LANG_SIMPCHINESE} "升级 CMSDL"
 LangString STR_MODE_MSVC ${LANG_SIMPCHINESE} "修复运行时（VCRUNTIME140.dll 丢失等错误）"
 LangString STR_LINK_TROUBLESHOOTING ${LANG_SIMPCHINESE} "使用遇到问题了？点击查看帮助"
 LangString STR_UPDATE_ABORT ${LANG_SIMPCHINESE} "在所选目录中未找到现有的游戏安装。无法继续更新。"
+LangString STR_DO_NOT_INCLUDE_LR ${LANG_SIMPCHINESE} "你不应该看到这个选项"
 
 ; ============================================================================
 ; Installer Attributes
@@ -202,6 +205,16 @@ Function ModeSelectPage
   Pop $LinkTroubleshooting
   ${NSD_OnClick} $LinkTroubleshooting OpenTroubleshootingLink
 
+  ; Locale Remulator opt-out checkbox (only visible on non-zh-CN systems).
+  StrCmp $LrHookFlag "" modeShow
+    ${NSD_CreateCheckbox} 10u 118u 95% 12u "$(STR_DO_NOT_INCLUDE_LR)"
+    Pop $CheckNoLR
+    ; Restore previous checkbox state if going back.
+    StrCmp $LrHookFlag " --lrhook" 0 +2
+      ${NSD_Uncheck} $CheckNoLR
+    StrCmp $LrHookFlag "" 0 modeShow
+      ${NSD_Check} $CheckNoLR
+
   ; Restore previous selection
   StrCmp $InstallMode "2" selUpdate
   StrCmp $InstallMode "3" selUpdateCMSDL
@@ -240,6 +253,15 @@ Function ModeSelectPageLeave
   setMSVC:
     StrCpy $InstallMode "4"
   leaveDone:
+    ; If the opt-out checkbox exists and is checked, clear the lrhook flag.
+    StrCmp $LrHookFlag "" doneLR
+      ${NSD_GetState} $CheckNoLR $0
+      ${If} $0 == 1
+        StrCpy $LrHookFlag ""
+      ${Else}
+        StrCpy $LrHookFlag " --lrhook"
+      ${EndIf}
+    doneLR:
 FunctionEnd
 
 Function OpenTroubleshootingLink
@@ -424,7 +446,8 @@ Section "Install"
   ; SHARED: shortcuts
   ; ----------------------------------------------------------------------
   makeShortcuts:
-    ExecWait '"$INSTDIR\cmsdl.exe" cms --create-shortcut "$INSTDIR"$LrHookFlag' $0
+    nsExec::ExecToLog '"$INSTDIR\cmsdl.exe" cms --create-shortcut "$INSTDIR"$LrHookFlag'
+    Pop $0
     StrCmp $0 "0" sectionDone
       MessageBox MB_ICONSTOP "$(STR_SHORTCUT_FAILED)"
       Abort
