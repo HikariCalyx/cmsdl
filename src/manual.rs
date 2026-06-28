@@ -40,6 +40,10 @@ const ALLOWED_HOSTS: &[&str] = &[
     "mxdcclient.jijiagames.com",
 ];
 
+/// Prefix used by the secauth redirector; the real CDN URL is the value of the
+/// `url` query parameter.
+const SECAUTH_PREFIX: &str = "https://secauth.gcdn.sdo.com/?url=";
+
 /// Entry point for `cmsdl manual --download <url> <target_dir> [--output <name>]`.
 ///
 /// 1. Validates the domain.
@@ -57,8 +61,12 @@ pub fn manual_download(
     allow_insecure: bool,
     proxy: Option<&str>,
 ) -> Result<()> {
+    // 0. Unwrap secauth redirector wrapper: the real CDN URL is inside ?url=.
+    let original_url = url.to_owned();
+    let url = unwrap_secauth(url);
+
     // 1. Validate domain — extract host and ensure it's one of the two known CDN hosts.
-    let (scheme_host, raw_path) = split_url(url)?;
+    let (scheme_host, raw_path) = split_url(&url)?;
     let host = scheme_host
         .strip_prefix("https://")
         .or_else(|| scheme_host.strip_prefix("http://"))
@@ -84,7 +92,10 @@ pub fn manual_download(
     let signed_url = cms::build_signed_url_for_host(scheme_host, &challenge, utc8_time, unsigned_path);
 
     if verbose {
-        println!("  original URL:  {url}");
+        println!("  original URL:  {original_url}");
+        if original_url != url {
+            println!("  unwrapped URL: {url}");
+        }
         println!("  unsigned path: {unsigned_path}");
         println!("  signed URL:    {signed_url}");
     }
@@ -156,6 +167,67 @@ pub fn manual_download(
 // ---------------------------------------------------------------------------
 // URL helpers
 // ---------------------------------------------------------------------------
+
+/// If `url` starts with the secauth redirector prefix
+/// (`https://secauth.gcdn.sdo.com/?url=`), return the inner CDN URL (the value
+/// of the `url` query parameter). Otherwise return `url` unchanged.
+///
+/// The inner URL is percent-decoded so `%2F` becomes `/` etc.
+fn unwrap_secauth(url: &str) -> String {
+    if let Some(inner) = url.strip_prefix(SECAUTH_PREFIX) {
+        if !inner.is_empty() {
+            return percent_decode(inner);
+        }
+    }
+    url.to_owned()
+}
+
+/// Percent-decode a string like `%2F` → `/`, `%3A` → `:`, etc.
+fn percent_decode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.bytes();
+    loop {
+        match chars.next() {
+            None => break,
+            Some(b'%') => {
+                let hi = chars.next().and_then(hex_nibble);
+                let lo = chars.next().and_then(hex_nibble);
+                match (hi, lo) {
+                    (Some(h), Some(l)) => out.push((h << 4 | l) as char),
+                    _ => {
+                        out.push('%');
+                        if let Some(h) = hi {
+                            out.push(hex_nibble_to_char(h));
+                        }
+                        if let Some(l) = lo {
+                            out.push(hex_nibble_to_char(l));
+                        }
+                    }
+                }
+            }
+            Some(b) => out.push(b as char),
+        }
+    }
+    out
+}
+
+/// Convert a hex byte (0–15) back to its ASCII character.
+fn hex_nibble_to_char(n: u8) -> char {
+    match n {
+        0..=9 => (b'0' + n) as char,
+        _ => (b'A' + n - 10) as char,
+    }
+}
+
+/// Convert an ASCII byte to its hex value, or `None`.
+fn hex_nibble(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
 
 /// Split `url` into `(scheme://host, /path)`.
 fn split_url(url: &str) -> Result<(&str, &str)> {
@@ -647,5 +719,31 @@ mod tests {
         assert_eq!(effective_segments(15, 10), 1);
         assert_eq!(effective_segments(MIN_SEGMENT_SIZE * 3, 10), 3);
         assert_eq!(effective_segments(MIN_SEGMENT_SIZE * 100, 10), 10);
+    }
+
+    #[test]
+    fn unwraps_secauth_url() {
+        let url = "https://secauth.gcdn.sdo.com/?url=https://mxdver0.jijiagames.com/225/MaplePatch224to225.patch";
+        assert_eq!(unwrap_secauth(url), "https://mxdver0.jijiagames.com/225/MaplePatch224to225.patch");
+    }
+
+    #[test]
+    fn unwraps_secauth_with_percent_encoding() {
+        let url = "https://secauth.gcdn.sdo.com/?url=https%3A%2F%2Fmxdver0.jijiagames.com%2F225%2FMaple.patch";
+        assert_eq!(unwrap_secauth(url), "https://mxdver0.jijiagames.com/225/Maple.patch");
+    }
+
+    #[test]
+    fn passes_non_secauth_url_through() {
+        let url = "https://mxdcclient.jijiagames.com/V000/file.exe";
+        assert_eq!(unwrap_secauth(url), url);
+    }
+
+    #[test]
+    fn percent_decode_handles_basic_cases() {
+        assert_eq!(percent_decode("hello%20world"), "hello world");
+        assert_eq!(percent_decode("%2F%2F"), "//");
+        assert_eq!(percent_decode("no_percents"), "no_percents");
+        assert_eq!(percent_decode(""), "");
     }
 }
