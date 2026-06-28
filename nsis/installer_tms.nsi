@@ -155,6 +155,9 @@ Function .onInit
   StrCmp $0 "0404" 0 +2
     StrCpy $LANGUAGE ${LANG_TRADCHINESE}
 
+  StrCmp $0 "0804" 0 +2
+    StrCpy $LANGUAGE ${LANG_TRADCHINESE}
+
   ; Check if system is x64
   ${IfNot} ${RunningX64}
     MessageBox MB_ICONSTOP "$(STR_UNSUPPORTED_ARCH)"
