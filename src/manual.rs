@@ -16,7 +16,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use crate::cms;
 
 /// Maximum number of segments for a manual download.
-const SEGMENTS: usize = 10;
+const SEGMENTS: usize = 5;
 
 /// Smallest segment size; files smaller than this are downloaded single-threaded.
 const MIN_SEGMENT_SIZE: u64 = 1 << 20; // 1 MiB
@@ -277,13 +277,26 @@ fn download_segmented(
     let ranges: Vec<(u64, u64)>;
     let progress: crate::resume::FileProgress;
 
+    let pb = ProgressBar::new(size);
+    pb.set_style(
+        ProgressStyle::with_template(
+            "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] \
+             {bytes}/{total_bytes} ({binary_bytes_per_sec}, ETA {eta})",
+        )
+        .unwrap()
+        .progress_chars("=>-"),
+    );
+    pb.enable_steady_tick(Duration::from_millis(120));
+
     if let Some(saved) = saved_opt
         .and_then(|s| crate::resume::build_resume_ranges(&s, size).map(|(r, pre)| (s, r, pre)))
     {
-        let (saved_segs, resume_ranges, _pre_completed) = saved;
+        let (saved_segs, resume_ranges, pre_completed) = saved;
         progress = crate::resume::FileProgress::from_saved(dest, &saved_segs, &resume_ranges)
             .with_context(|| format!("failed to write progress file {}", progress_path.display()))?;
         ranges = resume_ranges;
+        // Fast-forward the progress bar past bytes already on disk.
+        pb.inc(pre_completed);
     } else {
         // Fresh download: pre-allocate the destination file.
         {
@@ -297,17 +310,6 @@ fn download_segmented(
             .with_context(|| format!("failed to create progress file {}", progress_path.display()))?;
         ranges = fresh_ranges;
     }
-
-    let pb = ProgressBar::new(size);
-    pb.set_style(
-        ProgressStyle::with_template(
-            "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] \
-             {bytes}/{total_bytes} ({binary_bytes_per_sec}, ETA {eta})",
-        )
-        .unwrap()
-        .progress_chars("=>-"),
-    );
-    pb.enable_steady_tick(Duration::from_millis(120));
 
     let first_err: Mutex<Option<anyhow::Error>> = Mutex::new(None);
 
@@ -383,14 +385,16 @@ fn download_range(
 
     while pos <= end {
         let before = pos;
-        stream_segment(
+        let _ = stream_segment(
             agent,
             &current_url,
             &mut file,
             &mut pos,
             end,
             pb,
-        )?;
+            progress,
+            slot,
+        );
 
         // Record progress at every reconnect boundary.
         progress.update(slot, pos);
@@ -423,6 +427,10 @@ fn download_range(
 
 /// Stream a range request from `*pos` to `end` into `file`, advancing `*pos`
 /// and the progress bar as bytes arrive.
+///
+/// Progress is flushed to `progress` every
+/// [`crate::resume::PROGRESS_FLUSH_INTERVAL`] bytes so an interruption
+/// loses at most one flush interval of work.
 fn stream_segment(
     agent: &ureq::Agent,
     url: &str,
@@ -430,6 +438,8 @@ fn stream_segment(
     pos: &mut u64,
     end: u64,
     pb: &ProgressBar,
+    progress: &crate::resume::FileProgress,
+    slot: usize,
 ) -> Result<()> {
     let resp = agent
         .get(url)
@@ -442,6 +452,7 @@ fn stream_segment(
         .with_context(|| "failed to seek before resuming")?;
 
     let mut buf = [0u8; 64 * 1024];
+    let mut since_flush: u64 = 0;
     loop {
         let n = reader.read(&mut buf).context("failed to read response body")?;
         if n == 0 {
@@ -449,7 +460,12 @@ fn stream_segment(
         }
         file.write_all(&buf[..n]).context("failed to write to disk")?;
         *pos += n as u64;
+        since_flush += n as u64;
         pb.inc(n as u64);
+        if since_flush >= crate::resume::PROGRESS_FLUSH_INTERVAL {
+            progress.update(slot, *pos);
+            since_flush = 0;
+        }
     }
     Ok(())
 }
