@@ -780,7 +780,7 @@ pub fn download_client(
 
     // Purge stray files in mxd/Data/ before downloading (full manifest, pre-filter).
     if purge_wz_files {
-        purge_junk_dirs(target_dir)?;
+        purge_junk_dirs(&target_dir.join("mxd"))?;
         purge_data_files(target_dir, &entries)?;
     }
 
@@ -1320,7 +1320,7 @@ pub fn purge_wz_files_after_patch(
     let _header = lines.next().context("client file list is empty")?;
     let entries: Vec<FileEntry> = lines.map(parse_entry).collect::<Result<_>>()?;
 
-    purge_junk_dirs(target_dir)?;
+    purge_junk_dirs(&target_dir.join("mxd"))?;
     purge_data_files(target_dir, &entries)
 }
 
