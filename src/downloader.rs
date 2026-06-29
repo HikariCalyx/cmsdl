@@ -20,13 +20,63 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// When `json` is set, output is emitted as a single JSON object and all
 /// informational messages are suppressed.  On failure `{}` is printed and the
 /// function returns `Ok(())`.
-pub fn check(region: Region, filter: Option<&FileFilter>, verbose: bool, json: bool, allow_insecure: bool, proxy: Option<&str>, build: Option<u32>) -> Result<()> {
+pub fn check(region: Region, filter: Option<&FileFilter>, verbose: bool, json: bool, allow_insecure: bool, proxy: Option<&str>, build: Option<u32>, build_since: Option<u32>) -> Result<()> {
     if build.is_some() && region != Region::Cms {
         bail!("--build is only supported for region 'cms'");
     }
 
     if !json {
         println!("cmsdl {VERSION}: checking for updates from region '{region}'.");
+    }
+
+    // --build-since: list all builds from the given number to latest.
+    if let Some(since) = build_since {
+        if region != Region::Cms {
+            bail!("--build-since is only supported for region 'cms'");
+        }
+        if !json {
+            println!("scanning builds {since}+...");
+        }
+        let builds = cms::list_builds_since(allow_insecure, proxy, since)?;
+        if builds.is_empty() {
+            if json {
+                println!("[]");
+            } else {
+                println!("no builds found from {since} onward.");
+            }
+            return Ok(());
+        }
+        if json {
+            let list: Vec<serde_json::Value> = builds
+                .iter()
+                .map(|b| {
+                    serde_json::json!({
+                        "build": b.number,
+                        "version": b.version,
+                        "version_view": b.version_view,
+                        "last_modified": b.last_modified.as_deref()
+                            .and_then(http_date_to_unix),
+                    })
+                })
+                .collect();
+            println!("{}", serde_json::to_string(&list).unwrap_or_else(|_| "[]".into()));
+        } else {
+            println!();
+            println!("{:<8}  {:<12}  {:<8}  {}", "BUILD", "VERSION", "VIEW", "LAST-MODIFIED");
+            println!("{:<8}  {:<12}  {:<8}  {}", "-----", "-------", "----", "-------------");
+            for b in &builds {
+                println!(
+                    "{:<8}  {:<12}  {:<8}  {}",
+                    b.number,
+                    b.version,
+                    b.version_view.as_deref().unwrap_or("-"),
+                    b.last_modified.as_deref().unwrap_or("-"),
+                );
+            }
+            println!();
+            println!("{} build(s) from {since} to {}.", builds.len(), builds.last().map(|b| b.number).unwrap_or(since));
+        }
+        return Ok(());
     }
 
     match region {
@@ -380,4 +430,11 @@ fn with_thousands_separator(value: u64) -> String {
     }
 
     out
+}
+
+/// Parse an HTTP-date string (RFC 2822) into a Unix timestamp.
+/// Returns `None` when parsing fails.
+fn http_date_to_unix(s: &str) -> Option<i64> {
+    let dt = chrono::DateTime::parse_from_rfc2822(s).ok()?;
+    Some(dt.timestamp())
 }

@@ -85,7 +85,7 @@ fn main() -> Result<()> {
     let verbose = cli.verbose > 0;
 
     match cli.action()? {
-        Action::Check => downloader::check(cli.region, file_filter.as_ref(), verbose, cli.json, cli.allow_insecure, proxy, cli.build)?,
+        Action::Check => downloader::check(cli.region, file_filter.as_ref(), verbose, cli.json, cli.allow_insecure, proxy, cli.build, cli.build_since)?,
         Action::Download(path) => downloader::download(
             cli.region,
             &path,

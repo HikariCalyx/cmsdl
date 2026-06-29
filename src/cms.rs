@@ -303,6 +303,20 @@ pub(crate) fn strip_download_host(url: &str) -> &str {
 
 /// Summary information parsed from a client file list.
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuildInfo {
+    /// Build number (e.g. `1026`).
+    pub number: u32,
+    /// Client version, taken from the header line (e.g. `0.0.0.16`).
+    pub version: String,
+    /// Display version (e.g. `"V226.2"`) parsed from the server's
+    /// `LocalVersion3.xml`, when available.
+    pub version_view: Option<String>,
+    /// `Last-Modified` header from the file-list response, when available.
+    pub last_modified: Option<String>,
+}
+
+/// Summary information parsed from a client file list.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientFileList {
     /// Build number discovered by exhaustive search (e.g. `1021`).
     pub build_number: u32,
@@ -356,6 +370,59 @@ pub fn get_client_file_list_full(allow_insecure: bool, proxy: Option<&str>, buil
     Ok((info, entries))
 }
 
+/// List all builds from `since` up to the latest, returning each build's
+/// number, version string, and (when available) display version view.
+///
+/// Builds are probed in parallel and results are returned in increasing order.
+pub fn list_builds_since(
+    allow_insecure: bool,
+    proxy: Option<&str>,
+    since: u32,
+) -> Result<Vec<BuildInfo>> {
+    let agent = crate::net::agent(allow_insecure, proxy);
+    let challenge = get_challenge_key(&agent).context("failed to obtain challenge code")?;
+
+    let latest = discover_latest_client_number_with(&agent, &challenge)?;
+    if since > latest {
+        return Ok(Vec::new());
+    }
+
+    let count = latest - since + 1;
+    let results: Mutex<Vec<BuildInfo>> = Mutex::new(Vec::with_capacity(count as usize));
+    let cursor = AtomicU32::new(since);
+
+    std::thread::scope(|scope| {
+        for _ in 0..PARALLEL_PROBES {
+            scope.spawn(|| loop {
+                let num = cursor.fetch_add(1, Ordering::Relaxed);
+                if num > latest {
+                    break;
+                }
+                if let Ok(Some((contents, last_modified))) = fetch_client_file_list_for(&agent, &challenge, num) {
+                    let version = contents
+                        .lines()
+                        .find(|l| !l.trim().is_empty())
+                        .and_then(|h| h.rsplit('|').next().map(|s| s.trim().to_owned()))
+                        .unwrap_or_default();
+                    let version_view = fetch_local_version_xml_view(
+                        &agent, &challenge, &version, &contents,
+                    );
+                    results.lock().unwrap().push(BuildInfo {
+                        number: num,
+                        version,
+                        version_view,
+                        last_modified,
+                    });
+                }
+            });
+        }
+    });
+
+    let mut list = results.into_inner().unwrap();
+    list.sort_by_key(|b| b.number);
+    Ok(list)
+}
+
 /// Resolve a build number and fetch the corresponding file-list contents.
 ///
 /// When `build` is `Some(n)`, the manifest for `n` is fetched directly; an
@@ -369,7 +436,7 @@ fn fetch_build_and_contents(
 ) -> Result<(u32, String)> {
     match build {
         Some(n) => match fetch_client_file_list_for(agent, challenge, n)? {
-            Some(contents) => Ok((n, contents)),
+            Some((contents, _)) => Ok((n, contents)),
             None => bail!("build {n} does not exist or is not available on the server"),
         },
         None => {
@@ -495,7 +562,7 @@ fn fetch_client_file_list_for(
     agent: &ureq::Agent,
     challenge_code: &str,
     number: u32,
-) -> Result<Option<String>> {
+) -> Result<Option<(String, Option<String>)>> {
     const FETCH_FILE_LIST_RETRIES: usize = 10;
 
     for attempt in 0..=FETCH_FILE_LIST_RETRIES {
@@ -504,21 +571,22 @@ fn fetch_client_file_list_for(
 
         let resp = match agent.get(&url).call() {
             Ok(r) => r,
-            // The build is simply not published (yet): not an error, just a stop signal.
             Err(ureq::Error::Status(403, _)) | Err(ureq::Error::Status(404, _)) => {
                 return Ok(None);
             }
             Err(_) if attempt < FETCH_FILE_LIST_RETRIES => continue,
-            // All retries exhausted: treat as an invalid version rather than a hard error.
             Err(_) => return Ok(None),
         };
 
+        let last_modified = resp.header("Last-Modified").map(|s| s.to_owned());
         let mut reader = resp.into_reader();
         let mut buf = Vec::new();
         match reader.read_to_end(&mut buf) {
-            Ok(_) => return Ok(Some(String::from_utf8_lossy(&buf).into_owned())),
+            Ok(_) => {
+                let body = String::from_utf8_lossy(&buf).into_owned();
+                return Ok(Some((body, last_modified)));
+            }
             Err(_) if attempt < FETCH_FILE_LIST_RETRIES => continue,
-            // All retries exhausted: treat as an invalid version rather than a hard error.
             Err(_) => return Ok(None),
         }
     }

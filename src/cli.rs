@@ -134,6 +134,11 @@ pub struct Cli {
     #[arg(long, value_name = "NUMBER")]
     pub build: Option<u32>,
 
+    /// With `--patch list`, show only patches whose major version is at least
+    /// this number (e.g. `--build-since=225` shows V225.x and later).
+    #[arg(long, value_name = "NUMBER")]
+    pub build_since: Option<u32>,
+
     /// Skip TLS certificate verification for all downloads (INSECURE).
     ///
     /// Use only when a download fails because the server's certificate cannot
