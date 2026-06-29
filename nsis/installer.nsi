@@ -10,6 +10,7 @@
 !include "WinVer.nsh"
 !include "LogicLib.nsh"
 !include "nsDialogs.nsh"
+!include "FileFunc.nsh"
 
 ; Version
 !define VERSION "4.226.1.3"
@@ -47,6 +48,7 @@ Var RadioMSVC
 Var LinkTroubleshooting
 Var CheckNoLR
 Var LrHookFlag
+Var BuildFlag
 
 ; ============================================================================
 ; MUI2 Settings
@@ -179,6 +181,20 @@ Function .onInit
     MessageBox MB_ICONSTOP "$(STR_UNSUPPORTED_OS)"
     Quit
   ${EndIf}
+
+  ; If the current date is on or before July 28, 2026, add --build 1020 to
+  ; the download command (required for a specific game build rollout).
+  ${GetTime} "" "L" $0 $1 $2 $3 $4 $5 $6
+  ; $2 = year (4 digits), $1 = month, $0 = day of month
+  StrCpy $BuildFlag ""
+  IntCmp $2 2026 yearEq beforeCutoff afterCutoff
+  yearEq:
+    IntCmp $1 7 monthEq beforeCutoff afterCutoff
+  monthEq:
+    IntCmp $0 28 beforeCutoff beforeCutoff afterCutoff
+  beforeCutoff:
+    StrCpy $BuildFlag "--build 1020"
+  afterCutoff:
 FunctionEnd
 
 ; ============================================================================
@@ -371,12 +387,13 @@ Section "Install"
 
     mxdReady:
       ; Ensure cmsdl.ver exists under mxd with a baseline version.
-      IfFileExists "$INSTDIR\mxd\cmsdl.ver" verReady writeVer
-      writeVer:
-        FileOpen $R0 "$INSTDIR\mxd\cmsdl.ver" w
-        FileWrite $R0 "0.0.0.14"
-        FileClose $R0
-      verReady:
+      ; Not required anymore since v0.2.2
+      ; IfFileExists "$INSTDIR\mxd\cmsdl.ver" verReady writeVer
+      ; writeVer:
+      ;   FileOpen $R0 "$INSTDIR\mxd\cmsdl.ver" w
+      ;   FileWrite $R0 "0.0.0.14"
+      ;   FileClose $R0
+      ; verReady:
 
       ; Extract cmsdl.exe to the install directory.
       SetOutPath "$INSTDIR"
@@ -417,7 +434,7 @@ Section "Install"
     ; Execute download command. ExecWait gives cmsdl.exe a real console
     ; window where its indicatif progress bars can render.
     DetailPrint "$(STR_DOWNLOADING)"
-    ExecWait '"$INSTDIR\cmsdl.exe" cms --download "$INSTDIR" --purge-wz-files' $0
+    ExecWait '"$INSTDIR\cmsdl.exe" cms --download "$INSTDIR" --purge-wz-files $BuildFlag' $0
     StrCmp $0 "0" makeShortcuts
       MessageBox MB_ICONSTOP "$(STR_DOWNLOAD_FAILED)"
       Abort
