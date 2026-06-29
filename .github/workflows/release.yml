@@ -109,6 +109,47 @@ jobs:
           path: cmsdl_darwin
           if-no-files-found: error
 
+  # Android aarch64 cross-compile (best-effort, not a release blocker).
+  android:
+    name: cmsdl_aarch64-android
+    runs-on: ubuntu-22.04
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Install Android NDK
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r27c
+          add-to-path: false
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: aarch64-linux-android
+
+      - name: Build
+        env:
+          CC_aarch64_linux_android: ${{ env.ANDROID_NDK_HOME }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang
+          CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER: ${{ env.ANDROID_NDK_HOME }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang
+        run: cargo build --release --target aarch64-linux-android
+
+      - name: Stage binary
+        shell: bash
+        run: cp target/aarch64-linux-android/release/cmsdl cmsdl_aarch64-android
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cmsdl_aarch64-android
+          path: cmsdl_aarch64-android
+          if-no-files-found: ignore
+
   # Build the Windows NSIS installer from the x86-64 binary.
   nsis-installer:
     name: cmsdl_nsis_installer
