@@ -64,7 +64,7 @@ const CLIENT_FILE_LIST_PATH_SUFFIX: &str = "/client_all_files_list.dat";
 
 /// Build number to start the exhaustive search from when neither a persisted
 /// value nor the launcher's initial number is available.
-const DEFAULT_CLIENT_NUMBER: u32 = 961;
+const DEFAULT_CLIENT_NUMBER: u32 = 881;
 
 /// Unsigned launcher file list whose header records the current build number.
 /// Used to seed the exhaustive search the first time, before any value has been
