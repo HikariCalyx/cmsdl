@@ -133,9 +133,9 @@ jobs:
           key: aarch64-linux-android
 
       - name: Build
-        env:
-          CC_aarch64_linux_android: aarch64-linux-android21-clang
-        run: cargo build --release --target aarch64-linux-android
+        run: |
+          export CC_aarch64_linux_android="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang"
+          cargo build --release --target aarch64-linux-android
 
       - name: Stage binary
         shell: bash
