@@ -3,6 +3,7 @@ mod cms;
 mod downloader;
 mod filter;
 mod manual;
+mod miniwzlib;
 mod net;
 mod patch;
 mod resume;
