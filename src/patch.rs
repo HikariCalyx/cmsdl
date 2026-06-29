@@ -25,6 +25,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use md5::{Digest, Md5};
 
 use crate::cms;
+use crate::miniwzlib;
 
 /// Name of the XML manifest stored at the root of the first zip.
 const MANIFEST_NAME: &str = "patch_delta_direct.dat";
@@ -718,6 +719,68 @@ fn launch_exe(exe: &Path, working_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Try to detect the installed version from `<target>/mxd/Data/Base/Base.wz`.
+///
+/// Returns `Some((package_index, to_version))` if a matching patch package is
+/// found in `packages`, so the patcher can resume from that point.  The
+/// version files (`cmsdl.ver` / `LocalVersion3.xml`) are written immediately.
+fn try_detect_version_from_wz(
+    target_dir: &Path,
+    packages: &[cms::PatchPackage],
+) -> Option<(usize, String)> {
+    let wz_path = target_dir.join("mxd").join("Data").join("Base").join("Base.wz");
+    if !wz_path.exists() {
+        return None;
+    }
+    let wz = miniwzlib::get_wz_version(&wz_path).ok()?;
+    if wz.version == 0 {
+        return None;
+    }
+
+    // Match WZ version against the numeric part of each package's version_view
+    // (e.g.  "V225.1" → 225).
+    for (i, pkg) in packages.iter().enumerate() {
+        if version_view_matches(&pkg.version_view, wz.version) {
+            let _ = write_installed_version(target_dir, &pkg.to, &pkg.version_view);
+            return Some((i, pkg.to.clone()));
+        }
+    }
+    None
+}
+
+/// Extract the leading integer from a version-view string like `"V225.1"`,
+/// together with the position immediately after the digits.
+fn parse_version_view_number(s: &str) -> Option<(i16, usize)> {
+    let start = s.find(|c: char| c.is_ascii_digit())?;
+    let end = s[start..]
+        .find(|c: char| !c.is_ascii_digit())
+        .map_or(s.len(), |off| start + off);
+    let digits = &s[start..end];
+    if digits.is_empty() {
+        return None;
+    }
+    let num: i16 = digits.parse().ok()?;
+    Some((num, end))
+}
+
+/// Check whether `version_view` corresponds to the given WZ version.
+///
+/// Accepts `V225.1` and `V225`; rejects internal/test builds like `V225_2G`.
+fn version_view_matches(version_view: &str, wz_version: i16) -> bool {
+    if let Some((num, end)) = parse_version_view_number(version_view) {
+        if num != wz_version {
+            return false;
+        }
+        // Only match if the next character is '.', end-of-string, or we're
+        // at the end of the numeric prefix — reject underscore ('_') suffixes
+        // used by internal/test builds (e.g. V225_2G).
+        let suffix = &version_view[end..];
+        suffix.is_empty() || suffix.starts_with('.')
+    } else {
+        false
+    }
+}
+
 /// Apply incremental patches to bring the client under `target_dir` up to
 /// `max_version` (a version like `0.0.0.15`, or `latest` for the newest).
 ///
@@ -773,7 +836,23 @@ pub fn apply_patches(
             .iter()
             .position(|p| p.from == v)
             .unwrap_or(0),
-        None => 0,
+        None => {
+            // Neither cmsdl.ver nor LocalVersion3.xml provide a version —
+            // try to detect it from Base.wz.
+            if let Some((idx, detected_ver)) =
+                try_detect_version_from_wz(target_dir, &data.packages)
+            {
+                if detected_ver == final_version {
+                    println!("detected {detected_ver} from Base.wz; already at the target version.");
+                    return Ok(());
+                }
+                // The client is already at the `to` version of this package,
+                // so the next patch to apply is the following one.
+                idx + 1
+            } else {
+                0
+            }
+        }
     };
     if start_idx > final_idx {
         bail!(
@@ -1535,5 +1614,110 @@ mod tests {
         let p = rel_join(Path::new("/base"), "mxd\\Data/Base\\Base.wz");
         let expected: PathBuf = ["/base", "mxd", "Data", "Base", "Base.wz"].iter().collect();
         assert_eq!(p, expected);
+    }
+
+    #[test]
+    fn parse_version_view_number_basic() {
+        assert_eq!(parse_version_view_number("V225.1"), Some((225, 4)));
+        assert_eq!(parse_version_view_number("v442"), Some((442, 4)));
+        assert_eq!(parse_version_view_number("225"), Some((225, 3)));
+        assert_eq!(parse_version_view_number("V0.2"), Some((0, 2)));
+    }
+
+    #[test]
+    fn parse_version_view_number_empty() {
+        assert_eq!(parse_version_view_number(""), None);
+        assert_eq!(parse_version_view_number("V"), None);
+        assert_eq!(parse_version_view_number("abc"), None);
+    }
+
+    #[test]
+    fn version_view_matches_detection() {
+        assert!(version_view_matches("V225.1", 225));
+        assert!(version_view_matches("v442", 442));
+        assert!(version_view_matches("225", 225));
+        // Internal/test builds with underscore suffix should NOT match.
+        assert!(!version_view_matches("V225_2G", 225));
+        assert!(!version_view_matches("V225.1", 226));
+        assert!(!version_view_matches("V225.1", 0));
+    }
+
+    #[test]
+    fn detect_version_from_sample_wz() {
+        // The sample Base.wz (version 225) is in target/Base.wz —
+        // copy it into a fake mxd tree and verify detection.
+        let tmp = std::env::temp_dir().join("cmsdl_test_wz_detect");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let mxd_data_base = tmp.join("mxd").join("Data").join("Base");
+        std::fs::create_dir_all(&mxd_data_base).unwrap();
+        std::fs::copy("target/Base.wz", mxd_data_base.join("Base.wz")).unwrap();
+
+        let packages = vec![
+            cms::PatchPackage {
+                from: "0.0.0.1".into(),
+                to: "0.0.0.2".into(),
+                version_view: "V224.1".into(),
+                file_list_url: String::new(),
+            },
+            cms::PatchPackage {
+                from: "0.0.0.3".into(),
+                to: "0.0.0.4".into(),
+                version_view: "V225.1".into(),
+                file_list_url: String::new(),
+            },
+            cms::PatchPackage {
+                from: "0.0.0.5".into(),
+                to: "0.0.0.6".into(),
+                version_view: "V226.1".into(),
+                file_list_url: String::new(),
+            },
+        ];
+
+        let result = try_detect_version_from_wz(&tmp, &packages);
+        assert!(result.is_some());
+        let (idx, ver) = result.unwrap();
+        assert_eq!(idx, 1, "should match V225.1 (second package)");
+        assert_eq!(ver, "0.0.0.4");
+
+        // Verify the marker files were written.
+        assert!(tmp.join("mxd").join("cmsdl.ver").exists());
+        assert!(tmp.join("mxd").join("LocalVersion3.xml").exists());
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn detect_version_no_match() {
+        let tmp = std::env::temp_dir().join("cmsdl_test_wz_nomatch");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let mxd_data_base = tmp.join("mxd").join("Data").join("Base");
+        std::fs::create_dir_all(&mxd_data_base).unwrap();
+        std::fs::copy("target/Base.wz", mxd_data_base.join("Base.wz")).unwrap();
+
+        // No package with version_view matching 225.
+        let packages = vec![
+            cms::PatchPackage {
+                from: "0.0.0.1".into(),
+                to: "0.0.0.2".into(),
+                version_view: "V999.1".into(),
+                file_list_url: String::new(),
+            },
+        ];
+
+        assert!(try_detect_version_from_wz(&tmp, &packages).is_none());
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn detect_version_no_wz_file() {
+        let tmp = std::env::temp_dir().join("cmsdl_test_wz_nofile");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("mxd")).unwrap();
+
+        let packages = vec![];
+        assert!(try_detect_version_from_wz(&tmp, &packages).is_none());
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
