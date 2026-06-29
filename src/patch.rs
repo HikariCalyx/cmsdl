@@ -30,9 +30,6 @@ use crate::miniwzlib;
 /// Name of the XML manifest stored at the root of the first zip.
 const MANIFEST_NAME: &str = "patch_delta_direct.dat";
 
-/// Name of the version marker written under `<target>/mxd`.
-const VERSION_FILE_NAME: &str = "cmsdl.ver";
-
 /// Number of files patched concurrently within a single zip part.
 const PARALLEL_FILES: usize = 10;
 
@@ -543,17 +540,8 @@ struct PatchFileList {
     file_list: Vec<PatchZip>,
 }
 
-/// Read the installed version recorded at `<target>/mxd/cmsdl.ver`, if any.
-/// Falls back to parsing `LocalVersion3.xml` when `cmsdl.ver` is absent or empty.
+/// Read the installed version from `<target>/mxd/LocalVersion3.xml`, if any.
 fn read_installed_version(target_dir: &Path) -> Option<String> {
-    let path = target_dir.join("mxd").join(VERSION_FILE_NAME);
-    if let Ok(v) = std::fs::read_to_string(&path) {
-        let v = v.trim().to_owned();
-        if !v.is_empty() {
-            return Some(v);
-        }
-    }
-    // Fall back to LocalVersion3.xml when cmsdl.ver is absent or empty.
     read_version_from_local_xml(target_dir)
 }
 
@@ -569,15 +557,12 @@ fn read_version_from_local_xml(target_dir: &Path) -> Option<String> {
     if v.is_empty() { None } else { Some(v) }
 }
 
-/// Write the installed `version` and `version_view` to `<target>/mxd/cmsdl.ver`
-/// and `<target>/mxd/LocalVersion3.xml`.
+/// Write the installed `version` and `version_view` to
+/// `<target>/mxd/LocalVersion3.xml`.
 fn write_installed_version(target_dir: &Path, version: &str, version_view: &str) -> Result<()> {
     let mxd = target_dir.join("mxd");
     std::fs::create_dir_all(&mxd)
         .with_context(|| format!("failed to create {}", mxd.display()))?;
-    let path = mxd.join(VERSION_FILE_NAME);
-    std::fs::write(&path, version)
-        .with_context(|| format!("failed to write {}", path.display()))?;
     let xml_path = mxd.join("LocalVersion3.xml");
     let xml = format!(
         r#"<?xmlversion="1.0"encoding="utf-8"?><Root><zone5_8848_v3>{{"product_name":"zone5_8848_v3","version":{{"v":"{version}","view":"{version_view}"}}}}</zone5_8848_v3></Root>"#
@@ -722,8 +707,8 @@ fn launch_exe(exe: &Path, working_dir: &Path) -> Result<()> {
 /// Try to detect the installed version from `<target>/mxd/Data/Base/Base.wz`.
 ///
 /// Returns `Some((package_index, to_version))` if a matching patch package is
-/// found in `packages`, so the patcher can resume from that point.  The
-/// version files (`cmsdl.ver` / `LocalVersion3.xml`) are written immediately.
+/// found in `packages`, so the patcher can resume from that point.
+/// `LocalVersion3.xml` is written immediately.
 fn try_detect_version_from_wz(
     target_dir: &Path,
     packages: &[cms::PatchPackage],
@@ -784,8 +769,9 @@ fn version_view_matches(version_view: &str, wz_version: i16) -> bool {
 /// Apply incremental patches to bring the client under `target_dir` up to
 /// `max_version` (a version like `0.0.0.15`, or `latest` for the newest).
 ///
-/// The starting point is taken from `<target>/mxd/cmsdl.ver` when present and
-/// known; otherwise every patch up to the target version is applied in order.
+/// The starting point is taken from `<target>/mxd/LocalVersion3.xml` when
+/// present and known; otherwise every patch up to the target version is
+/// applied in order.
 pub fn apply_patches(
     target_dir: &Path,
     max_version: &str,
@@ -837,7 +823,7 @@ pub fn apply_patches(
             .position(|p| p.from == v)
             .unwrap_or(0),
         None => {
-            // Neither cmsdl.ver nor LocalVersion3.xml provide a version —
+            // LocalVersion3.xml does not provide a version —
             // try to detect it from Base.wz.
             if let Some((idx, detected_ver)) =
                 try_detect_version_from_wz(target_dir, &data.packages)
@@ -1679,8 +1665,7 @@ mod tests {
         assert_eq!(idx, 1, "should match V225.1 (second package)");
         assert_eq!(ver, "0.0.0.4");
 
-        // Verify the marker files were written.
-        assert!(tmp.join("mxd").join("cmsdl.ver").exists());
+        // Verify the marker file was written.
         assert!(tmp.join("mxd").join("LocalVersion3.xml").exists());
 
         let _ = std::fs::remove_dir_all(&tmp);
