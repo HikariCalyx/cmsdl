@@ -308,6 +308,9 @@ pub struct ClientFileList {
     pub build_number: u32,
     /// Client version, taken from the last field of the header line (e.g. `0.0.0.15`).
     pub version: String,
+    /// Display version (e.g. `"V226.1"`) parsed from the server's
+    /// `LocalVersion3.xml`, when that file is included in the build manifest.
+    pub local_version_view: Option<String>,
     /// Sum of the size field across all file entries, in bytes.
     pub total_size: u64,
     /// Number of file entries (non-empty lines, excluding the header line).
@@ -338,6 +341,12 @@ pub fn get_client_file_list_full(allow_insecure: bool, proxy: Option<&str>, buil
 
     let (mut info, entries) = parse_client_file_list_with_paths(&contents)?;
     info.build_number = number;
+
+    // If LocalVersion3.xml is part of this build's manifest, try fetching and
+    // parsing it to obtain the display version view (e.g. "V226.1").
+    info.local_version_view =
+        try_fetch_local_version_xml_view(&agent, &challenge_code, &info.version, &contents, &entries);
+
     Ok((info, entries))
 }
 
@@ -407,6 +416,7 @@ fn parse_client_file_list_with_paths(contents: &str) -> Result<(ClientFileList, 
         ClientFileList {
             build_number: 0,
             version,
+            local_version_view: None,
             total_size,
             file_count,
         },
@@ -420,6 +430,48 @@ fn parse_client_file_list_with_paths(contents: &str) -> Result<(ClientFileList, 
 /// resulting URL is `<host>/<utc8Time>/<md5><path>`.
 pub(crate) fn build_signed_url(challenge_code: &str, utc8_time: u64, path: &str) -> String {
     build_signed_url_for_host(DOWNLOAD_HOST, challenge_code, utc8_time, path)
+}
+
+/// Try fetching `LocalVersion3.xml` for the current build and parse its
+/// `view` field (e.g. `"V226.1"`).  Returns `None` when the file is not
+/// listed in `entries`, the download fails, or the XML is malformed.
+fn try_fetch_local_version_xml_view(
+    agent: &ureq::Agent,
+    challenge_code: &str,
+    version: &str,
+    contents: &str,
+    entries: &[(String, u64)],
+) -> Option<String> {
+    // Only attempt the fetch when mxd/LocalVersion3.xml is present.
+    if !entries
+        .iter()
+        .any(|(p, _)| p.eq_ignore_ascii_case("mxd/LocalVersion3.xml"))
+    {
+        return None;
+    }
+
+    // Re-parse the header to obtain the domain and base path.
+    let header = contents.lines().find(|l| !l.trim().is_empty())?;
+    let (domain, base_path) = parse_header_location(header).ok()?;
+
+    let raw_path = "mxd\\LocalVersion3.xml";
+    let obf_name = obfuscated_file_name(version, raw_path);
+    let path = format!("{base_path}/mxd/{obf_name}");
+    let utc8_time = get_current_utc8_time();
+    let url = build_signed_url_for_host(&domain, challenge_code, utc8_time, &path);
+
+    let body = http_get_text(agent, &url).ok()?;
+    parse_local_version_xml_view(&body)
+}
+
+/// Extract the `view` field from a `LocalVersion3.xml` body.
+fn parse_local_version_xml_view(xml: &str) -> Option<String> {
+    let tag = "<zone5_8848_v3>";
+    let start = xml.find(tag)? + tag.len();
+    let end = xml.find("</zone5_8848_v3>")?;
+    let json: serde_json::Value = serde_json::from_str(&xml[start..end]).ok()?;
+    let view = json.get("version")?.get("view")?.as_str()?.to_owned();
+    if view.is_empty() { None } else { Some(view) }
 }
 
 /// Like [`build_signed_url`] but uses a custom `host`

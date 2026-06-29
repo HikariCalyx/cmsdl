@@ -38,6 +38,7 @@ pub fn check(region: Region, filter: Option<&FileFilter>, verbose: bool, json: b
                             "region": "cms",
                             "build": info.build_number,
                             "version": info.version,
+                            "version_view": info.local_version_view,
                             "files": info.file_count,
                             "total_size": info.total_size,
                         });
@@ -53,6 +54,9 @@ pub fn check(region: Region, filter: Option<&FileFilter>, verbose: bool, json: b
                 let (show_count, show_size) = filtered_totals(&entries, filter, info.file_count, info.total_size);
                 println!("  build:      {}", info.build_number);
                 println!("  version:    {}", info.version);
+                if let Some(ref view) = info.local_version_view {
+                    println!("  view:       {view}");
+                }
                 println!("  files:      {show_count}");
                 println!(
                     "  total size: {:.2} GB ({} bytes)",
@@ -70,6 +74,9 @@ pub fn check(region: Region, filter: Option<&FileFilter>, verbose: bool, json: b
                 let info = cms::get_client_file_list_info(allow_insecure, proxy, build)?;
                 println!("  build:      {}", info.build_number);
                 println!("  version:    {}", info.version);
+                if let Some(ref view) = info.local_version_view {
+                    println!("  view:       {view}");
+                }
                 println!("  files:      {}", info.file_count);
                 println!(
                     "  total size: {:.2} GB ({} bytes)",
