@@ -344,8 +344,14 @@ pub fn get_client_file_list_full(allow_insecure: bool, proxy: Option<&str>, buil
 
     // If LocalVersion3.xml is part of this build's manifest, try fetching and
     // parsing it to obtain the display version view (e.g. "V226.1").
-    info.local_version_view =
-        try_fetch_local_version_xml_view(&agent, &challenge_code, &info.version, &contents, &entries);
+    info.local_version_view = if entries
+        .iter()
+        .any(|(p, _)| p.eq_ignore_ascii_case("mxd/LocalVersion3.xml"))
+    {
+        fetch_local_version_xml_view(&agent, &challenge_code, &info.version, &contents)
+    } else {
+        None
+    };
 
     Ok((info, entries))
 }
@@ -433,23 +439,14 @@ pub(crate) fn build_signed_url(challenge_code: &str, utc8_time: u64, path: &str)
 }
 
 /// Try fetching `LocalVersion3.xml` for the current build and parse its
-/// `view` field (e.g. `"V226.1"`).  Returns `None` when the file is not
-/// listed in `entries`, the download fails, or the XML is malformed.
-fn try_fetch_local_version_xml_view(
+/// `view` field (e.g. `"V226.1"`).  Returns `None` when the download fails
+/// or the XML is malformed.
+fn fetch_local_version_xml_view(
     agent: &ureq::Agent,
     challenge_code: &str,
     version: &str,
     contents: &str,
-    entries: &[(String, u64)],
 ) -> Option<String> {
-    // Only attempt the fetch when mxd/LocalVersion3.xml is present.
-    if !entries
-        .iter()
-        .any(|(p, _)| p.eq_ignore_ascii_case("mxd/LocalVersion3.xml"))
-    {
-        return None;
-    }
-
     // Re-parse the header to obtain the domain and base path.
     let header = contents.lines().find(|l| !l.trim().is_empty())?;
     let (domain, base_path) = parse_header_location(header).ok()?;
@@ -830,15 +827,30 @@ pub fn download_client(
         .to_owned();
     let (domain, base_path) = parse_header_location(header)?;
 
-    println!("latest version: {version} (build {number}); starting download.");
-
-    // Step 3: parse every remaining entry.
+    // Step 3: parse every remaining entry (before printing, so we can check
+    // for LocalVersion3.xml to display the version view).
     // TODO: temporary cap for testing; uncomment to limit the number of files.
     // const MAX_FILES_FOR_TESTING: usize = 100;
     let entries: Vec<FileEntry> = lines
         // .take(MAX_FILES_FOR_TESTING)
         .map(parse_entry)
         .collect::<Result<_>>()?;
+
+    // Try to obtain the display version view (e.g. "V226.2") for the banner
+    // and for later use when writing LocalVersion3.xml.
+    let version_view = if entries.iter().any(|e| {
+        e.file_location == "mxd/" && e.file_name.eq_ignore_ascii_case("LocalVersion3.xml")
+    }) {
+        fetch_local_version_xml_view(&agent, &challenge, &version, &contents).unwrap_or_default()
+    } else {
+        fetch_version_view_for(&agent, &version).unwrap_or_default()
+    };
+    let view_display = if version_view.is_empty() {
+        format!("(build {number})")
+    } else {
+        format!("({version_view}, build {number})")
+    };
+    println!("latest version: {version} {view_display}; starting download.");
 
     // Purge stray files in mxd/Data/ before downloading (full manifest, pre-filter).
     if purge_wz_files {
@@ -997,10 +1009,6 @@ pub fn download_client(
         }
         bail!("{} file(s) failed to download", failures.len());
     }
-
-    // Look up the version view (e.g. "V226.1") from the patch metadata so
-    // LocalVersion3.xml can be written with the correct display version.
-    let version_view = fetch_version_view_for(&agent, &version).unwrap_or_default();
 
     // If LocalVersion3.xml is already part of the downloaded file list, skip
     // writing our own copy to avoid overwriting the server-provided one.
