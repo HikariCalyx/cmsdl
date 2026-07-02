@@ -127,6 +127,12 @@ cd cmsdl
 cargo build --release
 ```
 
+5. Optional: You can compress the binary with [UPX](https://github.com/upx/upx/releases) for much smaller size.
+```
+cd target\release
+upx cmsdl.exe
+```
+
 ### Linux
 1. We assume you're using Debian-based distro, like Ubuntu. Please install necessary build tools:
 ```bash
