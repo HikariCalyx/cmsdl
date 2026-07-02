@@ -139,13 +139,15 @@ jobs:
 
       - name: Build installer
         working-directory: nsis
-        run: makensis installer.nsi
+        run: |
+          makensis installer.nsi
+          makensis installer_tms.nsi
 
       - name: Add tag suffix to installer filename
         if: startsWith(github.ref, 'refs/tags/')
         working-directory: nsis
         run: |
-          for f in MapleStoryCN-*-installer.exe; do
+          for f in MapleStory*-installer.exe; do
             mv "$f" "${f%.exe}_${{ github.ref_name }}.exe"
           done
 
@@ -153,7 +155,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: cmsdl_nsis_installer
-          path: nsis/MapleStoryCN-*-installer*.exe
+          path: nsis/MapleStory*-installer*.exe
           if-no-files-found: error
 
   # Attach all binaries to a GitHub Release when a tag is pushed.
@@ -174,6 +176,10 @@ jobs:
         with:
           files: artifacts/*
           prerelease: ${{ contains(github.ref_name, '-') }}
+
+      - name: Exclude MapleStoryTW installer from Gitee release
+        if: ${{ !contains(github.ref_name, '-') }}
+        run: rm -f artifacts/MapleStoryTW*
 
       - name: Publish Gitee release
         if: ${{ !contains(github.ref_name, '-') }} # Only publish to Gitee for non-prerelease tags (no hyphen in tag name).
