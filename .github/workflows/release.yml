@@ -69,7 +69,7 @@ jobs:
         if: matrix.target == 'x86_64-pc-windows-msvc' || matrix.target == 'i686-pc-windows-msvc'
         uses: crazy-max/ghaction-upx@v4
         with:
-          version: 5.2.0
+          version: v5.2.0
           files: ${{ matrix.artifact }}
 
       - name: Upload artifact
