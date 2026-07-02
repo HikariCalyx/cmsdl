@@ -283,7 +283,7 @@ Section "Install"
   ; ----------------------------------------------------------------------
   modeUpdateCMSDL:
     ; Only replace cmsdl.exe. Do not update registry or write an uninstaller.
-    File "cmsdl.exe"
+    File "..\target\release\cmsdl.exe"
     Goto sectionDone
 
   ; ----------------------------------------------------------------------
