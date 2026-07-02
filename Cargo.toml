@@ -34,3 +34,10 @@ hdiffpatch-rs = { git = "https://github.com/TwintailTeam/hdiffpatch-rs.git", rev
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"
+
+[profile.release]
+opt-level = 'z'     # Optimize for size
+lto = true          # Enable Link Time Optimization
+codegen-units = 1   # Reduce number of codegen units to allow more optimizations
+panic = 'abort'     # Remove stack unwinding logic
+strip = true        # Automatically strip symbols from the binary
