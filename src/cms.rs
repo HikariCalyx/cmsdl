@@ -1842,6 +1842,11 @@ fn supports_ranges(url: &str, agent: &ureq::Agent) -> bool {
 /// `client_all_files_list.dat` is fetched, and each requested path is matched
 /// by its `raw_path` and downloaded via its obfuscated, signed URL.
 ///
+/// Downloads run with up to [`PARALLEL_FILES`] files in flight concurrently,
+/// each file fetched in up to [`SEGMENTS_PER_FILE`] parallel byte-range
+/// segments with per-segment stall detection and re-signed resume, mirroring
+/// the regular client download.
+///
 /// Returns the list of requested paths that could not be found or downloaded.
 pub(crate) fn replace_files_from_latest(
     target_dir: &Path,
@@ -1882,29 +1887,114 @@ pub(crate) fn replace_files_from_latest(
         by_path.insert(entry.raw_path.replace('/', "\\"), entry);
     }
 
-    let pb = ProgressBar::hidden();
-    let total = ProgressBar::hidden();
-    let mut failed = Vec::new();
-
+    // Resolve each requested path to its index entry. Paths missing from the
+    // latest index are recorded as failures up front and never dispatched.
+    let mut work: Vec<(&str, &FileEntry)> = Vec::new();
+    let mut failed: Vec<String> = Vec::new();
     for rel in rel_paths {
         let key = rel.replace('/', "\\");
-        let Some(entry) = by_path.get(&key) else {
-            failed.push(rel.clone());
-            continue;
-        };
-        let local_path = target_dir.join(&entry.file_location).join(&entry.file_name);
-        let url = SignedUrl::new(&challenge, &version, &domain, &base_path, entry);
-        println!("  repairing {rel} from build {number} ({version})...");
-        match download_file(&url, &local_path, entry.file_size, SEGMENTS_PER_FILE, &pb, &total, &agent)
-        {
-            Ok(()) => {}
-            Err(e) => {
-                eprintln!("    failed: {e:#}");
-                failed.push(rel.clone());
-            }
+        match by_path.get(&key) {
+            Some(entry) => work.push((rel.as_str(), entry)),
+            None => failed.push(rel.clone()),
         }
     }
 
+    if work.is_empty() {
+        return Ok(failed);
+    }
+
+    let workers = PARALLEL_FILES.min(work.len()).max(1);
+    println!(
+        "repairing {} file(s) from build {number} ({version}) \
+         using {workers} threads x up to {SEGMENTS_PER_FILE} segments each...",
+        work.len()
+    );
+
+    // Live progress: one overall bar plus one reusable bar per worker, matching
+    // the regular client download. Each file is fetched with up to
+    // [`SEGMENTS_PER_FILE`] parallel byte-range segments, and every segment
+    // resumes itself from its saved offset on a stall (see `download_file`).
+    let total_bytes: u64 = work.iter().map(|(_, e)| e.file_size).sum();
+    let mp = MultiProgress::new();
+    let total_pb = mp.add(ProgressBar::new(total_bytes));
+    total_pb.set_style(
+        ProgressStyle::with_template(
+            "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] \
+             {bytes}/{total_bytes} ({binary_bytes_per_sec}, ETA {eta})",
+        )
+        .unwrap()
+        .progress_chars("=>-"),
+    );
+    total_pb.enable_steady_tick(Duration::from_millis(120));
+
+    let worker_bars: Vec<ProgressBar> = (0..workers)
+        .map(|_| {
+            let pb = mp.add(ProgressBar::new(0));
+            pb.set_style(
+                ProgressStyle::with_template(
+                    "  [{bar:25.green/white}] {bytes:>10}/{total_bytes:>10} \
+                     ({binary_bytes_per_sec:>11}) {wide_msg}",
+                )
+                .unwrap()
+                .progress_chars("=>-"),
+            );
+            pb.enable_steady_tick(Duration::from_millis(120));
+            pb
+        })
+        .collect();
+
+    let counter = AtomicUsize::new(0);
+    let failures: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+    std::thread::scope(|scope| {
+        // Shared borrows for all workers (references are Copy).
+        let work = &work;
+        let counter = &counter;
+        let failures = &failures;
+        let total_pb = &total_pb;
+        let agent = &agent;
+        let challenge = challenge.as_str();
+        let version = version.as_str();
+        let domain = domain.as_str();
+        let base_path = base_path.as_str();
+
+        for bar in worker_bars.iter().cloned() {
+            scope.spawn(move || {
+                loop {
+                    let idx = counter.fetch_add(1, Ordering::Relaxed);
+                    if idx >= work.len() {
+                        break;
+                    }
+                    let (rel, entry) = work[idx];
+                    let local_path =
+                        target_dir.join(&entry.file_location).join(&entry.file_name);
+                    let url = SignedUrl::new(challenge, version, domain, base_path, entry);
+
+                    bar.set_length(entry.file_size);
+                    bar.set_position(0);
+                    bar.set_message(rel.to_owned());
+
+                    if let Err(e) = download_file(
+                        &url,
+                        &local_path,
+                        entry.file_size,
+                        SEGMENTS_PER_FILE,
+                        &bar,
+                        total_pb,
+                        agent,
+                    ) {
+                        eprintln!("    failed to repair {rel}: {e:#}");
+                        failures.lock().unwrap().push(rel.to_owned());
+                    }
+                }
+                bar.finish_and_clear();
+            });
+        }
+    });
+
+    total_pb.finish_and_clear();
+
+    failed.extend(failures.into_inner().unwrap());
     Ok(failed)
 }
 
