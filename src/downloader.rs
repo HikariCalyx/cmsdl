@@ -348,6 +348,7 @@ pub fn patch_apply(
     proxy: Option<&str>,
     purge_wz_files: bool,
     lrhook: bool,
+    no_gui: bool,
 ) -> Result<()> {
     match region {
         Region::Cms => {
@@ -367,6 +368,16 @@ pub fn patch_apply(
                     crate::patch::launch_client(target, lrhook)?;
                 }
                 return Ok(());
+            }
+
+            // Use the graphical patcher on Windows unless suppressed. The GUI
+            // validates the client directory up front and shows no window on
+            // an invalid path (it returns an error -> non-zero exit code).
+            let use_gui = cfg!(windows) && !no_gui;
+            if use_gui {
+                return crate::gui_patch::run_gui_patch(
+                    target, version, launch_after, allow_insecure, proxy, purge_wz_files, lrhook,
+                );
             }
 
             println!(

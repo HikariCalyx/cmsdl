@@ -10,7 +10,7 @@
 use anyhow::{anyhow, bail, Context, Result};
 use base64::Engine;
 use chrono::{FixedOffset, Utc};
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use md5::{Digest, Md5};
 use rsa::pkcs8::DecodePublicKey;
 use rsa::traits::PublicKeyParts;
@@ -20,6 +20,8 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
+
+use crate::plog;
 
 /// Number of files downloaded concurrently.
 const PARALLEL_FILES: usize = 10;
@@ -1416,12 +1418,12 @@ fn purge_data_files(target_dir: &Path, entries: &[FileEntry]) -> Result<()> {
     purge_dir_recursive(&data_dir, &expected, &data_dir, &mut deleted)?;
 
     if deleted > 0 {
-        println!(
+        plog!(
             "purged {deleted} stray file(s) from '{}'.",
             data_dir.display()
         );
     } else {
-        println!("no stray files in '{}'.", data_dir.display());
+        plog!("no stray files in '{}'.", data_dir.display());
     }
 
     Ok(())
@@ -1482,7 +1484,8 @@ pub fn purge_wz_files_after_patch(
 ) -> Result<()> {
     let agent = crate::net::agent(allow_insecure, proxy);
     let challenge = get_challenge_key(&agent).context("failed to obtain challenge code")?;
-    println!("purging stray WZ files not in the latest manifest...");
+    crate::progress::purging();
+    plog!("purging stray WZ files not in the latest manifest...");
     let number =
         discover_latest_client_number_with(&agent, &challenge).context("failed to discover latest build")?;
     let utc8_time = get_current_utc8_time();
@@ -1860,7 +1863,7 @@ pub(crate) fn replace_files_from_latest(
         .build();
 
     let challenge = get_challenge_key(&agent).context("failed to obtain challenge code")?;
-    println!("scanning for the latest build version...");
+    plog!("scanning for the latest build version...");
     let number = discover_latest_client_number_with(&agent, &challenge)?;
 
     let list_time = get_current_utc8_time();
@@ -1904,11 +1907,13 @@ pub(crate) fn replace_files_from_latest(
     }
 
     let workers = PARALLEL_FILES.min(work.len()).max(1);
-    println!(
+    plog!(
         "repairing {} file(s) from build {number} ({version}) \
          using {workers} threads x up to {SEGMENTS_PER_FILE} segments each...",
         work.len()
     );
+    let total_bytes_all: u64 = work.iter().map(|(_, e)| e.file_size).sum();
+    crate::progress::begin_repair(work.len(), total_bytes_all);
 
     // Live progress: one overall bar plus one reusable bar per worker, matching
     // the regular client download. Each file is fetched with up to
@@ -1916,6 +1921,9 @@ pub(crate) fn replace_files_from_latest(
     // resumes itself from its saved offset on a stall (see `download_file`).
     let total_bytes: u64 = work.iter().map(|(_, e)| e.file_size).sum();
     let mp = MultiProgress::new();
+    if crate::progress::active() {
+        mp.set_draw_target(ProgressDrawTarget::hidden());
+    }
     let total_pb = mp.add(ProgressBar::new(total_bytes));
     total_pb.set_style(
         ProgressStyle::with_template(
@@ -1944,12 +1952,15 @@ pub(crate) fn replace_files_from_latest(
         .collect();
 
     let counter = AtomicUsize::new(0);
+    let completed = AtomicUsize::new(0);
     let failures: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    let work_len = work.len();
 
     std::thread::scope(|scope| {
         // Shared borrows for all workers (references are Copy).
         let work = &work;
         let counter = &counter;
+        let completed = &completed;
         let failures = &failures;
         let total_pb = &total_pb;
         let agent = &agent;
@@ -1983,9 +1994,13 @@ pub(crate) fn replace_files_from_latest(
                         total_pb,
                         agent,
                     ) {
-                        eprintln!("    failed to repair {rel}: {e:#}");
+                        plog!("    failed to repair {rel}: {e:#}");
                         failures.lock().unwrap().push(rel.to_owned());
                     }
+                    let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
+                    crate::progress::repair_progress(
+                        done, work_len, rel, total_pb.position(),
+                    );
                 }
                 bar.finish_and_clear();
             });

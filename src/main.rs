@@ -2,10 +2,14 @@ mod cli;
 mod cms;
 mod downloader;
 mod filter;
+mod gui;
+mod gui_patch;
+mod locale;
 mod manual;
 mod miniwzlib;
 mod net;
 mod patch;
+mod progress;
 mod resume;
 mod tms;
 
@@ -66,6 +70,13 @@ fn disable_quick_edit() {
 }
 
 fn main() -> Result<()> {
+    // Handle `cmsdl gui_test` before clap parsing so it doesn't conflict with
+    // the required `region` positional argument or the action arg-group.
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(|s| s.as_str()) == Some("gui_test") {
+        return gui::run_gui_test();
+    }
+
     disable_quick_edit();
 
     let cli = Cli::parse();
@@ -111,6 +122,7 @@ fn main() -> Result<()> {
             proxy,
             cli.purge_wz_files,
             cli.lrhook,
+            cli.no_gui,
         )?,
         Action::CreateShortcut(path) => downloader::create_shortcut(cli.region, &path, cli.lrhook)?,
         Action::ManualDownload { url, target_dir, output } => downloader::manual_download(

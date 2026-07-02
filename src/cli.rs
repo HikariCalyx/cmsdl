@@ -51,6 +51,13 @@ pub struct Cli {
     #[arg(long)]
     pub launch_after_patching: bool,
 
+    /// Do not show the graphical patcher window; use console output only.
+    ///
+    /// Only affects `cms --patch <version> <dir>` on Windows. On other
+    /// platforms the GUI is never shown regardless of this flag.
+    #[arg(long = "no_gui", visible_alias = "no-gui")]
+    pub no_gui: bool,
+
     /// Only download WZ files
     #[arg(long)]
     pub download_wz_only: bool,

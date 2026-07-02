@@ -26,6 +26,7 @@ use md5::{Digest, Md5};
 
 use crate::cms;
 use crate::miniwzlib;
+use crate::plog;
 
 /// Name of the XML manifest stored at the root of the first zip.
 const MANIFEST_NAME: &str = "patch_delta_direct.dat";
@@ -265,9 +266,14 @@ pub(crate) fn apply_zip(
         items
     };
 
-    let pb = ProgressBar::new(items.len() as u64);
+    let pb = if crate::progress::active() {
+        ProgressBar::hidden()
+    } else {
+        ProgressBar::new(items.len() as u64)
+    };
     pb.set_style(ProgressStyle::with_template("    [{pos}/{len}] {wide_msg}").unwrap());
     pb.enable_steady_tick(Duration::from_millis(120));
+    crate::progress::begin_apply(items.len());
 
     let next = AtomicUsize::new(0);
     let patched = AtomicUsize::new(0);
@@ -299,10 +305,10 @@ pub(crate) fn apply_zip(
                         break;
                     }
                     let item = &items[idx];
-                    match &item.kind {
-                        Kind::Delta(src) => pb.set_message(format!("patching {src}")),
-                        Kind::New(tgt) => pb.set_message(format!("adding {tgt}")),
-                    }
+                    let rel = match &item.kind {
+                        Kind::Delta(src) => { pb.set_message(format!("patching {src}")); src.clone() }
+                        Kind::New(tgt) => { pb.set_message(format!("adding {tgt}")); tgt.clone() }
+                    };
 
                     let result = (|| -> Result<Outcome> {
                         let mut entry = archive.by_index(item.index)?;
@@ -328,6 +334,7 @@ pub(crate) fn apply_zip(
                         }
                     })();
                     pb.inc(1);
+                    crate::progress::apply_progress(pb.position() as usize, items.len(), &rel);
 
                     match result {
                         Ok(Outcome::Patched) => {
@@ -766,6 +773,15 @@ fn version_view_matches(version_view: &str, wz_version: i16) -> bool {
     }
 }
 
+/// Result of [`apply_patches`]: whether any patch was actually applied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PatchOutcome {
+    /// One or more patches were applied (or repair ran).
+    Updated,
+    /// The client was already at the requested version; nothing to do.
+    AlreadyUpToDate,
+}
+
 /// Apply incremental patches to bring the client under `target_dir` up to
 /// `max_version` (a version like `0.0.0.15`, or `latest` for the newest).
 ///
@@ -778,7 +794,7 @@ pub fn apply_patches(
     allow_insecure: bool,
     proxy: Option<&str>,
     purge_wz_files: bool,
-) -> Result<()> {
+) -> Result<PatchOutcome> {
     // 1. The client must already be present.
     if !target_dir.join("mxd").is_dir() {
         bail!(
@@ -788,6 +804,7 @@ pub fn apply_patches(
     }
 
     // 2. Fetch the patch metadata and resolve the version chain.
+    crate::progress::scanning();
     let data = cms::get_patch_data(allow_insecure, proxy)?;
     if data.packages.is_empty() {
         bail!("no patches are published");
@@ -813,8 +830,8 @@ pub fn apply_patches(
     // 3. Determine where to start.
     let installed = read_installed_version(target_dir);
     if installed.as_deref() == Some(final_version.as_str()) {
-        println!("already at version {final_version}; nothing to do.");
-        return Ok(());
+        plog!("already at version {final_version}; nothing to do.");
+        return Ok(PatchOutcome::AlreadyUpToDate);
     }
     let start_idx = match installed.as_deref() {
         Some(v) => data
@@ -829,8 +846,8 @@ pub fn apply_patches(
                 try_detect_version_from_wz(target_dir, &data.packages)
             {
                 if detected_ver == final_version {
-                    println!("detected {detected_ver} from Base.wz; already at the target version.");
-                    return Ok(());
+                    plog!("detected {detected_ver} from Base.wz; already at the target version.");
+                    return Ok(PatchOutcome::AlreadyUpToDate);
                 }
                 // The client is already at the `to` version of this package,
                 // so the next patch to apply is the following one.
@@ -847,10 +864,14 @@ pub fn apply_patches(
     }
 
     let selected = &data.packages[start_idx..=final_idx];
-    println!(
+    let current_version = selected.first().unwrap().from.clone();
+    // An update was found: report the installation range (opens the log file
+    // in GUI mode).
+    crate::progress::installing(&current_version, &final_version);
+    plog!(
         "applying {} patch(es): {} -> {}",
         selected.len(),
-        selected.first().unwrap().from,
+        current_version,
         final_version
     );
 
@@ -869,9 +890,9 @@ pub fn apply_patches(
         apply_one_patch(&agent, &challenge, &ver2_base, pkg, target_dir, &mut corrupted)?;
         if corrupted.is_empty() {
             write_installed_version(target_dir, &pkg.to, &pkg.version_view)?;
-            println!("  patched to {} ({})", pkg.to, pkg.version_view);
+            plog!("  patched to {} ({})", pkg.to, pkg.version_view);
         } else {
-            println!(
+            plog!(
                 "  patch to {} ({}) completed with {} corrupted file(s); \
                  version marker left at the previous version",
                 pkg.to,
@@ -887,19 +908,19 @@ pub fn apply_patches(
 
     // 6. Report, and optionally repair corrupted files from the latest index.
     if last_corrupted.is_empty() {
-        println!("patching successful: now at version {final_version}.");
-        return Ok(());
+        plog!("patching successful: now at version {final_version}.");
+        return Ok(PatchOutcome::Updated);
     }
 
     last_corrupted.sort();
     last_corrupted.dedup();
-    println!("\n{} file(s) could not be patched:", last_corrupted.len());
+    plog!("\n{} file(s) could not be patched:", last_corrupted.len());
     for f in &last_corrupted {
-        println!("  {f}");
+        plog!("  {f}");
     }
 
     if max_version.eq_ignore_ascii_case("latest") {
-        println!("\nrepairing corrupted files from the latest full index...");
+        plog!("\nrepairing corrupted files from the latest full index...");
         let still_failed =
             cms::replace_files_from_latest(target_dir, &last_corrupted, allow_insecure, proxy)?;
         if still_failed.is_empty() {
@@ -908,11 +929,11 @@ pub fn apply_patches(
                 .map(|p| p.version_view.as_str())
                 .unwrap_or("");
             write_installed_version(target_dir, &final_version, final_view)?;
-            println!("all corrupted files were repaired; now at version {final_version}.");
+            plog!("all corrupted files were repaired; now at version {final_version}.");
         } else {
-            println!("{} file(s) still could not be repaired:", still_failed.len());
+            plog!("{} file(s) still could not be repaired:", still_failed.len());
             for f in &still_failed {
-                println!("  {f}");
+                plog!("  {f}");
             }
             bail!("patching completed with {} unrepaired file(s)", still_failed.len());
         }
@@ -926,11 +947,11 @@ pub fn apply_patches(
 
     // Purge stray files under mxd/Data/ that are not in the latest manifest.
     if purge_wz_files && max_version.eq_ignore_ascii_case("latest") {
-        println!();
+        plog!("");
         cms::purge_wz_files_after_patch(target_dir, allow_insecure, proxy)?;
     }
 
-    Ok(())
+    Ok(PatchOutcome::Updated)
 }
 
 /// Download, then apply, every zip part of a single patch.
@@ -957,7 +978,7 @@ fn apply_one_patch(
     target_dir: &Path,
     corrupted: &mut Vec<String>,
 ) -> Result<()> {
-    println!("\npatch {} -> {} ({})", pkg.from, pkg.to, pkg.version_view);
+    plog!("\npatch {} -> {} ({})", pkg.from, pkg.to, pkg.version_view);
 
     // Fetch this patch's FileList.dat (signed).
     let filelist_path = format!("{ver2_base}{}", pkg.file_list_url);
@@ -985,7 +1006,7 @@ fn apply_one_patch(
             .with_context(|| format!("failed to read saved manifest {}", saved_manifest_path.display()))?;
         manifest = Some(parse_manifest(&xml)
             .context("failed to parse saved patch manifest")?);
-        println!("  resuming: {}/{} zip(s) already applied.",
+        plog!("  resuming: {}/{} zip(s) already applied.",
             completed_zips.len(), filelist.file_list.len());
     } else {
         completed_zips = std::collections::HashSet::new();
@@ -998,7 +1019,7 @@ fn apply_one_patch(
 
         // Skip zip parts that were fully applied in a previous run.
         if completed_zips.contains(&zip_name) {
-            println!("  [{}/{}] skipping {zip_name} (already applied).", i + 1, total);
+            plog!("  [{}/{}] skipping {zip_name} (already applied).", i + 1, total);
             continue;
         }
 
@@ -1006,12 +1027,13 @@ fn apply_one_patch(
         let zip_path = patchdata.join(&zip_name);
         let sign_path = format!("{zip_base}{}", zip.url);
 
-        println!(
+        plog!(
             "  [{}/{}] downloading {zip_name} ({:.2} MiB)...",
             i + 1,
             total,
             size as f64 / (1024.0 * 1024.0)
         );
+        crate::progress::begin_download(i + 1, total, size);
         download_signed_to_file(agent, challenge, &sign_path, &zip_path, size, &zip.md5)
             .with_context(|| format!("failed to download {zip_name}"))?;
 
@@ -1034,7 +1056,7 @@ fn apply_one_patch(
             .ok_or_else(|| anyhow!("patch manifest missing from the first zip"))?;
 
         let stats = apply_zip(&zip_path, m, target_dir, &patchdata, corrupted)?;
-        println!(
+        plog!(
             "    applied: {} patched, {} added, {} skipped, {} corrupted",
             stats.patched, stats.added, stats.skipped, stats.corrupted
         );
@@ -1145,8 +1167,9 @@ fn download_signed_to_file(
             if meta.len() == size && !expected_md5.is_empty() {
                 if let Ok(got) = md5_file_upper(dest) {
                     if got.eq_ignore_ascii_case(expected_md5) {
-                        println!("  {} already present and verified (skipping download).", 
+                        plog!("  {} already present and verified (skipping download).",
                             dest.file_name().unwrap_or_default().to_string_lossy());
+                        crate::progress::download_progress(size);
                         return Ok(());
                     }
                 }
@@ -1154,7 +1177,11 @@ fn download_signed_to_file(
         }
     }
 
-    let pb = ProgressBar::new(size);
+    let pb = if crate::progress::active() {
+        ProgressBar::hidden()
+    } else {
+        ProgressBar::new(size)
+    };
     pb.set_style(
         ProgressStyle::with_template(
             "    [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({binary_bytes_per_sec}, ETA {eta})",
@@ -1186,6 +1213,7 @@ fn download_signed_to_file(
         {
             let (saved_segs, resume_ranges, pre_completed) = saved;
             pb.inc(pre_completed);
+            crate::progress::download_progress(pb.position());
             progress = crate::resume::FileProgress::from_saved(dest, &saved_segs, &resume_ranges)
                 .with_context(|| {
                     format!("failed to write progress file {}", progress_path.display())
@@ -1415,6 +1443,7 @@ fn stream_range(
         file.write_all(&buf[..n]).context("failed to write to disk")?;
         *pos += n as u64;
         pb.set_position(*pos);
+        crate::progress::download_progress(pb.position());
     }
     Ok(())
 }
@@ -1461,6 +1490,7 @@ fn stream_bounded(
         *pos += take as u64;
         since_flush += take as u64;
         pb.inc(take as u64);
+        crate::progress::download_progress(pb.position());
         if since_flush >= crate::resume::PROGRESS_FLUSH_INTERVAL {
             progress.update(slot, *pos);
             since_flush = 0;
