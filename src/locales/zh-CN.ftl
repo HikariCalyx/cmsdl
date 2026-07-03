@@ -1,8 +1,9 @@
 gui-patcher-scanning-update = 正在检查客户端更新。
 gui-patcher-installing-update-from = 正在从 %s 更新至 %s
 gui-patcher-downloading-update = 正在下载第 %s 个更新包，共 %s 个 (%s)
+gui-patcher-extracting-package = 正在解压第 %s 个更新包，共 %s 个
 gui-patcher-applying-update = [%s/%s] 正在更新 %s
-gui-patcher-repairing-file = 正在修复第 %s 个文件，共 %s 个：%s (%s)
+gui-patcher-repairing-file = [%s/%s] 正在修复 %s (%s)
 gui-patcher-purge = 正在清理多余的文件
 gui-patcher-patch-successful = 更新完成
 gui-patcher-patch-successful-launch = 更新完成，即将启动游戏

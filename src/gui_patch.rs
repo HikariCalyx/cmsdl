@@ -168,6 +168,16 @@ impl Reporter for GuiReporter {
         }
     }
 
+    fn extracting(&self, index: usize, count: usize) {
+        // Shown between download and apply; for a package that is a single huge
+        // file the subsequent patch step reports no per-file progress until it
+        // completes, so this label reassures the user work is ongoing.
+        self.set_label1(tr(
+            "gui-patcher-extracting-package",
+            &[&index.to_string(), &count.to_string()],
+        ));
+    }
+
     fn begin_apply(&self, _total: usize) {
         // Requirement 6: reset the progress bar to 0 for the apply phase.
         self.set_progress(0.0);

@@ -1,8 +1,9 @@
 gui-patcher-scanning-update = Scanning client update...
 gui-patcher-installing-update-from = Installing update from %s to %s
 gui-patcher-downloading-update = Downloading update pack %s of %s (%s)
+gui-patcher-extracting-package = Extracting update package %s of %s
 gui-patcher-applying-update = [%s/%s] Updating %s
-gui-patcher-repairing-file = Repairing file %s of %s: %s (%s)
+gui-patcher-repairing-file = [%s/%s] Repairing %s (%s)
 gui-patcher-purge = Cleaning up stray files
 gui-patcher-patch-successful = Update complete
 gui-patcher-patch-successful-launch = Update complete, launching game

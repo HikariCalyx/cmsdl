@@ -1102,6 +1102,11 @@ fn apply_one_patch(
             .as_ref()
             .ok_or_else(|| anyhow!("patch manifest missing from the first zip"))?;
 
+        // Signal the extract/apply phase before the (potentially long) work of
+        // patching this zip's files begins.
+        crate::progress::extracting(global_offset + i + 1, global_total);
+        plog!("  [{}/{}] extracting {zip_name}...", i + 1, total);
+
         let stats = apply_zip(&zip_path, m, target_dir, &patchdata, corrupted)?;
         plog!(
             "    applied: {} patched, {} added, {} skipped, {} corrupted",

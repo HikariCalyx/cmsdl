@@ -22,6 +22,8 @@ pub trait Reporter: Send + Sync {
     fn begin_download(&self, index: usize, count: usize, total: u64);
     /// Report cumulative bytes downloaded for the current package.
     fn download_progress(&self, downloaded: u64);
+    /// A package finished downloading and is now being extracted/applied.
+    fn extracting(&self, index: usize, count: usize);
     /// Begin applying a package's files (resets the bar; `total` files).
     fn begin_apply(&self, total: usize);
     /// Report apply progress: `done` of `total` files, current `rel_path`.
@@ -71,6 +73,7 @@ pub fn begin_download(index: usize, count: usize, total: u64) {
     with(|r| r.begin_download(index, count, total));
 }
 pub fn download_progress(downloaded: u64) { with(|r| r.download_progress(downloaded)); }
+pub fn extracting(index: usize, count: usize) { with(|r| r.extracting(index, count)); }
 pub fn begin_apply(total: usize) { with(|r| r.begin_apply(total)); }
 pub fn apply_progress(done: usize, total: usize, rel_path: &str) {
     with(|r| r.apply_progress(done, total, rel_path));
