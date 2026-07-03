@@ -899,13 +899,33 @@ pub fn apply_patches(
     let challenge = cms::get_challenge_key(&agent).context("failed to obtain challenge code")?;
     let ver2_base = cms::strip_download_host(&data.base_url).to_owned();
 
+    // Pre-fetch each patch's FileList.dat to learn how many zip parts each one
+    // has, so the GUI can present a single continuous "part X of <grand total>"
+    // counter across all patches instead of restarting at 1 for each patch.
+    // These files are tiny JSON; the per-patch download re-fetches its own.
+    let mut zip_counts: Vec<usize> = Vec::with_capacity(selected.len());
+    for pkg in selected {
+        let path = format!("{ver2_base}{}", pkg.file_list_url);
+        let json = download_signed_text(&agent, &challenge, &path)
+            .context("failed to download patch FileList.dat")?;
+        let fl: PatchFileList =
+            serde_json::from_str(&json).context("failed to parse patch FileList.dat")?;
+        zip_counts.push(fl.file_list.len());
+    }
+    let global_total: usize = zip_counts.iter().sum();
+
     // 4-5. Apply each patch in turn. The version marker is only advanced when a
     // patch's every zip part applied with no corrupted files.
     let mut last_corrupted: Vec<String> = Vec::new();
-    for pkg in selected {
+    let mut global_offset: usize = 0;
+    for (idx, pkg) in selected.iter().enumerate() {
         let mut corrupted = Vec::new();
         let from_view = view_of(&pkg.from).unwrap_or("");
-        apply_one_patch(&agent, &challenge, &ver2_base, pkg, from_view, target_dir, &mut corrupted)?;
+        apply_one_patch(
+            &agent, &challenge, &ver2_base, pkg, from_view,
+            global_offset, global_total, target_dir, &mut corrupted,
+        )?;
+        global_offset += zip_counts[idx];
         if corrupted.is_empty() {
             write_installed_version(target_dir, &pkg.to, &pkg.version_view)?;
             plog!("  patched to {} ({})", pkg.to, pkg.version_view);
@@ -994,6 +1014,8 @@ fn apply_one_patch(
     ver2_base: &str,
     pkg: &cms::PatchPackage,
     from_view: &str,
+    global_offset: usize,
+    global_total: usize,
     target_dir: &Path,
     corrupted: &mut Vec<String>,
 ) -> Result<()> {
@@ -1056,7 +1078,9 @@ fn apply_one_patch(
             total,
             size as f64 / (1024.0 * 1024.0)
         );
-        crate::progress::begin_download(i + 1, total, size);
+        // GUI shows a single continuous counter across all patches; the debug
+        // log above keeps the per-patch [i/total] form.
+        crate::progress::begin_download(global_offset + i + 1, global_total, size);
         download_signed_to_file(agent, challenge, &sign_path, &zip_path, size, &zip.md5)
             .with_context(|| format!("failed to download {zip_name}"))?;
 
