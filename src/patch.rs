@@ -865,14 +865,31 @@ pub fn apply_patches(
 
     let selected = &data.packages[start_idx..=final_idx];
     let current_version = selected.first().unwrap().from.clone();
+
+    // Map an internal version (e.g. "0.0.0.14") to its human "version view"
+    // (e.g. "V225.6"). A package's `version_view` describes its `to` version,
+    // so a version's view is the view of the package that produces it.
+    let view_of = |v: &str| -> Option<&str> {
+        data.packages.iter().find(|p| p.to == v).map(|p| p.version_view.as_str())
+    };
+    // "0.0.0.14 (V225.6)" when a view is known, else just the raw version.
+    let fmt_ver = |v: &str| -> String {
+        match view_of(v) {
+            Some(view) => format!("{v} ({view})"),
+            None => v.to_string(),
+        }
+    };
+
     // An update was found: report the installation range (opens the log file
-    // in GUI mode).
-    crate::progress::installing(&current_version, &final_version);
+    // in GUI mode). The GUI shows the version views only.
+    let current_view = view_of(&current_version).unwrap_or(current_version.as_str());
+    let final_view = view_of(&final_version).unwrap_or(final_version.as_str());
+    crate::progress::installing(current_view, final_view);
     plog!(
         "applying {} patch(es): {} -> {}",
         selected.len(),
-        current_version,
-        final_version
+        fmt_ver(&current_version),
+        fmt_ver(&final_version)
     );
 
     let agent = crate::net::agent_builder(allow_insecure, proxy)
@@ -887,7 +904,8 @@ pub fn apply_patches(
     let mut last_corrupted: Vec<String> = Vec::new();
     for pkg in selected {
         let mut corrupted = Vec::new();
-        apply_one_patch(&agent, &challenge, &ver2_base, pkg, target_dir, &mut corrupted)?;
+        let from_view = view_of(&pkg.from).unwrap_or("");
+        apply_one_patch(&agent, &challenge, &ver2_base, pkg, from_view, target_dir, &mut corrupted)?;
         if corrupted.is_empty() {
             write_installed_version(target_dir, &pkg.to, &pkg.version_view)?;
             plog!("  patched to {} ({})", pkg.to, pkg.version_view);
@@ -975,10 +993,15 @@ fn apply_one_patch(
     challenge: &str,
     ver2_base: &str,
     pkg: &cms::PatchPackage,
+    from_view: &str,
     target_dir: &Path,
     corrupted: &mut Vec<String>,
 ) -> Result<()> {
-    plog!("\npatch {} -> {} ({})", pkg.from, pkg.to, pkg.version_view);
+    if from_view.is_empty() {
+        plog!("\npatch {} -> {} ({})", pkg.from, pkg.to, pkg.version_view);
+    } else {
+        plog!("\npatch {} ({}) -> {} ({})", pkg.from, from_view, pkg.to, pkg.version_view);
+    }
 
     // Fetch this patch's FileList.dat (signed).
     let filelist_path = format!("{ver2_base}{}", pkg.file_list_url);
