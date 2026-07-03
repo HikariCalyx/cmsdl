@@ -450,7 +450,7 @@ Section "Install"
       ; Always run the installer's own patch step in the console: it relies on
       ; the exit code and shows its own progress. In GUI mode a successful patch
       ; leaves the window open, which would block ExecWait until closed.
-      ExecWait '"$INSTDIR\cmsdl.exe" cms --patch latest "$INSTDIR" --purge-wz-files --no-gui' $0
+      ExecWait '"$INSTDIR\cmsdl.exe" cms --patch latest "$INSTDIR" --purge-wz-files$NoGuiFlag$CloseFlag' $0
       StrCmp $0 "0" makeShortcuts
         MessageBox MB_ICONSTOP "$(STR_PATCH_FAILED)"
         Abort
@@ -498,7 +498,7 @@ Section "Install"
   ; SHARED: shortcuts
   ; ----------------------------------------------------------------------
   makeShortcuts:
-    nsExec::ExecToLog '"$INSTDIR\cmsdl.exe" cms --create-shortcut "$INSTDIR"$LrHookFlag$NoGuiFlag$CloseFlag'
+    nsExec::ExecToLog '"$INSTDIR\cmsdl.exe" cms --create-shortcut "$INSTDIR"$LrHookFlag$NoGuiFlag'
     Pop $0
     StrCmp $0 "0" sectionDone
       MessageBox MB_ICONSTOP "$(STR_SHORTCUT_FAILED)"
@@ -516,7 +516,7 @@ Function .onInstSuccess
   StrCmp $InstallMode "3" done
   StrCmp $InstallMode "4" done
   MessageBox MB_YESNO|MB_ICONQUESTION "$(STR_LAUNCH_PROMPT)" /SD IDYES IDNO done
-  ExecShell "open" "$INSTDIR\cmsdl.exe" "cms --patch latest $\"$INSTDIR$\" --launch-after-patching$LrHookFlag$NoGuiFlag$CloseFlag"
+  ExecShell "open" "$INSTDIR\cmsdl.exe" "cms --patch latest $\"$INSTDIR$\" --launch-after-patching$LrHookFlag$NoGuiFlag"
   done:
 FunctionEnd
 
