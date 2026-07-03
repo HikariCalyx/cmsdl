@@ -1,4 +1,4 @@
-/// GUI test window - per-pixel alpha via UpdateLayeredWindow.
+/// GUI patcher window - per-pixel alpha via UpdateLayeredWindow.
 ///
 /// Window body:   src/gui_res/139.png  (626 x 583, has alpha/rounded corners)
 /// Close button:  150.bmp normal  151.bmp hover  152.bmp click  (24 x 24 each)
@@ -57,40 +57,7 @@ pub fn run_window(ui: Arc<Mutex<UiModel>>) -> anyhow::Result<()> {
     { let _ = ui; anyhow::bail!("the GUI is only supported on Windows") }
 }
 
-/// Demo entry for `cmsdl gui_test`: shows the window with a simulated
-/// 5s-empty + 30s-fill animation so the layout can be eyeballed.
-pub fn run_gui_test() -> anyhow::Result<()> {
-    let ui = UiModel::new();
 
-    // Simulate progress on a background thread.
-    let ui_bg = Arc::clone(&ui);
-    std::thread::spawn(move || {
-        let start = std::time::Instant::now();
-        loop {
-            let elapsed = start.elapsed().as_millis() as u64;
-            let (label2, label1, progress) = if elapsed <= 5_000 {
-                ("正在检查客户端更新……".to_string(), String::new(), 0.0)
-            } else if elapsed <= 35_000 {
-                let r = ((elapsed - 5_000) as f32 / 30_000.0).min(1.0);
-                (
-                    "正在下载更新包……".to_string(),
-                    format!("{}%", (r * 100.0).round() as u32),
-                    r,
-                )
-            } else {
-                ("更新完成，即将启动游戏……".to_string(), "100%".to_string(), 1.0)
-            };
-            if let Ok(mut m) = ui_bg.lock() {
-                m.label1 = label1;
-                m.label2 = label2;
-                m.progress = progress;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(33));
-        }
-    });
-
-    run_window(ui)
-}
 
 #[cfg(windows)]
 mod win32 {
@@ -913,7 +880,7 @@ mod win32 {
 
     pub fn run_window(ui: super::Arc<super::Mutex<super::UiModel>>) -> anyhow::Result<()> {
         let hinstance = unsafe { GetModuleHandleW(ptr::null()) };
-        let class_name = wide("cmsdl_gui_test");
+        let class_name = wide("cmsdl_gui");
 
         let wc = WNDCLASSEXW {
             cb_size:         std::mem::size_of::<WNDCLASSEXW>() as u32,
@@ -944,7 +911,7 @@ mod win32 {
             CreateWindowExW(
                 WS_EX_APPWINDOW | WS_EX_LAYERED,
                 class_name.as_ptr(),
-                wide("cmsdl gui test").as_ptr(),
+                wide("cmsdl").as_ptr(),
                 WS_POPUP,
                 win_x, win_y, WIN_W, WIN_H,
                 ptr::null_mut(), ptr::null_mut(), hinstance, ptr::null_mut(),

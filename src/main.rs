@@ -128,13 +128,6 @@ fn install_ctrl_handler() {
 fn main() -> Result<()> {
     install_ctrl_handler();
 
-    // Handle `cmsdl gui_test` before clap parsing so it doesn't conflict with
-    // the required `region` positional argument or the action arg-group.
-    let args: Vec<String> = std::env::args().collect();
-    if args.get(1).map(|s| s.as_str()) == Some("gui_test") {
-        return gui::run_gui_test();
-    }
-
     disable_quick_edit();
 
     let cli = Cli::parse();
