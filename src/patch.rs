@@ -615,6 +615,7 @@ pub fn launch_client(target_dir: &Path, lrhook: bool) -> Result<()> {
 /// Uses the pre-configured profile GUID `55fbcb37-1d64-4344-8dd2-731cd6150f52`.
 #[cfg(windows)]
 fn launch_with_lr(lr_proc: &Path, exe: &Path) -> Result<()> {
+    use std::os::windows::process::CommandExt;
     use std::process::Command;
 
     // Single-quote a value for PowerShell by doubling embedded single quotes.
@@ -631,10 +632,14 @@ fn launch_with_lr(lr_proc: &Path, exe: &Path) -> Result<()> {
          -ArgumentList '{guid}',{exe_str},--sqLauncher -Verb RunAs"
     );
 
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
     let status = Command::new("powershell")
+        .creation_flags(CREATE_NO_WINDOW)
         .args([
             "-NoProfile",
             "-NonInteractive",
+            "-WindowStyle",
+            "Hidden",
             "-ExecutionPolicy",
             "Bypass",
             "-Command",
@@ -667,6 +672,7 @@ fn launch_with_lr(_lr_proc: &Path, _exe: &Path) -> Result<()> {
 /// user can elevate manually.
 #[cfg(windows)]
 fn launch_exe(exe: &Path, working_dir: &Path) -> Result<()> {
+    use std::os::windows::process::CommandExt;
     use std::process::Command;
 
     // Single-quote a value for PowerShell by doubling embedded single quotes.
@@ -680,10 +686,14 @@ fn launch_exe(exe: &Path, working_dir: &Path) -> Result<()> {
         ps_q(&working_dir.to_string_lossy()),
     );
 
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
     let status = Command::new("powershell")
+        .creation_flags(CREATE_NO_WINDOW)
         .args([
             "-NoProfile",
             "-NonInteractive",
+            "-WindowStyle",
+            "Hidden",
             "-ExecutionPolicy",
             "Bypass",
             "-Command",
