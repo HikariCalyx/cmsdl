@@ -349,6 +349,7 @@ pub fn patch_apply(
     purge_wz_files: bool,
     lrhook: bool,
     no_gui: bool,
+    close_after_patching: bool,
 ) -> Result<()> {
     match region {
         Region::Cms => {
@@ -363,7 +364,7 @@ pub fn patch_apply(
                     sentinel.display()
                 );
                 download(Region::Cms, target, false, None, allow_insecure, proxy, None, false)?;
-                create_shortcut(Region::Cms, target, lrhook)?;
+                create_shortcut(Region::Cms, target, lrhook, no_gui, close_after_patching)?;
                 if launch_after {
                     crate::patch::launch_client(target, lrhook)?;
                 }
@@ -377,6 +378,7 @@ pub fn patch_apply(
             if use_gui {
                 return crate::gui_patch::run_gui_patch(
                     target, version, launch_after, allow_insecure, proxy, purge_wz_files, lrhook,
+                    close_after_patching,
                 );
             }
 
@@ -418,9 +420,9 @@ pub fn manual_download(
 /// Only supported for the CMS region on Windows. When `lrhook` is true and
 /// LocaleRemulator files are present, the shortcut will include `--lrhook` so
 /// subsequent patch-and-launch operations also use Locale Remulator.
-pub fn create_shortcut(region: Region, target_path: &Path, lrhook: bool) -> Result<()> {
+pub fn create_shortcut(region: Region, target_path: &Path, lrhook: bool, no_gui: bool, close_after_patching: bool) -> Result<()> {
     match region {
-        Region::Cms => cms::create_shortcut(target_path, lrhook)?,
+        Region::Cms => cms::create_shortcut(target_path, lrhook, no_gui, close_after_patching)?,
         Region::Tms => bail!("region '{region}' does not support shortcut creation"),
         Region::Manual => bail!("--create-shortcut is not supported for 'manual'"),
     }

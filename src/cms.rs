@@ -1143,7 +1143,7 @@ fn write_local_version_xml(target_dir: &Path, version: &str, version_view: &str,
 ///      with the icon taken from `<target_dir>\mxd\MapleStory.exe`.
 ///   5. Place shortcuts on the desktop, Start Menu > Programs, and in `target_dir`.
 #[cfg(windows)]
-pub fn create_shortcut(target_dir: &Path, lrhook: bool) -> Result<()> {
+pub fn create_shortcut(target_dir: &Path, lrhook: bool, no_gui: bool, close_after_patching: bool) -> Result<()> {
     // Canonicalize early so the icon path in the shortcut is absolute,
     // which works regardless of where the .lnk is placed.
     let target_dir = target_dir
@@ -1198,7 +1198,7 @@ pub fn create_shortcut(target_dir: &Path, lrhook: bool) -> Result<()> {
     if arch != "x86_64" && arch != "aarch64" {
         bail!("--create-shortcut is only supported on Windows x64 and ARM64; current architecture is {arch}");
     }
-    run_create_shortcut_script(&target_dir, &cmsdl_in_target, &maple_exe, &lnk_name, use_lrhook)
+    run_create_shortcut_script(&target_dir, &cmsdl_in_target, &maple_exe, &lnk_name, use_lrhook, no_gui, close_after_patching)
 }
 
 /// Return `true` if all required LocaleRemulator files exist under
@@ -1214,7 +1214,7 @@ pub fn locale_remulator_available(target_dir: &Path) -> bool {
 
 /// Stub for non-Windows platforms.
 #[cfg(not(windows))]
-pub fn create_shortcut(_target_dir: &Path, _lrhook: bool) -> Result<()> {
+pub fn create_shortcut(_target_dir: &Path, _lrhook: bool, _no_gui: bool, _close_after_patching: bool) -> Result<()> {
     bail!("--create-shortcut is only supported on Windows")
 }
 
@@ -1263,6 +1263,8 @@ fn run_create_shortcut_script(
     icon_exe: &Path,
     lnk_name: &str,
     include_lrhook: bool,
+    no_gui: bool,
+    close_after_patching: bool,
 ) -> Result<()> {
     use std::process::Command;
 
@@ -1282,7 +1284,12 @@ fn run_create_shortcut_script(
 
     // Windows paths cannot contain `"`, so the inner path needs no further escaping.
     let lrhook_flag = if include_lrhook { " --lrhook" } else { "" };
-    let args = format!("cms --patch latest \"{target_dir_s}\" --launch-after-patching{lrhook_flag}");
+    let nogui_flag = if no_gui { " --no-gui" } else { "" };
+    // --close-after-patching only applies to the GUI; omit it under --no-gui.
+    let close_flag = if close_after_patching && !no_gui { " --close-after-patching" } else { "" };
+    let args = format!(
+        "cms --patch latest \"{target_dir_s}\" --launch-after-patching{lrhook_flag}{nogui_flag}{close_flag}"
+    );
     let args_q = ps_single_quote(&args);
 
     // IconLocation is "<exe path>,<icon index>".

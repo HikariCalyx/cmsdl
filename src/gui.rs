@@ -138,6 +138,11 @@ mod win32 {
     const LABEL2_COLOR_G: u8 = 0xB2;
     const LABEL2_COLOR_B: u8 = 0xFF;
 
+    // cmsdl version label (top area). Same style as label1 (#979497).
+    const LABEL_VER_X: i32 = 343;
+    const LABEL_VER_Y: i32 = 18;
+    const LABEL_VER_TEXT: &str = concat!("v", env!("CARGO_PKG_VERSION"));
+
     // Repaint timer.
     const ANIM_TICK_MS:   u32 = 33;      // ~30 fps repaint tick
     const IDT_ANIM:       usize = 1;     // timer id
@@ -672,6 +677,9 @@ mod win32 {
         draw_label(dib, &label2_text, LABEL2_X, LABEL2_Y,
             (LABEL2_COLOR_R, LABEL2_COLOR_G, LABEL2_COLOR_B));
         draw_label(dib, &label1_text, LABEL_X, LABEL_Y,
+            (LABEL_COLOR_R, LABEL_COLOR_G, LABEL_COLOR_B));
+        // cmsdl's own version, static, same style as label1.
+        draw_label(dib, LABEL_VER_TEXT, LABEL_VER_X, LABEL_VER_Y,
             (LABEL_COLOR_R, LABEL_COLOR_G, LABEL_COLOR_B));
 
         // Call UpdateLayeredWindow.

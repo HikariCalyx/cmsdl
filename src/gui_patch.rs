@@ -246,6 +246,7 @@ pub fn run_gui_patch(
     proxy: Option<&str>,
     purge_wz_files: bool,
     lrhook: bool,
+    close_after_patching: bool,
 ) -> Result<()> {
     // Validate the client directory before showing anything.
     if !target.join("mxd").is_dir() {
@@ -267,7 +268,7 @@ pub fn run_gui_patch(
         let proxy = proxy_buf.as_deref();
         let res = run_patch_flow(
             &target_buf, &version_buf, launch_after,
-            allow_insecure, proxy, purge_wz_files, lrhook,
+            allow_insecure, proxy, purge_wz_files, lrhook, close_after_patching,
         );
         if let Err(e) = &res {
             crate::plog!("error: {e:#}");
@@ -289,6 +290,7 @@ fn run_patch_flow(
     proxy: Option<&str>,
     purge_wz_files: bool,
     lrhook: bool,
+    close_after_patching: bool,
 ) -> Result<()> {
     use crate::patch::{apply_patches, launch_client, PatchOutcome};
 
@@ -314,12 +316,15 @@ fn run_patch_flow(
                 progress::finish("", true); // close the window
             }
             Err(e) => {
+                // Keep the window open on a launch failure so the error stays
+                // visible, even when --close-after-patching was requested.
                 crate::plog!("launch failed or was declined: {e:#}");
                 progress::finish(&tr("gui-patcher-launch-fail", &[]), false);
             }
         }
     } else {
-        progress::finish(&tr(done_key, &[]), false);
+        // Show the final status; close automatically when requested.
+        progress::finish(&tr(done_key, &[]), close_after_patching);
     }
 
     Ok(())

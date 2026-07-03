@@ -26,6 +26,13 @@ use filter::FileFilter;
 ///
 /// This is a fire-and-forget best-effort call; when the standard handle is
 /// not a console (e.g., a pipe), it simply returns.
+///
+/// Setting `ENABLE_EXTENDED_FLAGS` re-specifies the input mode, which on some
+/// Windows builds drops `ENABLE_PROCESSED_INPUT`. Without that flag the console
+/// stops generating `CTRL_C_EVENT` (Ctrl+C is delivered as raw `^C` input
+/// instead), so Ctrl+C no longer terminates the process while Ctrl+Break —
+/// which does not depend on that flag — still does. We therefore re-assert
+/// `ENABLE_PROCESSED_INPUT` explicitly.
 fn disable_quick_edit() {
     #[cfg(windows)]
     {
@@ -37,6 +44,7 @@ fn disable_quick_edit() {
         }
 
         const STD_INPUT_HANDLE: u32 = 0xFFFFFFF6u32; // -10
+        const ENABLE_PROCESSED_INPUT: u32 = 0x0001;
         const ENABLE_QUICK_EDIT_MODE: u32 = 0x0040;
         const ENABLE_EXTENDED_FLAGS: u32 = 0x0080;
 
@@ -56,8 +64,10 @@ fn disable_quick_edit() {
 
         // Clear QuickEdit mode.  On recent Windows builds we must also
         // set ENABLE_EXTENDED_FLAGS first so that the mode bits are
-        // interpreted correctly.
-        let new_mode = (mode | ENABLE_EXTENDED_FLAGS) & !ENABLE_QUICK_EDIT_MODE;
+        // interpreted correctly. Keep ENABLE_PROCESSED_INPUT on so Ctrl+C
+        // continues to raise CTRL_C_EVENT (see the note above).
+        let new_mode =
+            (mode | ENABLE_EXTENDED_FLAGS | ENABLE_PROCESSED_INPUT) & !ENABLE_QUICK_EDIT_MODE;
         if new_mode == mode {
             // Already in the desired state.
             return;
@@ -69,7 +79,55 @@ fn disable_quick_edit() {
     }
 }
 
+/// Install a console control handler so Ctrl+C (and Ctrl+Break) reliably
+/// terminate the process.
+///
+/// Since the patcher can run a Win32 message loop on the main thread while the
+/// actual work happens on background threads, we install an explicit handler
+/// that force-exits the process. The handler runs on its own OS thread, so it
+/// works regardless of what the main thread is currently blocked on.
+fn install_ctrl_handler() {
+    #[cfg(windows)]
+    {
+        const CTRL_C_EVENT: u32 = 0;
+        const CTRL_BREAK_EVENT: u32 = 1;
+
+        extern "system" fn handler(ctrl_type: u32) -> i32 {
+            extern "system" {
+                fn ExitProcess(code: u32);
+            }
+            if ctrl_type == CTRL_C_EVENT || ctrl_type == CTRL_BREAK_EVENT {
+                // 130 == 128 + SIGINT, the conventional "terminated by Ctrl+C".
+                // SAFETY: ExitProcess is always safe to call; it does not return.
+                unsafe { ExitProcess(130) };
+            }
+            0 // FALSE: fall through to the default handler for other events.
+        }
+
+        extern "system" {
+            fn SetConsoleCtrlHandler(
+                handler: Option<extern "system" fn(u32) -> i32>,
+                add: i32,
+            ) -> i32;
+        }
+        // SAFETY: all calls below use well-defined arguments.
+        unsafe {
+            // Clear any inherited "ignore Ctrl+C" attribute. A process launched
+            // with CREATE_NEW_PROCESS_GROUP (or whose parent called
+            // SetConsoleCtrlHandler(NULL, TRUE)) inherits a flag that suppresses
+            // CTRL_C_EVENT while still delivering CTRL_BREAK_EVENT — which is
+            // exactly the "Ctrl+Break works, Ctrl+C doesn't" symptom. Passing
+            // (NULL, FALSE) restores normal Ctrl+C processing.
+            SetConsoleCtrlHandler(None, 0);
+            // Register our handler (routine, add = TRUE).
+            SetConsoleCtrlHandler(Some(handler), 1);
+        }
+    }
+}
+
 fn main() -> Result<()> {
+    install_ctrl_handler();
+
     // Handle `cmsdl gui_test` before clap parsing so it doesn't conflict with
     // the required `region` positional argument or the action arg-group.
     let args: Vec<String> = std::env::args().collect();
@@ -123,8 +181,9 @@ fn main() -> Result<()> {
             cli.purge_wz_files,
             cli.lrhook,
             cli.no_gui,
+            cli.close_after_patching,
         )?,
-        Action::CreateShortcut(path) => downloader::create_shortcut(cli.region, &path, cli.lrhook)?,
+        Action::CreateShortcut(path) => downloader::create_shortcut(cli.region, &path, cli.lrhook, cli.no_gui, cli.close_after_patching)?,
         Action::ManualDownload { url, target_dir, output } => downloader::manual_download(
             &url,
             &target_dir,

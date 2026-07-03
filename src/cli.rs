@@ -51,11 +51,21 @@ pub struct Cli {
     #[arg(long)]
     pub launch_after_patching: bool,
 
+    /// Close the graphical patcher window automatically once patching finishes.
+    ///
+    /// Only affects the GUI patcher (`cms --patch <version> <dir>`); ignored
+    /// when `--no-gui` is set. On a launch failure the window stays open so the
+    /// error remains visible.
+    #[arg(long)]
+    pub close_after_patching: bool,
+
     /// Do not show the graphical patcher window; use console output only.
     ///
-    /// Only affects `cms --patch <version> <dir>` on Windows. On other
-    /// platforms the GUI is never shown regardless of this flag.
-    #[arg(long = "no_gui", visible_alias = "no-gui")]
+    /// With `cms --patch <version> <dir>`: patch in the console instead of the
+    /// GUI. With `cms --create-shortcut`: the created shortcut launches the
+    /// patcher in console mode (the `--no-gui` flag is embedded in it). On
+    /// non-Windows platforms the GUI is never shown regardless of this flag.
+    #[arg(long = "no-gui", alias = "no_gui")]
     pub no_gui: bool,
 
     /// Only download WZ files

@@ -47,7 +47,10 @@ Var RadioUpdateCMSDL
 Var RadioMSVC
 Var LinkTroubleshooting
 Var CheckNoLR
+Var CheckConsole
 Var LrHookFlag
+Var NoGuiFlag
+Var CloseFlag
 Var BuildFlag
 
 ; ============================================================================
@@ -95,6 +98,7 @@ LangString STR_MODE_MSVC ${LANG_ENGLISH} "Repair Runtime (VCRUNTIME140.dll missi
 LangString STR_LINK_TROUBLESHOOTING ${LANG_ENGLISH} "Troubleshooting (Simplified Chinese only)"
 LangString STR_UPDATE_ABORT ${LANG_ENGLISH} "No existing game installation was found in the selected directory. Update cannot continue."
 LangString STR_DO_NOT_INCLUDE_LR ${LANG_ENGLISH} "Do not include Locale Remulator"
+LangString STR_USE_CONSOLE_TYPE ${LANG_ENGLISH} "Use the console-type CMSDL interface"
 
 ; ============================================================================
 ; Language Strings - Simplified Chinese
@@ -119,6 +123,7 @@ LangString STR_MODE_MSVC ${LANG_SIMPCHINESE} "修复运行时（VCRUNTIME140.dll
 LangString STR_LINK_TROUBLESHOOTING ${LANG_SIMPCHINESE} "使用遇到问题了？点击查看帮助"
 LangString STR_UPDATE_ABORT ${LANG_SIMPCHINESE} "在所选目录中未找到现有的游戏安装。无法继续更新。"
 LangString STR_DO_NOT_INCLUDE_LR ${LANG_SIMPCHINESE} "你不应该看到这个选项"
+LangString STR_USE_CONSOLE_TYPE ${LANG_SIMPCHINESE} "使用命令行样式的CMSDL界面"
 
 ; ============================================================================
 ; Installer Attributes
@@ -155,6 +160,12 @@ Function .onInit
 
   ; Default operation mode is Install
   StrCpy $InstallMode "1"
+
+  ; Default to the graphical patcher (console mode off). In GUI mode the
+  ; window auto-closes after patching; --close-after-patching is omitted when
+  ; --no-gui is selected.
+  StrCpy $NoGuiFlag ""
+  StrCpy $CloseFlag " --close-after-patching"
 
   ; Select language based on OS language (Simplified Chinese = 0804).
   ; Set this first so the requirement-check message boxes are localized.
@@ -221,6 +232,15 @@ Function ModeSelectPage
   Pop $LinkTroubleshooting
   ${NSD_OnClick} $LinkTroubleshooting OpenTroubleshootingLink
 
+  ; Console-mode opt-in checkbox (always available). When checked, the created
+  ; shortcut and the post-install launch pass --no-gui so the patcher runs in
+  ; the console instead of the graphical window.
+  ${NSD_CreateCheckbox} 10u 134u 95% 12u "$(STR_USE_CONSOLE_TYPE)"
+  Pop $CheckConsole
+  ; Restore previous state if the user went back.
+  StrCmp $NoGuiFlag " --no-gui" 0 +2
+    ${NSD_Check} $CheckConsole
+
   ; Locale Remulator opt-out checkbox (only visible on non-zh-CN systems).
   StrCmp $LrHookFlag "" restoreSelection
     ${NSD_CreateCheckbox} 10u 118u 95% 12u "$(STR_DO_NOT_INCLUDE_LR)"
@@ -279,6 +299,17 @@ Function ModeSelectPageLeave
         StrCpy $LrHookFlag " --lrhook"
       ${EndIf}
     doneLR:
+
+    ; Console-mode checkbox: set the --no-gui flag when checked. In GUI mode
+    ; also request auto-close after patching; omit it when --no-gui is set.
+    ${NSD_GetState} $CheckConsole $0
+    ${If} $0 == 1
+      StrCpy $NoGuiFlag " --no-gui"
+      StrCpy $CloseFlag ""
+    ${Else}
+      StrCpy $NoGuiFlag ""
+      StrCpy $CloseFlag " --close-after-patching"
+    ${EndIf}
 FunctionEnd
 
 Function OpenTroubleshootingLink
@@ -416,7 +447,10 @@ Section "Install"
       ; Run the patch. ExecWait gives cmsdl.exe a real console for its
       ; indicatif progress bars.
       DetailPrint "$(STR_PATCHING)"
-      ExecWait '"$INSTDIR\cmsdl.exe" cms --patch latest "$INSTDIR" --purge-wz-files' $0
+      ; Always run the installer's own patch step in the console: it relies on
+      ; the exit code and shows its own progress. In GUI mode a successful patch
+      ; leaves the window open, which would block ExecWait until closed.
+      ExecWait '"$INSTDIR\cmsdl.exe" cms --patch latest "$INSTDIR" --purge-wz-files --no-gui' $0
       StrCmp $0 "0" makeShortcuts
         MessageBox MB_ICONSTOP "$(STR_PATCH_FAILED)"
         Abort
@@ -464,7 +498,7 @@ Section "Install"
   ; SHARED: shortcuts
   ; ----------------------------------------------------------------------
   makeShortcuts:
-    nsExec::ExecToLog '"$INSTDIR\cmsdl.exe" cms --create-shortcut "$INSTDIR"$LrHookFlag'
+    nsExec::ExecToLog '"$INSTDIR\cmsdl.exe" cms --create-shortcut "$INSTDIR"$LrHookFlag$NoGuiFlag$CloseFlag'
     Pop $0
     StrCmp $0 "0" sectionDone
       MessageBox MB_ICONSTOP "$(STR_SHORTCUT_FAILED)"
@@ -482,7 +516,7 @@ Function .onInstSuccess
   StrCmp $InstallMode "3" done
   StrCmp $InstallMode "4" done
   MessageBox MB_YESNO|MB_ICONQUESTION "$(STR_LAUNCH_PROMPT)" /SD IDYES IDNO done
-  ExecShell "open" "$INSTDIR\cmsdl.exe" "cms --patch latest $\"$INSTDIR$\" --launch-after-patching$LrHookFlag"
+  ExecShell "open" "$INSTDIR\cmsdl.exe" "cms --patch latest $\"$INSTDIR$\" --launch-after-patching$LrHookFlag$NoGuiFlag$CloseFlag"
   done:
 FunctionEnd
 
