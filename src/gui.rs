@@ -171,7 +171,6 @@ mod win32 {
     const DEFAULT_PITCH: u32 = 0;
     const FF_DONTCARE:   u32 = 0;
     const TRANSPARENT_BKMODE: i32 = 1;
-    const LOGPIXELSY: i32 = 90; // index for GetDeviceCaps vertical DPI
 
     // ── FFI structs ──────────────────────────────────────────────────────────
     #[repr(C)]
@@ -265,6 +264,7 @@ mod win32 {
         fn SetTimer(hwnd: HWND, id: usize, elapse: u32, proc: *const c_void) -> usize;
         fn KillTimer(hwnd: HWND, id: usize) -> BOOL;
         fn GetTickCount() -> u32;
+        fn SetProcessDPIAware() -> BOOL;
         fn UpdateLayeredWindow(hwnd: HWND, hdc_dst: HDC, pt_dst: *const POINT,
             size: *const SIZE, hdc_src: HDC, pt_src: *const POINT,
             key: u32, blend: *const BLENDFUNCTION, flags: u32) -> BOOL;
@@ -296,6 +296,7 @@ mod win32 {
     #[link(name = "kernel32")]
     extern "system" {
         fn GetModuleHandleW(name: *const u16) -> HINSTANCE;
+        fn GetProcAddress(module: HINSTANCE, name: *const u8) -> *const c_void;
     }
 
     extern "system" {
@@ -362,15 +363,14 @@ mod win32 {
     }
 
     /// Create the SimSun 9pt font used for the status label.
-    /// The 9pt size is converted to device pixels using the screen DPI.
+    /// The 9pt size is converted to device pixels at a fixed 96 DPI so the
+    /// text is identical at every system DPI (the process is marked DPI-aware,
+    /// so Windows applies no scaling and our layout stays pixel-exact).
     fn create_label_font() -> HGDIOBJ {
-        let hdc_screen = unsafe { GetDC(ptr::null_mut()) };
-        let dpi_y = unsafe { GetDeviceCaps(hdc_screen, LOGPIXELSY) };
-        unsafe { ReleaseDC(ptr::null_mut(), hdc_screen) };
-        // Standard point-to-pixel conversion: -(pt * dpi / 72). Negative
-        // height requests a font matched by character height rather than
-        // cell height.
-        let height = -(LABEL_FONT_PT * dpi_y / 72);
+        // Standard point-to-pixel conversion at 96 DPI: -(pt * 96 / 72).
+        // Negative height requests a font matched by character height rather
+        // than cell height.
+        let height = -(LABEL_FONT_PT * 96 / 72);
 
         let face: Vec<u16> = LABEL_FONT_NAME.encode_utf16().chain(Some(0)).collect();
         unsafe {
@@ -878,7 +878,37 @@ mod win32 {
     // ── Entry point ──────────────────────────────────────────────────────────
     fn wide(s: &str) -> Vec<u16> { s.encode_utf16().chain(Some(0)).collect() }
 
+    /// Mark the process DPI-aware so Windows performs no bitmap scaling of our
+    /// layered window. Combined with the fixed-96-DPI font, the dialog renders
+    /// pixel-for-pixel identically at 100%, 125%, 150%, etc.
+    ///
+    /// Prefers Per-Monitor-v2 (Win10 1703+), resolved dynamically so the binary
+    /// still loads on older Windows; falls back to the legacy system-aware call.
+    fn set_dpi_aware() {
+        // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 == (HANDLE)-4
+        const PER_MONITOR_AWARE_V2: isize = -4;
+        unsafe {
+            let user32 = GetModuleHandleW(wide("user32.dll").as_ptr());
+            if !user32.is_null() {
+                let name = b"SetProcessDpiAwarenessContext\0";
+                let proc = GetProcAddress(user32, name.as_ptr());
+                if !proc.is_null() {
+                    let set_ctx: extern "system" fn(isize) -> BOOL =
+                        std::mem::transmute(proc);
+                    if set_ctx(PER_MONITOR_AWARE_V2) != 0 {
+                        return;
+                    }
+                }
+            }
+            // Fallback: legacy system-DPI awareness (available since Vista).
+            SetProcessDPIAware();
+        }
+    }
+
     pub fn run_window(ui: super::Arc<super::Mutex<super::UiModel>>) -> anyhow::Result<()> {
+        // Do this before any window/DC is created so no scaling is applied.
+        set_dpi_aware();
+
         let hinstance = unsafe { GetModuleHandleW(ptr::null()) };
         let class_name = wide("cmsdl_gui");
 
