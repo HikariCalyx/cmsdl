@@ -613,45 +613,59 @@ pub fn launch_client(target_dir: &Path, lrhook: bool) -> Result<()> {
 /// Launch the game through Locale Remulator.
 ///
 /// Uses the pre-configured profile GUID `55fbcb37-1d64-4344-8dd2-731cd6150f52`.
+/// Calls `ShellExecuteW` with the `runas` verb so UAC elevation works properly
+/// (no PowerShell intermediary means no console flash and no suppressed UAC).
 #[cfg(windows)]
 fn launch_with_lr(lr_proc: &Path, exe: &Path) -> Result<()> {
-    use std::os::windows::process::CommandExt;
-    use std::process::Command;
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
 
-    // Single-quote a value for PowerShell by doubling embedded single quotes.
-    fn ps_q(s: &str) -> String {
-        format!("'{}'", s.replace('\'', "''"))
+    extern "system" {
+        fn ShellExecuteW(
+            hwnd: isize,
+            lpOperation: *const u16,
+            lpFile: *const u16,
+            lpParameters: *const u16,
+            lpDirectory: *const u16,
+            nShowCmd: i32,
+        ) -> isize;
+    }
+
+    fn to_wide(s: &OsStr) -> Vec<u16> {
+        let mut v: Vec<u16> = s.encode_wide().collect();
+        v.push(0);
+        v
     }
 
     let guid = "55fbcb37-1d64-4344-8dd2-731cd6150f52";
-    let exe_str = ps_q(&exe.to_string_lossy());
-    let lr_str = ps_q(&lr_proc.to_string_lossy());
-
-    let script = format!(
-        "Start-Process -FilePath {lr_str} \
-         -ArgumentList '{guid}',{exe_str},--sqLauncher -Verb RunAs"
+    let params_str = format!("{guid} \"{}\" --sqLauncher", exe.display());
+    let params = to_wide(OsStr::new(&params_str));
+    let file = to_wide(lr_proc.as_os_str());
+    let dir = to_wide(
+        lr_proc
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .as_os_str(),
     );
+    let operation = to_wide(OsStr::new("runas"));
 
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
-    let status = Command::new("powershell")
-        .creation_flags(CREATE_NO_WINDOW)
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-WindowStyle",
-            "Hidden",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            &script,
-        ])
-        .status()
-        .context("failed to launch the client via Locale Remulator")?;
+    const SW_SHOW: i32 = 5;
+    // Values ≤ 32 indicate failure (see ShellExecute documentation).
+    let ret = unsafe {
+        ShellExecuteW(
+            0,
+            operation.as_ptr(),
+            file.as_ptr(),
+            params.as_ptr(),
+            dir.as_ptr(),
+            SW_SHOW,
+        )
+    };
 
-    if !status.success() {
+    if ret <= 32 {
         bail!(
             "could not launch the client with Locale Remulator \
-             (the UAC elevation prompt may have been declined)"
+             (ShellExecute error {ret}; the UAC elevation prompt may have been declined)"
         );
     }
     Ok(())
@@ -667,44 +681,47 @@ fn launch_with_lr(_lr_proc: &Path, _exe: &Path) -> Result<()> {
 ///
 /// `MapleStory.exe` ships a manifest that requests administrator rights, so a
 /// plain `CreateProcess` (`std::process::Command`) fails with OS error 740
-/// (`ERROR_ELEVATION_REQUIRED`). Launching via the shell (`ShellExecute`, driven
-/// here by PowerShell's `Start-Process`) lets Windows show the UAC prompt so the
-/// user can elevate manually.
+/// (`ERROR_ELEVATION_REQUIRED`). We use `ShellExecuteW` directly instead of
+/// PowerShell — the shell sees the executable's manifest and triggers the UAC
+/// prompt automatically, without any intermediate console window.
 #[cfg(windows)]
 fn launch_exe(exe: &Path, working_dir: &Path) -> Result<()> {
-    use std::os::windows::process::CommandExt;
-    use std::process::Command;
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use std::ptr;
 
-    // Single-quote a value for PowerShell by doubling embedded single quotes.
-    fn ps_q(s: &str) -> String {
-        format!("'{}'", s.replace('\'', "''"))
+    extern "system" {
+        fn ShellExecuteW(
+            hwnd: isize,
+            lpOperation: *const u16,
+            lpFile: *const u16,
+            lpParameters: *const u16,
+            lpDirectory: *const u16,
+            nShowCmd: i32,
+        ) -> isize;
     }
 
-    let script = format!(
-        "Start-Process -FilePath {} -ArgumentList '--sqLauncher' -WorkingDirectory {}",
-        ps_q(&exe.to_string_lossy()),
-        ps_q(&working_dir.to_string_lossy()),
-    );
+    fn to_wide(s: &OsStr) -> Vec<u16> {
+        let mut v: Vec<u16> = s.encode_wide().collect();
+        v.push(0);
+        v
+    }
 
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
-    let status = Command::new("powershell")
-        .creation_flags(CREATE_NO_WINDOW)
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-WindowStyle",
-            "Hidden",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            &script,
-        ])
-        .status()
-        .context("failed to launch the client via PowerShell Start-Process")?;
+    let file = to_wide(exe.as_os_str());
+    let params = to_wide(OsStr::new("--sqLauncher"));
+    let dir = to_wide(working_dir.as_os_str());
 
-    if !status.success() {
+    const SW_SHOW: i32 = 5;
+    // Null operation = default "open" verb; the executable's own manifest
+    // (requireAdministrator) triggers UAC automatically.
+    let ret = unsafe {
+        ShellExecuteW(0, ptr::null(), file.as_ptr(), params.as_ptr(), dir.as_ptr(), SW_SHOW)
+    };
+
+    if ret <= 32 {
         bail!(
-            "could not launch the client (the UAC elevation prompt may have been declined)"
+            "could not launch the client (ShellExecute error {ret}; \
+             the UAC elevation prompt may have been declined)"
         );
     }
     Ok(())
