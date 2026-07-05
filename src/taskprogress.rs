@@ -84,11 +84,24 @@ struct PlatformProgress {
     /// `None` when the console window handle could not be obtained or COM
     /// initialisation / object creation failed.
     taskbar: Option<windows::Win32::UI::Shell::ITaskbarList3>,
-    /// Whether stderr is a TTY.  When true, OSC 9;4 sequences are also
-    /// emitted so that Windows Terminal (which uses ConPTY and therefore
-    /// returns an invisible HWND from `GetConsoleWindow`) can show taskbar
-    /// progress on its own visible window.
+    /// Whether stderr is a TTY *and* the terminal understands OSC 9;4. When
+    /// true, OSC 9;4 sequences are emitted so that Windows Terminal (which uses
+    /// ConPTY and therefore returns an invisible HWND from `GetConsoleWindow`)
+    /// can show taskbar progress on its own visible window. Suppressed on
+    /// classic conhost, which would print the sequence literally.
     osc_tty: bool,
+}
+
+/// Whether the current terminal is known to interpret the OSC 9;4 progress
+/// escape sequence. Classic conhost does not, and would echo it as literal
+/// text, so we restrict emission to terminals that advertise support.
+#[cfg(windows)]
+fn terminal_supports_osc94() -> bool {
+    // Windows Terminal exposes WT_SESSION; ConEmu exposes ConEmuANSI=ON.
+    std::env::var_os("WT_SESSION").is_some()
+        || std::env::var("ConEmuANSI")
+            .map(|v| v.eq_ignore_ascii_case("ON"))
+            .unwrap_or(false)
 }
 
 #[cfg(windows)]
@@ -101,7 +114,12 @@ impl PlatformProgress {
         };
         use windows::Win32::UI::Shell::{ITaskbarList3, TaskbarList};
 
-        let osc_tty = std::io::stderr().is_terminal();
+        // Only emit OSC 9;4 on terminals known to understand it. Windows
+        // Terminal sets WT_SESSION; ConEmu sets ConEmuANSI=ON. Classic
+        // conhost (cmd.exe / PowerShell) supports neither and would print the
+        // escape sequence literally as garbage like `]9;4;4;0`, so we suppress
+        // it there and rely solely on the ITaskbarList3 path below.
+        let osc_tty = std::io::stderr().is_terminal() && terminal_supports_osc94();
 
         unsafe {
             // Obtain the HWND of the console window.  Returns NULL when stdout
