@@ -1193,11 +1193,7 @@ pub fn create_shortcut(target_dir: &Path, lrhook: bool, no_gui: bool, close_afte
     };
     let lnk_name = format!("{shortcut_name}.lnk");
 
-    // Steps 4 & 5: create shortcuts via PowerShell (supported on x86_64 and ARM64 only).
-    let arch = std::env::consts::ARCH;
-    if arch != "x86_64" && arch != "aarch64" {
-        bail!("--create-shortcut is only supported on Windows x64 and ARM64; current architecture is {arch}");
-    }
+    // Steps 4 & 5: create shortcuts via the Windows Shell COM API.
     run_create_shortcut_script(&target_dir, &cmsdl_in_target, &maple_exe, &lnk_name, use_lrhook, no_gui, close_after_patching)
 }
 
@@ -1221,41 +1217,24 @@ pub fn create_shortcut(_target_dir: &Path, _lrhook: bool, _no_gui: bool, _close_
 /// Return `true` if the OS UI language is Simplified Chinese (zh-CN / zh-SG).
 #[cfg(windows)]
 fn os_locale_is_simplified_chinese() -> bool {
-    use std::process::Command;
-    let output = Command::new("powershell")
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            "[System.Globalization.CultureInfo]::CurrentUICulture.LCID",
-        ])
-        .output();
-    match output {
-        Ok(o) if o.status.success() => {
-            let lcid: u32 = String::from_utf8_lossy(&o.stdout)
-                .trim()
-                .parse()
-                .unwrap_or(0);
-            // 2052 = zh-CN (Simplified Chinese, China)
-            // 4100 = zh-SG (Simplified Chinese, Singapore)
-            lcid == 2052 || lcid == 4100
-        }
-        _ => false,
-    }
+    use winreg::{enums::HKEY_CURRENT_USER, RegKey};
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    hkcu.open_subkey(r"Control Panel\International")
+        .and_then(|k| k.get_value::<String, _>("LocaleName"))
+        .map(|locale: String| locale == "zh-CN" || locale == "zh-SG")
+        .unwrap_or(false)
 }
 
 /// Strip the `\\?\` extended-length path prefix that `Path::canonicalize()`
-/// produces on Windows. WScript.Shell's COM API rejects paths with this prefix.
+/// produces on Windows. The Windows Shell COM API rejects paths with this prefix.
 #[cfg(windows)]
 fn strip_extended_prefix(path: &Path) -> String {
     let s = path.to_string_lossy();
     s.strip_prefix(r"\\?\").unwrap_or(&s).to_owned()
 }
 
-/// Drive WScript.Shell via PowerShell to write `.lnk` files at the desktop,
-/// Start Menu > Programs, and `target_dir`.
+/// Create `.lnk` shortcut files at the desktop, Start Menu > Programs, and
+/// `target_dir` using the Windows Shell COM API (`IShellLink` / `IPersistFile`).
 #[cfg(windows)]
 fn run_create_shortcut_script(
     target_dir: &Path,
@@ -1266,73 +1245,87 @@ fn run_create_shortcut_script(
     no_gui: bool,
     close_after_patching: bool,
 ) -> Result<()> {
-    use std::process::Command;
+    use windows::{
+        core::{Interface, PCWSTR},
+        Win32::System::Com::{
+            CoCreateInstance, CoInitializeEx, IPersistFile,
+            CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
+        },
+        Win32::UI::Shell::IShellLinkW,
+    };
 
-    // Encode a string as a PowerShell single-quoted literal.
-    fn ps_single_quote(s: &str) -> String {
-        format!("'{}'", s.replace('\'', "''"))
+    // Encode a Rust string as a null-terminated UTF-16 buffer.
+    fn to_wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(std::iter::once(0)).collect()
     }
 
-    // Strip the \\?\ extended-length prefix so WScript.Shell accepts the paths.
-    let cmsdl_s = strip_extended_prefix(cmsdl_exe);
+    // Strip the \\?\ extended-length prefix so the Shell API accepts the paths.
+    let cmsdl_s      = strip_extended_prefix(cmsdl_exe);
     let target_dir_s = strip_extended_prefix(target_dir);
-    let icon_s = strip_extended_prefix(icon_exe);
-    let explicit_lnk_s = strip_extended_prefix(&target_dir.join(lnk_name));
+    let icon_s       = strip_extended_prefix(icon_exe);
+    let explicit_lnk = strip_extended_prefix(&target_dir.join(lnk_name));
 
-    let cmsdl_q = ps_single_quote(&cmsdl_s);
-    let wd_q = ps_single_quote(&target_dir_s);
-
-    // Windows paths cannot contain `"`, so the inner path needs no further escaping.
+    // Windows paths cannot contain `"`, so no further escaping is needed.
     let lrhook_flag = if include_lrhook { " --lrhook" } else { "" };
-    let nogui_flag = if no_gui { " --no-gui" } else { "" };
+    let nogui_flag  = if no_gui { " --no-gui" } else { "" };
     // --close-after-patching only applies to the GUI; omit it under --no-gui.
-    let close_flag = if close_after_patching && !no_gui { " --close-after-patching" } else { "" };
+    let close_flag  = if close_after_patching && !no_gui { " --close-after-patching" } else { "" };
     let args = format!(
         "cms --patch latest \"{target_dir_s}\" --launch-after-patching{lrhook_flag}{nogui_flag}{close_flag}"
     );
-    let args_q = ps_single_quote(&args);
 
-    // IconLocation is "<exe path>,<icon index>".
-    let icon_location = format!("{icon_s},0");
-    let icon_q = ps_single_quote(&icon_location);
+    let desktop  = get_shell_folder("Desktop")
+        .ok_or_else(|| anyhow::anyhow!("could not determine Desktop folder path"))?;
+    let programs = get_shell_folder("Programs")
+        .ok_or_else(|| anyhow::anyhow!("could not determine Programs folder path"))?;
 
-    let explicit_q = ps_single_quote(&explicit_lnk_s);
-    let name_q = ps_single_quote(lnk_name);
+    let lnk_paths = [
+        explicit_lnk,
+        format!(r"{desktop}\{lnk_name}"),
+        format!(r"{programs}\{lnk_name}"),
+    ];
 
-    let script = format!(
-        "$ErrorActionPreference = 'Stop'; \
-         $ws = New-Object -ComObject WScript.Shell; \
-         $paths = @( \
-           {explicit_q}, \
-           (Join-Path ([Environment]::GetFolderPath('Desktop')) {name_q}), \
-           (Join-Path ([Environment]::GetFolderPath('Programs')) {name_q}) \
-         ); \
-         foreach ($p in $paths) {{ \
-           $dir = Split-Path -Parent $p; \
-           if ($dir -and -not (Test-Path $dir)) {{ New-Item -ItemType Directory -Path $dir -Force | Out-Null }}; \
-           $s = $ws.CreateShortcut($p); \
-           $s.TargetPath = {cmsdl_q}; \
-           $s.Arguments = {args_q}; \
-           $s.WorkingDirectory = {wd_q}; \
-           $s.IconLocation = {icon_q}; \
-           $s.Save(); \
-         }}"
-    );
+    // CLSID_ShellLink = {00021401-0000-0000-C000-000000000046}
+    const CLSID_SHELL_LINK: windows::core::GUID = windows::core::GUID {
+        data1: 0x0002_1401,
+        data2: 0x0000,
+        data3: 0x0000,
+        data4: [0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46],
+    };
 
-    let status = Command::new("powershell")
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            &script,
-        ])
-        .status()
-        .context("failed to launch PowerShell to create shortcuts")?;
+    unsafe {
+        // Initialize COM for this thread; S_FALSE (already initialized) is fine.
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
 
-    if !status.success() {
-        bail!("PowerShell exited with status {status}");
+        let shell_link: IShellLinkW =
+            CoCreateInstance(&CLSID_SHELL_LINK, None, CLSCTX_INPROC_SERVER)
+                .context("failed to create IShellLink COM object")?;
+
+        let target_w = to_wide(&cmsdl_s);
+        let args_w   = to_wide(&args);
+        let wd_w     = to_wide(&target_dir_s);
+        let icon_w   = to_wide(&icon_s);
+
+        shell_link.SetPath(PCWSTR(target_w.as_ptr()))
+            .context("IShellLink::SetPath failed")?;
+        shell_link.SetArguments(PCWSTR(args_w.as_ptr()))
+            .context("IShellLink::SetArguments failed")?;
+        shell_link.SetWorkingDirectory(PCWSTR(wd_w.as_ptr()))
+            .context("IShellLink::SetWorkingDirectory failed")?;
+        shell_link.SetIconLocation(PCWSTR(icon_w.as_ptr()), 0)
+            .context("IShellLink::SetIconLocation failed")?;
+
+        let persist: IPersistFile = shell_link.cast()
+            .context("failed to obtain IPersistFile interface")?;
+
+        for lnk_path in &lnk_paths {
+            if let Some(parent) = Path::new(lnk_path).parent() {
+                std::fs::create_dir_all(parent).ok();
+            }
+            let lnk_w = to_wide(lnk_path);
+            persist.Save(PCWSTR(lnk_w.as_ptr()), true)
+                .with_context(|| format!("failed to save shortcut to '{lnk_path}'"))?;
+        }
     }
 
     println!(
@@ -1340,6 +1333,17 @@ fn run_create_shortcut_script(
         target_dir.display()
     );
     Ok(())
+}
+
+/// Read a user shell folder path from the registry.
+/// `name` is typically `"Desktop"` or `"Programs"` (Start Menu > Programs).
+#[cfg(windows)]
+fn get_shell_folder(name: &str) -> Option<String> {
+    use winreg::{enums::HKEY_CURRENT_USER, RegKey};
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    hkcu.open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders")
+        .and_then(|k| k.get_value::<String, _>(name))
+        .ok()
 }
 
 /// Delete junk directories at the root of `target_dir` that are left behind by
