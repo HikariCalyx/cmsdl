@@ -13,7 +13,7 @@
 !include "FileFunc.nsh"
 
 ; Version
-!define VERSION "4.226.2.1"
+!define VERSION "4.226.3.1"
 
 ; Product Info (English)
 !define PRODUCT_NAME "MapleStory CN"
@@ -204,7 +204,7 @@ Function .onInit
   monthEq:
     IntCmp $0 28 beforeCutoff beforeCutoff afterCutoff
   beforeCutoff:
-    StrCpy $BuildFlag "--build 1026"
+    StrCpy $BuildFlag "--build 1030"
   afterCutoff:
 FunctionEnd
 
