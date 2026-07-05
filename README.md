@@ -181,3 +181,4 @@ cargo build --release
 ## Credits
 - @Deneo , for reverse-enginerring job
 - @InWILL for Locale Remulator
+- GUI part used [Maplestory OTF fonttype](https://maplestory.nexon.com/Media/Font)

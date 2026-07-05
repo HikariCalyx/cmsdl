@@ -1,6 +1,6 @@
 # New Session
 
-Exported: 7/5/2026, 9:27:51 PM
+Exported: 7/5/2026, 10:10:29 PM
 
 ---
 
@@ -265,5 +265,140 @@ I added a purge step to the GUI downloader that displays `gui-patcher-purge` on 
 - **`cms.rs` / `tms.rs`**: Call `crate::progress::dl_purging()` at the start of the `--purge-wz-files` block (before `purge_junk_dirs`/`purge_data_files`), so the "cleaning up stray files" label shows while the pre-download purge runs. It's a no-op in console mode.
 
 Since the purge runs before `dl_begin`, this also fills the otherwise-blank window at startup, and the label is replaced by the downloading text once `dl_begin` primes the counters.
+
+---
+
+**User:**
+
+When downloading cms, could you display `gui-patcher-scanning-update` on label2 during build scanning procedure?
+
+---
+
+**Assistant:**
+
+CMS discovers the latest build before downloading (via `get_challenge_key` + `fetch_build_and_contents`), which can take a while. I'll add a `scanning` step to the download reporter and call it at the start of the CMS download. Let me add the trait method and free function:
+
+Now implement `scanning` in `GuiDownloadReporter`:
+
+Now call `dl_scanning()` at the start of the CMS download. Let me view the top of `download_client`:
+
+Clean build.
+
+CMS downloads now show `gui-patcher-scanning-update` on label2 during the build-discovery phase:
+
+- **`progress.rs`**: Added `scanning(&self)` to the `DownloadReporter` trait and a `dl_scanning()` free function.
+- **`gui_downloader.rs`**: `GuiDownloadReporter::scanning` sets label2 to `tr("gui-patcher-scanning-update", &[])`, clears label1, and resets the progress bar.
+- **`cms.rs`**: Calls `crate::progress::dl_scanning()` at the very start of `download_client`, before obtaining the challenge code and discovering the latest build. It's a no-op in console mode.
+
+The label sequence for a CMS download is now: scanning (label2) → optional purge (label1) → downloading with the version/speed line (label2) and file/size counts (label1). TMS is unchanged since it reads its manifest directly without a build scan.
+
+---
+
+**User:**
+
+Could you add a minimize button based on 146-149 bmp?
+
+---
+
+**Assistant:**
+
+Let me check the available resources in the gui_res folder.
+
+146-149 exist. The close button uses 3 states (150/151/152). Let me check the dimensions of these bitmaps to understand the minimize button layout.
+
+All are 24×24 buttons. The close button uses 3 states (150 normal / 151 hover / 152 click, with 153 unused). Following that same convention, I'll use 146/147/148 for the minimize button's normal/hover/pressed states, placed just left of the close button.
+
+Let me add the embedded resources and layout constants:
+
+Now add the `SW_MINIMIZE` constant near the window styles:
+
+Now add the minimize button fields to `WindowState` and a `hit_min` method:
+
+Now update the button drawing in `update_layered` to draw both buttons via a shared closure:
+
+Now update the mouse handlers in `wnd_proc`. First `WM_MOUSEMOVE`:
+
+Now `WM_LBUTTONUP` — handle both buttons' click actions:
+
+Now `WM_NCHITTEST` — treat the minimize button area as client too:
+
+Finally, initialize the minimize button fields in the `WindowState` builder:
+
+Clean build. To ensure a `WS_POPUP` layered window minimizes and restores from the taskbar smoothly, I'll add the `WS_MINIMIZEBOX | WS_SYSMENU` styles (they don't affect the custom-drawn appearance since there's no caption). Let me add the constants and update the window creation:
+
+Clean build.
+
+I added a minimize button to the custom GUI window (shared by both the patcher and downloader), using the 146/147/148 bitmaps for its normal/hover/pressed states — matching the close button's 150/151/152 convention (149, like 153, is left unused).
+
+Changes in `src/gui.rs`:
+- **Resources**: Embedded `146.bmp`/`147.bmp`/`148.bmp` as the minimize button states.
+- **Layout**: Added `MIN_BTN_X`/`MIN_BTN_Y` placing the minimize button just left of the close button, separated by a `BTN_GAP` (4px) constant that's easy to tweak.
+- **State**: Added `min_btn_pixels` and `min_btn_state` to `WindowState`, plus a `hit_min` hit-test.
+- **Drawing**: Refactored the button compositing into a shared `draw_button` closure and now draws both the minimize and close buttons.
+- **Input**: `WM_MOUSEMOVE`, `WM_MOUSELEAVE`, `WM_LBUTTONDOWN`, and `WM_LBUTTONUP` now track hover/press for both buttons; clicking minimize calls `ShowWindow(hwnd, SW_MINIMIZE)`. `WM_NCHITTEST` treats the minimize area as client (not draggable caption).
+- **Window styles**: Added `WS_SYSMENU | WS_MINIMIZEBOX` so the popup minimizes and restores from the taskbar cleanly; since no caption is drawn, the custom appearance is unchanged.
+
+The button gap (`BTN_GAP = 4`) is my best guess for spacing — let me know if the skin expects the buttons flush or with different spacing and I'll adjust the one constant.
+
+---
+
+**User:**
+
+When showing progress, could you update the taskbar icon dynamically?
+The icon would use src/gui_res/progress_background_icon.png as background, then use number inside of `src/gui_res/numbered_images/<number>.png` as foreground above it.
+
+---
+
+**Assistant:**
+
+Let me check the available icon resources.
+
+Numbers 0–100 are available. Let me check the dimensions of the background icon and a couple of number images to confirm they align.
+
+All are 256×256, so it's a clean pixel-wise overlay. I'll composite the background icon with the number overlay for the current percentage and set it as the window icon (which drives the taskbar button icon), updating only when the integer percent changes.
+
+Let me add the embedded resources and the number-image array:
+
+Now add the message constants and `ICONINFO` struct. Let me add the `WM_SETICON` constants near the other messages:
+
+Now add the `ICONINFO` struct near the other FFI structs:
+
+Now add the FFI functions. First `user32` (`SendMessageW`, `CreateIconIndirect`, `DestroyIcon`):
+
+Now add the `WindowState` icon fields:
+
+Now update the `Drop` impl to destroy the icon:
+
+Now add the `update_taskbar_icon` method to the `WindowState` impl:
+
+Now add the helper functions `load_argb`, `composite_straight`, and `create_alpha_icon`. Let me place them right after the `load_pixels` function:
+
+Now add the helper functions after `load_pixels`:
+
+Now wire up the timer to update the icon. Let me update `WM_TIMER`:
+
+Now initialize the new fields in the `WindowState` builder:
+
+Clean build. The dynamic taskbar icon feature is now complete.
+
+Here's what I added (resuming from where the connection dropped) in `src/gui.rs`:
+
+**Resources**
+- Embedded `progress_background_icon.png` and all 101 number overlays (`numbered_images/0..100.png`) via a small `number_png!` macro into a `NUMBER_PNGS: [&[u8]; 101]` array.
+
+**FFI additions**
+- `SendMessageW`, `CreateIconIndirect`, `DestroyIcon` (user32), `CreateBitmap` (gdi32), the `ICONINFO` struct, and `WM_SETICON`/`ICON_SMALL`/`ICON_BIG` constants.
+
+**Helper functions**
+- `load_argb` — decodes a PNG to straight (non-premultiplied) ARGB plus width/height, which is the format `CreateIconIndirect` expects for an alpha color bitmap (distinct from the premultiplied `load_pixels` used for the window compositing).
+- `composite_straight` — source-over compositing of the number overlay onto the background plate.
+- `create_alpha_icon` — builds a 32bpp per-pixel-alpha `HICON` from the composited pixels (color DIB + monochrome mask, matching the standard proven recipe).
+
+**Window integration**
+- `WindowState` gained `icon_bg` (background decoded once), `icon_pct` (last rendered percent, `-1` initially), and `icon` (current owned handle).
+- `WindowState::update_taskbar_icon(ratio)` recomputes the icon only when the integer percentage changes, sets it via `WM_SETICON` (BIG + SMALL), destroys the previously set icon, and is called each `WM_TIMER` tick alongside `set_taskbar_progress`.
+- `Drop` destroys the final icon; the builder initializes the new fields.
+
+This applies to both the downloader and patcher windows (shared `gui.rs`). As progress advances, the taskbar button icon now shows the background plate with the current percentage number composited on top, updating at most 101 times over a run.
 
 ---
