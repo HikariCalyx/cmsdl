@@ -84,16 +84,24 @@ struct PlatformProgress {
     /// `None` when the console window handle could not be obtained or COM
     /// initialisation / object creation failed.
     taskbar: Option<windows::Win32::UI::Shell::ITaskbarList3>,
+    /// Whether stderr is a TTY.  When true, OSC 9;4 sequences are also
+    /// emitted so that Windows Terminal (which uses ConPTY and therefore
+    /// returns an invisible HWND from `GetConsoleWindow`) can show taskbar
+    /// progress on its own visible window.
+    osc_tty: bool,
 }
 
 #[cfg(windows)]
 impl PlatformProgress {
     fn new() -> Self {
+        use std::io::IsTerminal as _;
         use windows::Win32::Foundation::HWND;
         use windows::Win32::System::Com::{
             CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_APARTMENTTHREADED,
         };
         use windows::Win32::UI::Shell::{ITaskbarList3, TaskbarList};
+
+        let osc_tty = std::io::stderr().is_terminal();
 
         unsafe {
             // Obtain the HWND of the console window.  Returns NULL when stdout
@@ -106,6 +114,7 @@ impl PlatformProgress {
                 return Self {
                     hwnd: HWND(std::ptr::null_mut()),
                     taskbar: None,
+                    osc_tty,
                 };
             }
             let hwnd = HWND(raw as *mut core::ffi::c_void);
@@ -121,18 +130,28 @@ impl PlatformProgress {
                 let _ = tb.HrInit();
             }
 
-            Self { hwnd, taskbar }
+            Self { hwnd, taskbar, osc_tty }
         }
     }
 
     fn set_progress(&self, current: u64, total: u64) {
         use windows::Win32::UI::Shell::TBPF_NORMAL;
 
+        // ITaskbarList3: works for classic cmd.exe / PowerShell with conhost.exe.
         if let Some(ref tb) = self.taskbar {
             unsafe {
                 let _ = tb.SetProgressState(self.hwnd, TBPF_NORMAL);
                 let _ = tb.SetProgressValue(self.hwnd, current, total);
             }
+        }
+
+        // OSC 9;4: Windows Terminal processes this and shows progress on its
+        // own visible window, which GetConsoleWindow() does not return.
+        if self.osc_tty && total > 0 {
+            use std::io::Write as _;
+            let pct = ((current as f64 / total as f64) * 100.0).round() as u64;
+            let pct = pct.min(100);
+            let _ = write!(std::io::stderr(), "\x1b]9;4;4;{pct}\x1b\\");
         }
     }
 
@@ -143,6 +162,11 @@ impl PlatformProgress {
             unsafe {
                 let _ = tb.SetProgressState(self.hwnd, TBPF_NOPROGRESS);
             }
+        }
+
+        if self.osc_tty {
+            use std::io::Write as _;
+            let _ = write!(std::io::stderr(), "\x1b]9;4;0;0\x1b\\");
         }
     }
 }
