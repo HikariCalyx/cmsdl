@@ -978,6 +978,7 @@ pub fn download_client(
         .progress_chars("=>-"),
     );
     total_pb.enable_steady_tick(Duration::from_millis(120));
+    let mut _taskbar = crate::taskprogress::watch(total_pb.clone(), total_bytes);
 
     let worker_bars: Vec<ProgressBar> = (0..PARALLEL_FILES)
         .map(|_| {
@@ -1064,6 +1065,7 @@ pub fn download_client(
     });
 
     total_pb.finish_and_clear();
+    _taskbar.finish();
 
     let downloaded = downloaded.load(Ordering::Relaxed);
     let skipped = skipped.load(Ordering::Relaxed);

@@ -359,6 +359,7 @@ fn download_segmented(
         .progress_chars("=>-"),
     );
     pb.enable_steady_tick(Duration::from_millis(120));
+    let mut _taskbar = crate::taskprogress::watch(pb.clone(), size);
 
     if let Some(saved) = saved_opt
         .and_then(|s| crate::resume::build_resume_ranges(&s, size).map(|(r, pre)| (s, r, pre)))
@@ -421,6 +422,7 @@ fn download_segmented(
     });
 
     pb.finish_and_clear();
+    _taskbar.finish();
 
     match first_err.into_inner().unwrap() {
         Some(e) => Err(e),

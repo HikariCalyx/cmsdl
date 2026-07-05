@@ -11,6 +11,7 @@ mod net;
 mod patch;
 mod progress;
 mod resume;
+mod taskprogress;
 mod tms;
 
 use anyhow::Result;
