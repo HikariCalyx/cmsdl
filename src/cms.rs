@@ -874,6 +874,9 @@ pub fn download_client(
         .timeout_connect(CONNECT_TIMEOUT)
         .build();
 
+    // Show the scanning status while the latest build is discovered (GUI mode).
+    crate::progress::dl_scanning();
+
     // Step 1: obtain the challenge code and keep it for the whole session.
     let challenge = get_challenge_key(&agent).context("failed to obtain challenge code")?;
 

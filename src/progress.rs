@@ -49,6 +49,8 @@ pub trait Reporter: Send + Sync {
 pub trait DownloadReporter: Send + Sync {
     /// A detailed log line (written to `cmsdl_downloader.log`).
     fn log(&self, line: &str);
+    /// Scanning for the latest build, before the file list is known.
+    fn scanning(&self);
     /// Begin a download session for `region` (e.g. `CMS`) at display `version`
     /// (e.g. `V226.1`), with `total_files` files totalling `total_bytes` bytes.
     fn begin(&self, region: &str, version: &str, total_files: usize, total_bytes: u64);
@@ -90,6 +92,7 @@ fn with_dl(f: impl FnOnce(&dyn DownloadReporter)) {
     }
 }
 
+pub fn dl_scanning() { with_dl(|r| r.scanning()); }
 pub fn dl_begin(region: &str, version: &str, total_files: usize, total_bytes: u64) {
     with_dl(|r| r.begin(region, version, total_files, total_bytes));
 }

@@ -136,6 +136,14 @@ impl DownloadReporter for GuiDownloadReporter {
         }
     }
 
+    fn scanning(&self) {
+        // Shown while the latest build is being discovered, before the file
+        // list (and therefore the totals) is known.
+        self.set_label2(tr("gui-patcher-scanning-update", &[]));
+        self.set_label1(String::new());
+        self.set_progress(0.0);
+    }
+
     fn begin(&self, region: &str, version: &str, total_files: usize, total_bytes: u64) {
         *self.region.lock().unwrap() = region.to_string();
         *self.version.lock().unwrap() = version.to_string();
