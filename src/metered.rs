@@ -33,21 +33,21 @@ pub fn is_android_metered() -> bool {
     }
 }
 
-/// Returns `true` when any adapter's unicast IPv4 address falls within a
-/// well-known Android tethering subnet, regardless of metered status.
-///
-/// Use [`is_android_metered`] to additionally verify that the connection is
-/// data-capped.
-pub fn is_android_tethering() -> bool {
-    #[cfg(windows)]
-    {
-        imp::check_tethering()
-    }
-    #[cfg(not(windows))]
-    {
-        false
-    }
-}
+// /// Returns `true` when any adapter's unicast IPv4 address falls within a
+// /// well-known Android tethering subnet, regardless of metered status.
+// ///
+// /// Use [`is_android_metered`] to additionally verify that the connection is
+// /// data-capped.
+// pub fn is_android_tethering() -> bool {
+//     #[cfg(windows)]
+//     {
+//         imp::check_tethering()
+//     }
+//     #[cfg(not(windows))]
+//     {
+//         false
+//     }
+// }
 
 /// Returns `true` when any adapter's unicast IPv4 address falls within
 /// Apple's Personal Hotspot subnet (`172.20.10.0/28`).
@@ -123,13 +123,13 @@ mod imp {
     /// The payload Android injects into option 43 when mobile data is metered.
     const ANDROID_METERED: &[u8] = b"ANDROID_METERED";
 
-    /// First three octets identifying the Android USB-tethering subnet
-    /// (`192.168.42.0/24`).
-    const ANDROID_USB_PREFIX: [u8; 3] = [192, 168, 42];
+    // /// First three octets identifying the Android USB-tethering subnet
+    // /// (`192.168.42.0/24`).
+    // const ANDROID_USB_PREFIX: [u8; 3] = [192, 168, 42];
 
-    /// First three octets identifying the Android Wi-Fi-hotspot subnet
-    /// (`192.168.43.0/24`).
-    const ANDROID_WIFI_PREFIX: [u8; 3] = [192, 168, 43];
+    // /// First three octets identifying the Android Wi-Fi-hotspot subnet
+    // /// (`192.168.43.0/24`).
+    // const ANDROID_WIFI_PREFIX: [u8; 3] = [192, 168, 43];
 
     /// Apple Personal Hotspot subnet: `172.20.10.0/28`.
     /// The `/28` mask means only the lower 4 bits of the last octet vary
@@ -180,7 +180,7 @@ mod imp {
     /// future lease renewals.
     const DHCPREQUEST_FLAGS: u32 = 0x01 | 0x02;
 
-    #[link(name = "dhcpcsvc")]
+    #[link(name = "dhcpcsvc", kind = "raw-dylib")]
     extern "system" {
         fn DhcpRequestParams(
             flags: u32,
@@ -205,14 +205,14 @@ mod imp {
         })
     }
 
-    pub(super) fn check_tethering() -> bool {
-        walk_adapters(|adapter| {
-            if !dhcp_enabled(adapter) {
-                return false;
-            }
-            unicast_in_android_subnet(adapter)
-        })
-    }
+    // pub(super) fn check_tethering() -> bool {
+    //     walk_adapters(|adapter| {
+    //         if !dhcp_enabled(adapter) {
+    //             return false;
+    //         }
+    //         unicast_in_android_subnet(adapter)
+    //     })
+    // }
 
     pub(super) fn check_iphone_tethering() -> bool {
         walk_adapters(|adapter| unicast_in_iphone_subnet(adapter))
@@ -390,21 +390,21 @@ mod imp {
         false
     }
 
-    fn unicast_in_android_subnet(adapter: &IP_ADAPTER_ADDRESSES_LH) -> bool {
-        let mut ua: *const IP_ADAPTER_UNICAST_ADDRESS_LH =
-            adapter.FirstUnicastAddress as *const IP_ADAPTER_UNICAST_ADDRESS_LH;
-        while !ua.is_null() {
-            let entry = unsafe { &*ua };
-            if let Some(ip) = ipv4_from_unicast_addr(entry) {
-                let oct = ip.octets();
-                if oct[..3] == ANDROID_USB_PREFIX || oct[..3] == ANDROID_WIFI_PREFIX {
-                    return true;
-                }
-            }
-            ua = entry.Next as *const IP_ADAPTER_UNICAST_ADDRESS_LH;
-        }
-        false
-    }
+    // fn unicast_in_android_subnet(adapter: &IP_ADAPTER_ADDRESSES_LH) -> bool {
+    //     let mut ua: *const IP_ADAPTER_UNICAST_ADDRESS_LH =
+    //         adapter.FirstUnicastAddress as *const IP_ADAPTER_UNICAST_ADDRESS_LH;
+    //     while !ua.is_null() {
+    //         let entry = unsafe { &*ua };
+    //         if let Some(ip) = ipv4_from_unicast_addr(entry) {
+    //             let oct = ip.octets();
+    //             if oct[..3] == ANDROID_USB_PREFIX || oct[..3] == ANDROID_WIFI_PREFIX {
+    //                 return true;
+    //             }
+    //         }
+    //         ua = entry.Next as *const IP_ADAPTER_UNICAST_ADDRESS_LH;
+    //     }
+    //     false
+    // }
 
     fn ipv4_from_unicast_addr(
         ua: &IP_ADAPTER_UNICAST_ADDRESS_LH,
