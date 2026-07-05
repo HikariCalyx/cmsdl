@@ -43,6 +43,7 @@ Var Dialog
 Var RadioInstall
 Var RadioUpdateCMSDL
 Var RadioMSVC
+Var CheckConsole
 
 ; ============================================================================
 ; MUI2 Settings
@@ -87,6 +88,7 @@ LangString STR_MODE_UPDATE ${LANG_ENGLISH} "Update (update an existing game inst
 LangString STR_MODE_UPDATE_CMSDL ${LANG_ENGLISH} "Update CMSDL"
 LangString STR_MODE_MSVC ${LANG_ENGLISH} "Repair Runtime (VCRUNTIME140.dll missing, etc)"
 LangString STR_LINK_TROUBLESHOOTING ${LANG_ENGLISH} "Troubleshooting (Traditional Chinese only)"
+LangString STR_USE_CONSOLE_TYPE ${LANG_ENGLISH} "Use the console-type CMSDL interface"
 LangString STR_UPDATE_ABORT ${LANG_ENGLISH} "No existing game installation was found in the selected directory. Update cannot continue."
 LangString STR_METERED_WARNING ${LANG_ENGLISH} "Your network connection is metered.$\nDownloading the game may incur additional costs.$\n$\nDo you want to continue?"
 
@@ -111,6 +113,7 @@ LangString STR_MODE_UPDATE ${LANG_TRADCHINESE} "更新（更新現有遊戲）"
 LangString STR_MODE_UPDATE_CMSDL ${LANG_TRADCHINESE} "升級 CMSDL"
 LangString STR_MODE_MSVC ${LANG_TRADCHINESE} "修復運行時（VCRUNTIME140.dll 丟失等錯誤）"
 LangString STR_LINK_TROUBLESHOOTING ${LANG_TRADCHINESE} "使用遇到問題了？點擊查看幫助"
+LangString STR_USE_CONSOLE_TYPE ${LANG_TRADCHINESE} "使用指令樣式的CMSDL介面"
 LangString STR_UPDATE_ABORT ${LANG_TRADCHINESE} "在所選目錄中未找到現有的遊戲安裝。無法繼續更新。"
 LangString STR_METERED_WARNING ${LANG_TRADCHINESE} "您的網路連線為按流量計費的連線。$\n下載遊戲可能會產生額外費用。$\n$\n您是否要繼續？"
 
@@ -149,6 +152,12 @@ Function .onInit
 
   ; Default operation mode is Install
   StrCpy $InstallMode "1"
+
+  ; Default to the graphical patcher (console mode off). In GUI mode the
+  ; window auto-closes when finished; --close-after-finishing is omitted when
+  ; --no-gui is selected.
+  StrCpy $NoGuiFlag ""
+  StrCpy $CloseFlag " --close-after-finishing"
 
   ; Select language based on OS language (Traditional Chinese = 0404).
   ; Set this first so the requirement-check message boxes are localized.
@@ -191,6 +200,15 @@ Function ModeSelectPage
   ${NSD_CreateRadioButton} 10u 60u 95% 12u "$(STR_MODE_MSVC)"
   Pop $RadioMSVC
 
+  ; Console-mode opt-in checkbox (always available). When checked, the created
+  ; shortcut and the post-install launch pass --no-gui so the patcher runs in
+  ; the console instead of the graphical window.
+  ${NSD_CreateCheckbox} 10u 112u 95% 12u "$(STR_USE_CONSOLE_TYPE)"
+  Pop $CheckConsole
+  ; Restore previous state if the user went back.
+  StrCmp $NoGuiFlag " --no-gui" 0 +2
+    ${NSD_Check} $CheckConsole
+
   ; Restore previous selection
   StrCmp $InstallMode "2" selUpdateCMSDL
   StrCmp $InstallMode "3" selMSVC
@@ -220,6 +238,16 @@ Function ModeSelectPageLeave
   setMSVC:
     StrCpy $InstallMode "3"
   leaveDone:
+    ; Console-mode checkbox: set the --no-gui flag when checked. In GUI mode
+    ; also request auto-close after patching; omit it when --no-gui is set.
+    ${NSD_GetState} $CheckConsole $0
+    ${If} $0 == 1
+      StrCpy $NoGuiFlag " --no-gui"
+      StrCpy $CloseFlag ""
+    ${Else}
+      StrCpy $NoGuiFlag ""
+      StrCpy $CloseFlag " --close-after-finishing"
+    ${EndIf}
 FunctionEnd
 
 ; Skip the directory page for MSVC mode — no install path is needed.
@@ -281,7 +309,7 @@ Section "Install"
     ; Execute download command. ExecWait gives cmsdl.exe a real console
     ; window where its indicatif progress bars can render.
     DetailPrint "$(STR_DOWNLOADING)"
-    ExecWait '"$INSTDIR\cmsdl.exe" tms --download "$INSTDIR" --purge-wz-files --close-after-finishing' $0
+    ExecWait '"$INSTDIR\cmsdl.exe" tms --download "$INSTDIR" --purge-wz-files$NoGuiFlag$CloseFlag' $0
     StrCmp $0 "0" makeShortcuts
       MessageBox MB_ICONSTOP "$(STR_DOWNLOAD_FAILED)"
       Abort
