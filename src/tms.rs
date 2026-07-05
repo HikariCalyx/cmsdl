@@ -6,7 +6,7 @@
 //! the same URL rather than a freshly re-signed one.
 
 use anyhow::{anyhow, bail, Context, Result};
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -419,6 +419,8 @@ pub fn download_client(
         info.product_name,
         info.size_in_bytes as f64 / 1_073_741_824.0,
     );
+    // Display version for the GUI banner (e.g. "V280").
+    let version_display = info.version.clone();
 
     // Build the full (unfiltered) download list first so the purge sees every
     // manifest entry; apply --download-wz-only afterwards.
@@ -426,6 +428,7 @@ pub fn download_client(
 
     // Purge stray files in Data/ before downloading (full manifest, pre-filter).
     if purge_wz_files {
+        crate::progress::dl_purging();
         crate::cms::purge_junk_dirs(target_dir)?;
         purge_data_files(target_dir, &all_items)?;
     }
@@ -460,9 +463,15 @@ pub fn download_client(
     }
 
     let total_bytes: u64 = items.iter().filter_map(|i| i.size).sum();
+    let total_files = items.len();
+    crate::progress::dl_begin("TMS", &version_display, total_files, total_bytes);
 
-    // Progress bars: one overall bar plus one reusable bar per worker.
+    // Progress bars: one overall bar plus one reusable bar per worker. In GUI
+    // download mode the console bars are hidden (the window shows progress).
     let mp = MultiProgress::new();
+    if crate::progress::dl_active() {
+        mp.set_draw_target(ProgressDrawTarget::hidden());
+    }
     let total_pb = mp.add(ProgressBar::new(total_bytes));
     total_pb.set_style(
         ProgressStyle::with_template(
@@ -474,6 +483,11 @@ pub fn download_client(
     );
     total_pb.enable_steady_tick(Duration::from_millis(120));
     let mut _taskbar = crate::taskprogress::watch(total_pb.clone(), total_bytes);
+
+    // Shared count of completed files, mirrored to the GUI download reporter by
+    // a background monitor (inert in console mode).
+    let done_files = std::sync::Arc::new(AtomicUsize::new(0));
+    let mut _dl_mon = crate::gui_downloader::watch_download(total_pb.clone(), done_files.clone());
 
     let worker_bars: Vec<ProgressBar> = (0..PARALLEL_FILES)
         .map(|_| {
@@ -501,6 +515,7 @@ pub fn download_client(
         let counter = &counter;
         let downloaded = &downloaded;
         let skipped = &skipped;
+        let done_files = &done_files;
         let failures = &failures;
         let total_pb = &total_pb;
         let agent = &agent;
@@ -518,6 +533,7 @@ pub fn download_client(
                     // Skip files already present and intact.
                     if is_up_to_date(&dest, item).unwrap_or(false) {
                         skipped.fetch_add(1, Ordering::Relaxed);
+                        done_files.fetch_add(1, Ordering::Relaxed);
                         if let Some(size) = item.size {
                             total_pb.inc(size);
                         }
@@ -532,6 +548,8 @@ pub fn download_client(
                     match download_file(&item.url, &dest, item.size, SEGMENTS_PER_FILE, &bar, total_pb, agent) {
                         Ok(()) => {
                             downloaded.fetch_add(1, Ordering::Relaxed);
+                            done_files.fetch_add(1, Ordering::Relaxed);
+                            crate::progress::dl_file_done(&item.local_path, item.size.unwrap_or(0));
                         }
                         Err(e) => {
                             failures
@@ -546,17 +564,23 @@ pub fn download_client(
         }
     });
 
+    let final_bytes = total_pb.position();
     total_pb.finish_and_clear();
     _taskbar.finish();
+    _dl_mon.finish();
+    crate::progress::dl_update(done_files.load(Ordering::Relaxed), final_bytes);
 
     let downloaded = downloaded.load(Ordering::Relaxed);
     let skipped = skipped.load(Ordering::Relaxed);
     let failures = failures.into_inner().unwrap();
 
-    println!(
+    let summary = format!(
         "done: {downloaded} downloaded, {skipped} already up to date, {} failed.",
         failures.len()
     );
+    println!("{summary}");
+    // Record the final tally in the GUI download log (no-op in console mode).
+    crate::progress::dl_log(&summary);
     if !failures.is_empty() {
         for f in &failures {
             eprintln!("  failed: {f}");

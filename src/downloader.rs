@@ -232,6 +232,7 @@ fn print_matching_files(entries: &[(String, u64)], filter: Option<&FileFilter>) 
 ///
 /// When `allow_insecure` is set, TLS certificate verification is disabled for
 /// all requests. When `proxy` is given, all requests are routed through it.
+#[allow(clippy::too_many_arguments)]
 pub fn download(
     region: Region,
     path: &Path,
@@ -241,15 +242,54 @@ pub fn download(
     proxy: Option<&str>,
     build: Option<u32>,
     purge_wz_files: bool,
+    no_gui: bool,
+    close_after_finishing: bool,
 ) -> Result<()> {
     if build.is_some() && region != Region::Cms {
         bail!("--build is only supported for region 'cms'");
     }
+
+    // Use the graphical downloader on Windows unless suppressed. The GUI shows
+    // a progress window and downloads on a background thread; on non-Windows
+    // platforms (or with --no-gui) the console downloader is used instead.
+    let use_gui = cfg!(windows) && !no_gui && matches!(region, Region::Cms | Region::Tms);
+    if use_gui {
+        return crate::gui_downloader::run_gui_download(
+            region,
+            path,
+            wz_only,
+            filter,
+            allow_insecure,
+            proxy,
+            build,
+            purge_wz_files,
+            close_after_finishing,
+        );
+    }
+
     println!(
         "cmsdl {VERSION}: downloading client for region '{region}' into '{}'.",
         path.display()
     );
 
+    run_download_core(region, path, wz_only, filter, allow_insecure, proxy, build, purge_wz_files)
+}
+
+/// Perform the actual client download: create the target directory, drop an
+/// `.incomplete_<region>` sentinel, run the region-specific download, and
+/// remove the sentinel on success. Shared by the console path and the GUI
+/// downloader's background thread.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_download_core(
+    region: Region,
+    path: &Path,
+    wz_only: bool,
+    filter: Option<&FileFilter>,
+    allow_insecure: bool,
+    proxy: Option<&str>,
+    build: Option<u32>,
+    purge_wz_files: bool,
+) -> Result<()> {
     // Ensure the target directory exists so the sentinel file can be placed inside it.
     std::fs::create_dir_all(path)
         .with_context(|| format!("failed to create target directory {}", path.display()))?;
@@ -349,7 +389,7 @@ pub fn patch_apply(
     purge_wz_files: bool,
     lrhook: bool,
     no_gui: bool,
-    close_after_patching: bool,
+    close_after_finishing: bool,
 ) -> Result<()> {
     match region {
         Region::Cms => {
@@ -363,8 +403,8 @@ pub fn patch_apply(
                      performing a full client download instead of patching.",
                     sentinel.display()
                 );
-                download(Region::Cms, target, false, None, allow_insecure, proxy, None, false)?;
-                create_shortcut(Region::Cms, target, lrhook, no_gui, close_after_patching)?;
+                download(Region::Cms, target, false, None, allow_insecure, proxy, None, false, true, false)?;
+                create_shortcut(Region::Cms, target, lrhook, no_gui, close_after_finishing)?;
                 if launch_after {
                     crate::patch::launch_client(target, lrhook)?;
                 }
@@ -378,7 +418,7 @@ pub fn patch_apply(
             if use_gui {
                 return crate::gui_patch::run_gui_patch(
                     target, version, launch_after, allow_insecure, proxy, purge_wz_files, lrhook,
-                    close_after_patching,
+                    close_after_finishing,
                 );
             }
 
@@ -420,9 +460,9 @@ pub fn manual_download(
 /// Only supported for the CMS region on Windows. When `lrhook` is true and
 /// LocaleRemulator files are present, the shortcut will include `--lrhook` so
 /// subsequent patch-and-launch operations also use Locale Remulator.
-pub fn create_shortcut(region: Region, target_path: &Path, lrhook: bool, no_gui: bool, close_after_patching: bool) -> Result<()> {
+pub fn create_shortcut(region: Region, target_path: &Path, lrhook: bool, no_gui: bool, close_after_finishing: bool) -> Result<()> {
     match region {
-        Region::Cms => cms::create_shortcut(target_path, lrhook, no_gui, close_after_patching)?,
+        Region::Cms => cms::create_shortcut(target_path, lrhook, no_gui, close_after_finishing)?,
         Region::Tms => bail!("region '{region}' does not support shortcut creation"),
         Region::Manual => bail!("--create-shortcut is not supported for 'manual'"),
     }

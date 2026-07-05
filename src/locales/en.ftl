@@ -10,3 +10,6 @@ gui-patcher-patch-successful-launch = Update complete, launching game
 gui-patcher-nopatch-successful = No update found
 gui-patcher-nopatch-successful-launch = No update found, launching game
 gui-patcher-launch-fail = Game launch failed
+gui-downloader-client-version = Downloading %s %s (%s)
+gui-downloader-downloading = %s of %s files have downloaded (%s / %s)
+gui-downloader-complete = Download complete

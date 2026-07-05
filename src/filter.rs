@@ -2,6 +2,7 @@ use anyhow::{bail, Result};
 use regex::Regex;
 
 /// A single match condition applied to a file path.
+#[derive(Clone)]
 enum FilterPattern {
     Substring(String),
     Regex(Regex),
@@ -12,6 +13,7 @@ enum FilterPattern {
 /// Call [`FileFilter::matches`] with a path; backslashes are normalised to
 /// forward slashes before comparison.  A path matches when **any** pattern
 /// matches (logical OR).  When `invert` is set the result is flipped.
+#[derive(Clone)]
 pub struct FileFilter {
     patterns: Vec<FilterPattern>,
     invert: bool,

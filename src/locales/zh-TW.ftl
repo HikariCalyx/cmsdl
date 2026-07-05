@@ -1,0 +1,15 @@
+gui-patcher-scanning-update = 正在檢查用戶端更新。
+gui-patcher-installing-update-from = 正在從 %s 更新至 %s
+gui-patcher-downloading-update = 正在下載第 %s 個更新檔，共 %s 個 (%s)
+gui-patcher-extracting-package = 正在解壓第 %s 個更新檔，共 %s 個
+gui-patcher-applying-update = [%s/%s] 正在更新 %s
+gui-patcher-repairing-file = [%s/%s] 正在修復 %s (%s)
+gui-patcher-purge = 正在清理多餘的檔案
+gui-patcher-patch-successful = 更新完成
+gui-patcher-patch-successful-launch = 更新完成，即將啟動遊戲
+gui-patcher-nopatch-successful = 沒有發現更新
+gui-patcher-nopatch-successful-launch = 沒有發現更新，即將啟動遊戲
+gui-patcher-launch-fail = 遊戲啟動失敗
+gui-downloader-client-version = 正在下載 %s %s (%s)
+gui-downloader-downloading = 已經下載 %s 個檔案，共 %s 個 (%s / %s)
+gui-downloader-complete = 下載完成

@@ -51,20 +51,23 @@ pub struct Cli {
     #[arg(long)]
     pub launch_after_patching: bool,
 
-    /// Close the graphical patcher window automatically once patching finishes.
+    /// Close the graphical window automatically once the operation finishes.
     ///
-    /// Only affects the GUI patcher (`cms --patch <version> <dir>`); ignored
-    /// when `--no-gui` is set. On a launch failure the window stays open so the
-    /// error remains visible.
-    #[arg(long)]
-    pub close_after_patching: bool,
+    /// Applies to the GUI patcher (`cms --patch <version> <dir>`) and the GUI
+    /// downloader (`cms --download <dir>` / `tms --download <dir>`); ignored
+    /// when `--no-gui` is set. On a patch launch failure or a download failure
+    /// the window stays open so the error remains visible.
+    #[arg(long, alias = "close-after-patching", alias = "close-after-downloading")]
+    pub close_after_finishing: bool,
 
-    /// Do not show the graphical patcher window; use console output only.
+    /// Do not show the graphical window; use console output only.
     ///
     /// With `cms --patch <version> <dir>`: patch in the console instead of the
-    /// GUI. With `cms --create-shortcut`: the created shortcut launches the
-    /// patcher in console mode (the `--no-gui` flag is embedded in it). On
-    /// non-Windows platforms the GUI is never shown regardless of this flag.
+    /// GUI. With `cms --download <dir>` / `tms --download <dir>`: download in
+    /// the console instead of the GUI. With `cms --create-shortcut`: the created
+    /// shortcut launches the patcher in console mode (the `--no-gui` flag is
+    /// embedded in it). On non-Windows platforms the GUI is never shown
+    /// regardless of this flag.
     #[arg(long = "no-gui", alias = "no_gui")]
     pub no_gui: bool,
 

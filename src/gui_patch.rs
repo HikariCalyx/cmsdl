@@ -244,39 +244,6 @@ impl GuiReporter {
     }
 }
 
-/// Detach from and destroy the console window when it was allocated for this
-/// process (i.e. we were launched from Explorer or a shortcut, not from an
-/// existing terminal).
-///
-/// cmsdl is a console-subsystem program, so a fresh console pops up when it is
-/// double-clicked. In GUI mode that window is just empty noise. We detect
-/// ownership via `GetConsoleProcessList`: if we are the only process attached,
-/// the console is ours to destroy; if a shell shares it, we leave it alone so
-/// the user's terminal is untouched.
-///
-/// We use `FreeConsole` rather than `ShowWindow(SW_HIDE)` because the latter
-/// only hides the window *after* it has already been painted, causing a visible
-/// flash. `FreeConsole` detaches from the console immediately, destroying the
-/// window without any flicker.
-#[cfg(windows)]
-fn hide_own_console() {
-    extern "system" {
-        fn GetConsoleProcessList(process_list: *mut u32, count: u32) -> u32;
-        fn FreeConsole() -> i32;
-    }
-    // SAFETY: both calls take well-defined arguments and are always safe.
-    unsafe {
-        let mut pids = [0u32; 2];
-        let count = GetConsoleProcessList(pids.as_mut_ptr(), pids.len() as u32);
-        if count <= 1 {
-            FreeConsole();
-        }
-    }
-}
-
-#[cfg(not(windows))]
-fn hide_own_console() {}
-
 /// Run the patch procedure with the GUI. Validates the client directory up
 /// front (requirement 2: an invalid path shows no window and returns an error,
 /// which propagates to a non-zero exit code). Otherwise shows the window and
@@ -289,7 +256,7 @@ pub fn run_gui_patch(
     proxy: Option<&str>,
     purge_wz_files: bool,
     lrhook: bool,
-    close_after_patching: bool,
+    close_after_finishing: bool,
 ) -> Result<()> {
     // Validate the client directory before showing anything. (Done before
     // hiding the console so an invalid-path error is still visible when run
@@ -303,7 +270,7 @@ pub fn run_gui_patch(
 
     // Hide the empty console window when we own it (launched from Explorer /
     // a shortcut). Left untouched when launched from a real terminal.
-    hide_own_console();
+    crate::gui::hide_own_console();
 
     let ui = UiModel::new();
     let reporter = Arc::new(GuiReporter::new(Arc::clone(&ui), target.join("cmsdl_patcher.log")));
@@ -317,7 +284,7 @@ pub fn run_gui_patch(
         let proxy = proxy_buf.as_deref();
         let res = run_patch_flow(
             &target_buf, &version_buf, launch_after,
-            allow_insecure, proxy, purge_wz_files, lrhook, close_after_patching,
+            allow_insecure, proxy, purge_wz_files, lrhook, close_after_finishing,
         );
         if let Err(e) = &res {
             crate::plog!("error: {e:#}");
@@ -339,7 +306,7 @@ fn run_patch_flow(
     proxy: Option<&str>,
     purge_wz_files: bool,
     lrhook: bool,
-    close_after_patching: bool,
+    close_after_finishing: bool,
 ) -> Result<()> {
     use crate::patch::{apply_patches, launch_client, PatchOutcome};
 
@@ -366,14 +333,14 @@ fn run_patch_flow(
             }
             Err(e) => {
                 // Keep the window open on a launch failure so the error stays
-                // visible, even when --close-after-patching was requested.
+                // visible, even when --close-after-finishing was requested.
                 crate::plog!("launch failed or was declined: {e:#}");
                 progress::finish(&tr("gui-patcher-launch-fail", &[]), false);
             }
         }
     } else {
         // Show the final status; close automatically when requested.
-        progress::finish(&tr(done_key, &[]), close_after_patching);
+        progress::finish(&tr(done_key, &[]), close_after_finishing);
     }
 
     Ok(())

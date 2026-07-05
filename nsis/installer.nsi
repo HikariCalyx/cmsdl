@@ -168,10 +168,10 @@ Function .onInit
   StrCpy $InstallMode "1"
 
   ; Default to the graphical patcher (console mode off). In GUI mode the
-  ; window auto-closes after patching; --close-after-patching is omitted when
+  ; window auto-closes when finished; --close-after-finishing is omitted when
   ; --no-gui is selected.
   StrCpy $NoGuiFlag ""
-  StrCpy $CloseFlag " --close-after-patching"
+  StrCpy $CloseFlag " --close-after-finishing"
 
   ; Select language based on OS language (Simplified Chinese = 0804).
   ; Set this first so the requirement-check message boxes are localized.
@@ -314,7 +314,7 @@ Function ModeSelectPageLeave
       StrCpy $CloseFlag ""
     ${Else}
       StrCpy $NoGuiFlag ""
-      StrCpy $CloseFlag " --close-after-patching"
+      StrCpy $CloseFlag " --close-after-finishing"
     ${EndIf}
 FunctionEnd
 
@@ -486,7 +486,7 @@ Section "Install"
     ; Execute download command. ExecWait gives cmsdl.exe a real console
     ; window where its indicatif progress bars can render.
     DetailPrint "$(STR_DOWNLOADING)"
-    ExecWait '"$INSTDIR\cmsdl.exe" cms --download "$INSTDIR" --purge-wz-files $BuildFlag' $0
+    ExecWait '"$INSTDIR\cmsdl.exe" cms --download "$INSTDIR" --purge-wz-files $BuildFlag$NoGuiFlag$CloseFlag' $0
     StrCmp $0 "0" makeShortcuts
       MessageBox MB_ICONSTOP "$(STR_DOWNLOAD_FAILED)"
       Abort

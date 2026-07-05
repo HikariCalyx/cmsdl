@@ -3,6 +3,7 @@ mod cms;
 mod downloader;
 mod filter;
 mod gui;
+mod gui_downloader;
 mod gui_patch;
 mod locale;
 mod manual;
@@ -175,6 +176,8 @@ fn main() -> Result<()> {
             proxy,
             cli.build,
             cli.purge_wz_files,
+            cli.no_gui,
+            cli.close_after_finishing,
         )?,
         Action::GetBitTorrent(output) => {
             downloader::get_bit_torrent(cli.region, output.as_deref(), cli.allow_insecure, proxy)?
@@ -192,9 +195,9 @@ fn main() -> Result<()> {
             cli.purge_wz_files,
             cli.lrhook,
             cli.no_gui,
-            cli.close_after_patching,
+            cli.close_after_finishing,
         )?,
-        Action::CreateShortcut(path) => downloader::create_shortcut(cli.region, &path, cli.lrhook, cli.no_gui, cli.close_after_patching)?,
+        Action::CreateShortcut(path) => downloader::create_shortcut(cli.region, &path, cli.lrhook, cli.no_gui, cli.close_after_finishing)?,
         Action::ManualDownload { url, target_dir, output } => downloader::manual_download(
             &url,
             &target_dir,

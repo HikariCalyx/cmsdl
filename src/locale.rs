@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 
 const ZH_CN: &str = include_str!("locales/zh-CN.ftl");
+const ZH_TW: &str = include_str!("locales/zh-TW.ftl");
 const EN: &str = include_str!("locales/en.ftl");
 
 /// Parsed catalog for the active language.
@@ -28,27 +29,53 @@ fn parse(src: &str) -> HashMap<String, String> {
     map
 }
 
-/// Return `true` when the user's preferred UI language is a Chinese variant.
+enum Lang { ZhTw, ZhCn, En }
+
+/// Detect the user's preferred UI language, distinguishing Traditional Chinese
+/// variants (zh-TW, zh-HK, zh-MO) from Simplified Chinese (zh-CN/zh-SG).
 #[cfg(windows)]
-fn prefers_chinese() -> bool {
+fn detect_lang() -> Lang {
     extern "system" {
         fn GetUserDefaultUILanguage() -> u16;
     }
-    // Primary language ID is the low 10 bits; LANG_CHINESE == 0x04.
     let langid = unsafe { GetUserDefaultUILanguage() };
-    (langid & 0x3FF) == 0x04
+    // Primary language ID is the low 10 bits; LANG_CHINESE == 0x04.
+    if (langid & 0x3FF) != 0x04 {
+        return Lang::En;
+    }
+    // Sub-language ID is bits 15-10.
+    // SUBLANG_CHINESE_TRADITIONAL (TW) = 0x01
+    // SUBLANG_CHINESE_HONGKONG  (HK)  = 0x03
+    // SUBLANG_CHINESE_MACAU     (MO)  = 0x05
+    match (langid >> 10) & 0x3F {
+        0x01 | 0x03 | 0x05 => Lang::ZhTw,
+        _ => Lang::ZhCn,
+    }
 }
 
 #[cfg(not(windows))]
-fn prefers_chinese() -> bool {
-    std::env::var("LANG")
-        .map(|l| l.to_ascii_lowercase().contains("zh"))
-        .unwrap_or(false)
+fn detect_lang() -> Lang {
+    let lang = std::env::var("LANG")
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if !lang.contains("zh") {
+        return Lang::En;
+    }
+    // Match zh_tw, zh_hk, zh_mo (and zh-tw etc.) to Traditional Chinese.
+    if lang.contains("tw") || lang.contains("hk") || lang.contains("mo") {
+        Lang::ZhTw
+    } else {
+        Lang::ZhCn
+    }
 }
 
 fn catalog() -> &'static HashMap<String, String> {
     CATALOG.get_or_init(|| {
-        let src = if prefers_chinese() { ZH_CN } else { EN };
+        let src = match detect_lang() {
+            Lang::ZhTw => ZH_TW,
+            Lang::ZhCn => ZH_CN,
+            Lang::En => EN,
+        };
         parse(src)
     })
 }

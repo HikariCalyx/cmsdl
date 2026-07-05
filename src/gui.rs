@@ -57,6 +57,39 @@ pub fn run_window(ui: Arc<Mutex<UiModel>>) -> anyhow::Result<()> {
     { let _ = ui; anyhow::bail!("the GUI is only supported on Windows") }
 }
 
+/// Detach from and destroy the console window when it was allocated for this
+/// process (i.e. we were launched from Explorer or a shortcut, not from an
+/// existing terminal).
+///
+/// cmsdl is a console-subsystem program, so a fresh console pops up when it is
+/// double-clicked. In GUI mode that window is just empty noise. We detect
+/// ownership via `GetConsoleProcessList`: if we are the only process attached,
+/// the console is ours to destroy; if a shell shares it, we leave it alone so
+/// the user's terminal is untouched.
+///
+/// We use `FreeConsole` rather than `ShowWindow(SW_HIDE)` because the latter
+/// only hides the window *after* it has already been painted, causing a visible
+/// flash. `FreeConsole` detaches from the console immediately, destroying the
+/// window without any flicker.
+#[cfg(windows)]
+pub(crate) fn hide_own_console() {
+    extern "system" {
+        fn GetConsoleProcessList(process_list: *mut u32, count: u32) -> u32;
+        fn FreeConsole() -> i32;
+    }
+    // SAFETY: both calls take well-defined arguments and are always safe.
+    unsafe {
+        let mut pids = [0u32; 2];
+        let count = GetConsoleProcessList(pids.as_mut_ptr(), pids.len() as u32);
+        if count <= 1 {
+            FreeConsole();
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub(crate) fn hide_own_console() {}
+
 
 
 #[cfg(windows)]
@@ -338,6 +371,11 @@ mod win32 {
 
         /// Shared UI model (label text + progress), updated by the owning task.
         ui:            super::Arc<super::Mutex<super::UiModel>>,
+
+        /// Windows taskbar progress interface, when available. Mirrors the
+        /// window's progress-bar fill onto its taskbar button so progress is
+        /// visible even when the window is minimised.
+        taskbar:       Option<windows::Win32::UI::Shell::ITaskbarList3>,
     }
 
     impl WindowState {
@@ -358,6 +396,49 @@ mod win32 {
         fn drop(&mut self) {
             if self.label_font != 0 {
                 unsafe { DeleteObject(self.label_font) };
+            }
+        }
+    }
+
+    /// Create the taskbar-progress COM object (`ITaskbarList3`) on the current
+    /// (message-loop) thread. Returns `None` when COM initialisation or object
+    /// creation fails, in which case taskbar progress is simply not shown.
+    ///
+    /// This is what makes the progress visible on the window's taskbar button:
+    /// in GUI mode the process has detached from any console (see
+    /// `hide_own_console`), so the console-based taskbar reporter is inert and
+    /// the window must drive its own indicator.
+    fn init_taskbar() -> Option<windows::Win32::UI::Shell::ITaskbarList3> {
+        use windows::Win32::System::Com::{
+            CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_APARTMENTTHREADED,
+        };
+        use windows::Win32::UI::Shell::{ITaskbarList3, TaskbarList};
+
+        // SAFETY: standard COM initialisation on this thread; the result is
+        // ignored because COM may already be initialised with a compatible
+        // apartment model.
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+            let tb: ITaskbarList3 = CoCreateInstance(&TaskbarList, None, CLSCTX_ALL).ok()?;
+            tb.HrInit().ok()?;
+            Some(tb)
+        }
+    }
+
+    /// Reflect `ratio` (0.0..=1.0) onto the taskbar progress button. A no-op
+    /// when the taskbar interface is unavailable. Calls are cheap and ignored
+    /// by Windows until the taskbar button actually exists, so it is safe to
+    /// call on every repaint tick.
+    fn set_taskbar_progress(s: &WindowState, ratio: f32) {
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::Shell::TBPF_NORMAL;
+
+        if let Some(tb) = &s.taskbar {
+            let value = (ratio.clamp(0.0, 1.0) as f64 * 1000.0).round() as u64;
+            // SAFETY: `s.hwnd` is this window's valid handle for its lifetime.
+            unsafe {
+                let _ = tb.SetProgressState(HWND(s.hwnd), TBPF_NORMAL);
+                let _ = tb.SetProgressValue(HWND(s.hwnd), value, 1000);
             }
         }
     }
@@ -849,8 +930,9 @@ mod win32 {
                     // Repaint to reflect the latest shared UI model, and close
                     // the window if the owning task requested it.
                     let s = unsafe { &*sp };
-                    let (_, _, _, should_close) = s.snapshot();
+                    let (_, _, progress, should_close) = s.snapshot();
                     update_layered(s, None);
+                    set_taskbar_progress(s, progress);
                     if should_close {
                         unsafe { KillTimer(hwnd, IDT_ANIM) };
                         unsafe { PostQuitMessage(0) };
@@ -862,6 +944,16 @@ mod win32 {
             WM_DESTROY => {
                 unsafe { KillTimer(hwnd, IDT_ANIM) };
                 if !sp.is_null() {
+                    // Clear the taskbar progress indicator before releasing state.
+                    {
+                        let s = unsafe { &*sp };
+                        if let Some(tb) = &s.taskbar {
+                            use windows::Win32::Foundation::HWND;
+                            use windows::Win32::UI::Shell::TBPF_NOPROGRESS;
+                            // SAFETY: valid handle; failure is inconsequential here.
+                            unsafe { let _ = tb.SetProgressState(HWND(s.hwnd), TBPF_NOPROGRESS); }
+                        }
+                    }
                     unsafe {
                         drop(Box::from_raw(sp));
                         SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
@@ -967,6 +1059,7 @@ mod win32 {
             btn_state:  BtnState::Normal,
             label_font: create_label_font(),
             ui,
+            taskbar:    init_taskbar(),
         });
 
         // Attach state to window.

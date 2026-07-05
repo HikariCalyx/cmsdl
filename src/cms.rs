@@ -924,6 +924,7 @@ pub fn download_client(
 
     // Purge stray files in mxd/Data/ before downloading (full manifest, pre-filter).
     if purge_wz_files {
+        crate::progress::dl_purging();
         purge_junk_dirs(&target_dir.join("mxd"))?;
         purge_data_files(target_dir, &entries)?;
     }
@@ -965,9 +966,23 @@ pub fn download_client(
     };
 
     let total_bytes: u64 = entries.iter().map(|e| e.file_size).sum();
+    let total_files = entries.len();
 
-    // Progress bars: one overall bar plus one reusable bar per worker.
+    // Display version for the GUI banner (e.g. "V226.1"), falling back to the
+    // raw client version when the view is unavailable.
+    let version_display = if version_view.is_empty() {
+        version.clone()
+    } else {
+        version_view.clone()
+    };
+    crate::progress::dl_begin("CMS", &version_display, total_files, total_bytes);
+
+    // Progress bars: one overall bar plus one reusable bar per worker. In GUI
+    // download mode the console bars are hidden (the window shows progress).
     let mp = MultiProgress::new();
+    if crate::progress::dl_active() {
+        mp.set_draw_target(ProgressDrawTarget::hidden());
+    }
     let total_pb = mp.add(ProgressBar::new(total_bytes));
     total_pb.set_style(
         ProgressStyle::with_template(
@@ -979,6 +994,11 @@ pub fn download_client(
     );
     total_pb.enable_steady_tick(Duration::from_millis(120));
     let mut _taskbar = crate::taskprogress::watch(total_pb.clone(), total_bytes);
+
+    // Shared count of completed files, mirrored to the GUI download reporter by
+    // a background monitor (inert in console mode).
+    let done_files = std::sync::Arc::new(AtomicUsize::new(0));
+    let mut _dl_mon = crate::gui_downloader::watch_download(total_pb.clone(), done_files.clone());
 
     let worker_bars: Vec<ProgressBar> = (0..PARALLEL_FILES)
         .map(|_| {
@@ -1007,6 +1027,7 @@ pub fn download_client(
         let counter = &counter;
         let downloaded = &downloaded;
         let skipped = &skipped;
+        let done_files = &done_files;
         let failures = &failures;
         let total_pb = &total_pb;
         let agent = &agent;
@@ -1029,6 +1050,7 @@ pub fn download_client(
                     // Skip files already present and intact.
                     if is_up_to_date(&local_path, entry).unwrap_or(false) {
                         skipped.fetch_add(1, Ordering::Relaxed);
+                        done_files.fetch_add(1, Ordering::Relaxed);
                         total_pb.inc(entry.file_size);
                         continue;
                     }
@@ -1053,6 +1075,8 @@ pub fn download_client(
                     ) {
                         Ok(()) => {
                             downloaded.fetch_add(1, Ordering::Relaxed);
+                            done_files.fetch_add(1, Ordering::Relaxed);
+                            crate::progress::dl_file_done(&rel_name, entry.file_size);
                         }
                         Err(e) => {
                             failures.lock().unwrap().push(format!("{rel_name}: {e:#}"));
@@ -1064,17 +1088,23 @@ pub fn download_client(
         }
     });
 
+    let final_bytes = total_pb.position();
     total_pb.finish_and_clear();
     _taskbar.finish();
+    _dl_mon.finish();
+    crate::progress::dl_update(done_files.load(Ordering::Relaxed), final_bytes);
 
     let downloaded = downloaded.load(Ordering::Relaxed);
     let skipped = skipped.load(Ordering::Relaxed);
     let failures = failures.into_inner().unwrap();
 
-    println!(
+    let summary = format!(
         "done: {downloaded} downloaded, {skipped} already up to date, {} failed.",
         failures.len()
     );
+    println!("{summary}");
+    // Record the final tally in the GUI download log (no-op in console mode).
+    crate::progress::dl_log(&summary);
     if !failures.is_empty() {
         for f in &failures {
             eprintln!("  failed: {f}");
@@ -1145,7 +1175,7 @@ fn write_local_version_xml(target_dir: &Path, version: &str, version_view: &str,
 ///      with the icon taken from `<target_dir>\mxd\MapleStory.exe`.
 ///   5. Place shortcuts on the desktop, Start Menu > Programs, and in `target_dir`.
 #[cfg(windows)]
-pub fn create_shortcut(target_dir: &Path, lrhook: bool, no_gui: bool, close_after_patching: bool) -> Result<()> {
+pub fn create_shortcut(target_dir: &Path, lrhook: bool, no_gui: bool, close_after_finishing: bool) -> Result<()> {
     // Canonicalize early so the icon path in the shortcut is absolute,
     // which works regardless of where the .lnk is placed.
     let target_dir = target_dir
@@ -1196,7 +1226,7 @@ pub fn create_shortcut(target_dir: &Path, lrhook: bool, no_gui: bool, close_afte
     let lnk_name = format!("{shortcut_name}.lnk");
 
     // Steps 4 & 5: create shortcuts via the Windows Shell COM API.
-    run_create_shortcut_script(&target_dir, &cmsdl_in_target, &maple_exe, &lnk_name, use_lrhook, no_gui, close_after_patching)
+    run_create_shortcut_script(&target_dir, &cmsdl_in_target, &maple_exe, &lnk_name, use_lrhook, no_gui, close_after_finishing)
 }
 
 /// Return `true` if all required LocaleRemulator files exist under
@@ -1212,7 +1242,7 @@ pub fn locale_remulator_available(target_dir: &Path) -> bool {
 
 /// Stub for non-Windows platforms.
 #[cfg(not(windows))]
-pub fn create_shortcut(_target_dir: &Path, _lrhook: bool, _no_gui: bool, _close_after_patching: bool) -> Result<()> {
+pub fn create_shortcut(_target_dir: &Path, _lrhook: bool, _no_gui: bool, _close_after_finishing: bool) -> Result<()> {
     bail!("--create-shortcut is only supported on Windows")
 }
 
@@ -1245,7 +1275,7 @@ fn run_create_shortcut_script(
     lnk_name: &str,
     include_lrhook: bool,
     no_gui: bool,
-    close_after_patching: bool,
+    close_after_finishing: bool,
 ) -> Result<()> {
     use windows::{
         core::{Interface, PCWSTR},
@@ -1270,8 +1300,8 @@ fn run_create_shortcut_script(
     // Windows paths cannot contain `"`, so no further escaping is needed.
     let lrhook_flag = if include_lrhook { " --lrhook" } else { "" };
     let nogui_flag  = if no_gui { " --no-gui" } else { "" };
-    // --close-after-patching only applies to the GUI; omit it under --no-gui.
-    let close_flag  = if close_after_patching && !no_gui { " --close-after-patching" } else { "" };
+    // --close-after-finishing only applies to the GUI; omit it under --no-gui.
+    let close_flag  = if close_after_finishing && !no_gui { " --close-after-finishing" } else { "" };
     let args = format!(
         "cms --patch latest \"{target_dir_s}\" --launch-after-patching{lrhook_flag}{nogui_flag}{close_flag}"
     );

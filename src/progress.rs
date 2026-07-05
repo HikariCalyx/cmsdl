@@ -39,20 +39,79 @@ pub trait Reporter: Send + Sync {
     fn finish(&self, msg: &str, close: bool);
 }
 
-static REPORTER: RwLock<Option<Arc<dyn Reporter>>> = RwLock::new(None);
+/// Sink for structured download progress, used by the GUI downloader.
+///
+/// Distinct from [`Reporter`] (which models the patch/repair flow), this trait
+/// models the whole-client download flow: a fixed set of files whose combined
+/// byte progress is tracked to a known total. All methods take `&self`; the
+/// implementation handles its own interior mutability and thread-safety
+/// (download workers report from many threads).
+pub trait DownloadReporter: Send + Sync {
+    /// A detailed log line (written to `cmsdl_downloader.log`).
+    fn log(&self, line: &str);
+    /// Begin a download session for `region` (e.g. `CMS`) at display `version`
+    /// (e.g. `V226.1`), with `total_files` files totalling `total_bytes` bytes.
+    fn begin(&self, region: &str, version: &str, total_files: usize, total_bytes: u64);
+    /// Report cumulative progress: `files_done` files completed and
+    /// `bytes_done` bytes transferred so far.
+    fn update(&self, files_done: usize, bytes_done: u64);
+    /// A single file finished downloading (recorded to the log with a timestamp).
+    fn file_done(&self, rel_path: &str, size: u64);
+    /// Purging stray files not in the manifest (`--purge-wz-files`), before the
+    /// download begins.
+    fn purging(&self);
+    /// The download finished successfully; close the window when `close`.
+    fn finish(&self, close: bool);
+    /// The download failed; show `msg` and keep the window open.
+    fn fail(&self, msg: &str);
+}
+
+static PATCH_REPORTER: RwLock<Option<Arc<dyn Reporter>>> = RwLock::new(None);
+static DL_REPORTER: RwLock<Option<Arc<dyn DownloadReporter>>> = RwLock::new(None);
 
 /// Register the active reporter (called once by the GUI patcher).
 pub fn set_reporter(r: Arc<dyn Reporter>) {
-    *REPORTER.write().unwrap() = Some(r);
+    *PATCH_REPORTER.write().unwrap() = Some(r);
 }
+
+/// Register the active download reporter (called once by the GUI downloader).
+pub fn set_download_reporter(r: Arc<dyn DownloadReporter>) {
+    *DL_REPORTER.write().unwrap() = Some(r);
+}
+
+/// Whether a download reporter is currently registered (i.e. GUI download mode).
+pub fn dl_active() -> bool {
+    DL_REPORTER.read().unwrap().is_some()
+}
+
+fn with_dl(f: impl FnOnce(&dyn DownloadReporter)) {
+    if let Some(r) = DL_REPORTER.read().unwrap().as_ref() {
+        f(r.as_ref());
+    }
+}
+
+pub fn dl_begin(region: &str, version: &str, total_files: usize, total_bytes: u64) {
+    with_dl(|r| r.begin(region, version, total_files, total_bytes));
+}
+pub fn dl_update(files_done: usize, bytes_done: u64) {
+    with_dl(|r| r.update(files_done, bytes_done));
+}
+pub fn dl_file_done(rel_path: &str, size: u64) {
+    with_dl(|r| r.file_done(rel_path, size));
+}
+pub fn dl_purging() { with_dl(|r| r.purging()); }
+pub fn dl_finish(close: bool) { with_dl(|r| r.finish(close)); }
+pub fn dl_fail(msg: &str) { with_dl(|r| r.fail(msg)); }
+/// Emit a detailed line to the download reporter's log, when one is registered.
+pub fn dl_log(line: &str) { with_dl(|r| r.log(line)); }
 
 /// Whether a reporter is currently registered (i.e. GUI mode).
 pub fn active() -> bool {
-    REPORTER.read().unwrap().is_some()
+    PATCH_REPORTER.read().unwrap().is_some()
 }
 
 fn with(f: impl FnOnce(&dyn Reporter)) {
-    if let Some(r) = REPORTER.read().unwrap().as_ref() {
+    if let Some(r) = PATCH_REPORTER.read().unwrap().as_ref() {
         f(r.as_ref());
     }
 }
@@ -60,7 +119,7 @@ fn with(f: impl FnOnce(&dyn Reporter)) {
 /// Emit a detailed line: to the reporter's log in GUI mode, otherwise stdout.
 /// Preserves the exact console output when no reporter is registered.
 pub fn line(msg: &str) {
-    let guard = REPORTER.read().unwrap();
+    let guard = PATCH_REPORTER.read().unwrap();
     match guard.as_ref() {
         Some(r) => r.log(msg),
         None => println!("{msg}"),
@@ -101,4 +160,20 @@ pub fn format_speed(bytes_per_sec: f64) -> String {
         u += 1;
     }
     format!("{v:.1} {}", UNITS[u])
+}
+
+/// Format a byte count as a human-readable string like `1.23 GiB`.
+pub fn format_size(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut v = bytes as f64;
+    let mut u = 0;
+    while v >= 1024.0 && u < UNITS.len() - 1 {
+        v /= 1024.0;
+        u += 1;
+    }
+    if u == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{v:.2} {}", UNITS[u])
+    }
 }
