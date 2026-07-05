@@ -6,6 +6,7 @@ mod gui;
 mod gui_patch;
 mod locale;
 mod manual;
+mod metered;
 mod miniwzlib;
 mod net;
 mod patch;
@@ -130,6 +131,22 @@ fn main() -> Result<()> {
     install_ctrl_handler();
 
     disable_quick_edit();
+
+    // `is_metered` is a stand-alone probe that needs no region argument, so it
+    // is handled before clap to keep the interface simple.
+    //
+    // NSIS callers can use either:
+    //   ExecWait '"cmsdl.exe" is_metered' $0   ; $0 = exit code (0/1)
+    //   nsExec::ExecToStack '"cmsdl.exe" is_metered'
+    //   Pop $0  ; exit code
+    //   Pop $1  ; stdout text: "0" or "1"
+    if std::env::args().nth(1).as_deref() == Some("is_metered") {
+        let metered = metered::is_android_metered()
+            || metered::is_iphone_tethering()
+            || metered::is_windows_metered();
+        println!("{}", metered as u8);
+        std::process::exit(metered as i32);
+    }
 
     let cli = Cli::parse();
 

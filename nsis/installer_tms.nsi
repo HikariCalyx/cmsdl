@@ -88,6 +88,7 @@ LangString STR_MODE_UPDATE_CMSDL ${LANG_ENGLISH} "Update CMSDL"
 LangString STR_MODE_MSVC ${LANG_ENGLISH} "Repair Runtime (VCRUNTIME140.dll missing, etc)"
 LangString STR_LINK_TROUBLESHOOTING ${LANG_ENGLISH} "Troubleshooting (Traditional Chinese only)"
 LangString STR_UPDATE_ABORT ${LANG_ENGLISH} "No existing game installation was found in the selected directory. Update cannot continue."
+LangString STR_METERED_WARNING ${LANG_ENGLISH} "Your network connection is metered.$\nDownloading the game may incur additional costs.$\n$\nDo you want to continue?"
 
 ; ============================================================================
 ; Language Strings - Traditional Chinese
@@ -111,6 +112,7 @@ LangString STR_MODE_UPDATE_CMSDL ${LANG_TRADCHINESE} "升級 CMSDL"
 LangString STR_MODE_MSVC ${LANG_TRADCHINESE} "修復運行時（VCRUNTIME140.dll 丟失等錯誤）"
 LangString STR_LINK_TROUBLESHOOTING ${LANG_TRADCHINESE} "使用遇到問題了？點擊查看幫助"
 LangString STR_UPDATE_ABORT ${LANG_TRADCHINESE} "在所選目錄中未找到現有的遊戲安裝。無法繼續更新。"
+LangString STR_METERED_WARNING ${LANG_TRADCHINESE} "您的網路連線為按流量計費的連線。$\n下載遊戲可能會產生額外費用。$\n$\n您是否要繼續？"
 
 ; ============================================================================
 ; Installer Attributes
@@ -269,6 +271,12 @@ Section "Install"
 
     ; Registry + uninstaller.
     Call WriteRegInfo
+
+    ; Warn if the connection is metered before starting the download.
+    ExecWait '"$INSTDIR\cmsdl.exe" is_metered' $0
+    StrCmp $0 "1" 0 +3
+      MessageBox MB_YESNO|MB_ICONEXCLAMATION "$(STR_METERED_WARNING)" IDYES +2
+      Abort
 
     ; Execute download command. ExecWait gives cmsdl.exe a real console
     ; window where its indicatif progress bars can render.

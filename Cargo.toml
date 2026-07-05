@@ -34,7 +34,15 @@ hdiffpatch-rs = { git = "https://github.com/TwintailTeam/hdiffpatch-rs.git", rev
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"
-windows = { version = "0.58", features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Shell"] }
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_UI_Shell",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
+    "Win32_Networking_NetworkListManager",
+    "Win32_Networking_WinSock",
+] }
 
 [profile.release]
 opt-level = 'z'     # Optimize for size
