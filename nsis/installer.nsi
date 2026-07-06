@@ -5,6 +5,9 @@
 ; Configuration
 ; ============================================================================
 
+SetCompressor /solid /final lzma
+Unicode true
+
 !include "MUI2.nsh"
 !include "x64.nsh"
 !include "WinVer.nsh"
