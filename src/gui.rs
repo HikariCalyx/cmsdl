@@ -35,6 +35,9 @@ pub struct UiModel {
     pub label1: String,
     /// Secondary status line (label2), drawn at (13, 520) in #66B2FF.
     pub label2: String,
+    /// ETA label (label3), right-aligned to the progress bar, same Y as
+    /// label2, drawn in #66B2FF.
+    pub label3: String,
     /// Progress-bar fill ratio, 0.0..=1.0.
     pub progress: f32,
     /// When set, the window closes itself on the next timer tick.
@@ -179,6 +182,13 @@ mod win32 {
     const LABEL2_COLOR_R: u8 = 0x66;
     const LABEL2_COLOR_G: u8 = 0xB2;
     const LABEL2_COLOR_B: u8 = 0xFF;
+
+    // ETA label (right-aligned to the progress bar, same row as label2).
+    const LABEL3_RIGHT_X: i32 = PROG_X + PROG_TOTAL_W;
+    const LABEL3_Y: i32 = 520;
+    const LABEL3_COLOR_R: u8 = 0x66;
+    const LABEL3_COLOR_G: u8 = 0xB2;
+    const LABEL3_COLOR_B: u8 = 0xFF;
 
     // cmsdl version label (top area). Same style as label1 (#979497).
     const LABEL_VER_X: i32 = 343;
@@ -460,10 +470,10 @@ mod win32 {
         }
 
         /// Snapshot the current label text and progress from the shared model.
-        fn snapshot(&self) -> (String, String, f32, bool) {
+        fn snapshot(&self) -> (String, String, String, f32, bool) {
             match self.ui.lock() {
-                Ok(m) => (m.label1.clone(), m.label2.clone(), m.progress.clamp(0.0, 1.0), m.should_close),
-                Err(_) => (String::new(), String::new(), 0.0, false),
+                Ok(m) => (m.label1.clone(), m.label2.clone(), m.label3.clone(), m.progress.clamp(0.0, 1.0), m.should_close),
+                Err(_) => (String::new(), String::new(), String::new(), 0.0, false),
             }
         }
 
@@ -903,7 +913,7 @@ mod win32 {
         // ── Fill (top layer): B + tiled C + D, grown to reflect the model's
         // progress ratio. Starts at the same x as A and grows to cover the
         // entire track (A + E + F, i.e. all of PROG_TOTAL_W) ────────────────
-        let (label1_text, label2_text, progress_ratio, _close) = s.snapshot();
+        let (label1_text, label2_text, label3_text, progress_ratio, _close) = s.snapshot();
         let fill_len = (PROG_TOTAL_W as f64 * progress_ratio as f64).round() as i32;
 
         if fill_len > 0 {
@@ -974,6 +984,24 @@ mod win32 {
         // cmsdl's own version, static, same style as label1.
         draw_label(dib, LABEL_VER_TEXT, LABEL_VER_X, LABEL_VER_Y,
             (LABEL_COLOR_R, LABEL_COLOR_G, LABEL_COLOR_B));
+        // ETA label, right-aligned to the progress bar, same style as label2.
+        if !label3_text.is_empty() {
+            let text_w = {
+                let wide: Vec<u16> = label3_text.encode_utf16().collect();
+                if wide.is_empty() { 0 }
+                else {
+                    let hdc_tmp = unsafe { CreateCompatibleDC(hdc_screen) };
+                    unsafe { SelectObject(hdc_tmp, s.label_font) };
+                    let mut extent = SIZE { cx: 0, cy: 0 };
+                    unsafe { GetTextExtentPoint32W(hdc_tmp, wide.as_ptr(), wide.len() as i32, &mut extent) };
+                    unsafe { DeleteDC(hdc_tmp) };
+                    extent.cx
+                }
+            };
+            let label3_x = (LABEL3_RIGHT_X - text_w).max(0);
+            draw_label(dib, &label3_text, label3_x, LABEL3_Y,
+                (LABEL3_COLOR_R, LABEL3_COLOR_G, LABEL3_COLOR_B));
+        }
 
         // Call UpdateLayeredWindow.
         // pt_dst = NULL -> keep current screen position (don't snap after drag).
@@ -1191,7 +1219,7 @@ mod win32 {
                     // Repaint to reflect the latest shared UI model, and close
                     // the window if the owning task requested it.
                     let s = unsafe { &mut *sp };
-                    let (_, _, progress, should_close) = s.snapshot();
+                    let (_, _, _, progress, should_close) = s.snapshot();
                     update_layered(s, None);
                     set_taskbar_progress(s, progress);
                     s.update_taskbar_icon(progress);

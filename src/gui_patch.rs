@@ -14,6 +14,7 @@ use std::time::Instant;
 use anyhow::{bail, Result};
 
 use crate::gui::{self, UiModel};
+use crate::gui_downloader::format_eta;
 use crate::locale::tr;
 use crate::progress::{self, format_speed, Reporter};
 
@@ -92,6 +93,12 @@ impl GuiReporter {
         }
     }
 
+    fn set_label3(&self, text: String) {
+        if let Ok(mut m) = self.ui.lock() {
+            m.label3 = text;
+        }
+    }
+
     fn set_progress(&self, ratio: f32) {
         if let Ok(mut m) = self.ui.lock() {
             m.progress = ratio.clamp(0.0, 1.0);
@@ -140,6 +147,7 @@ impl Reporter for GuiReporter {
     fn scanning(&self) {
         self.set_label2(tr("gui-patcher-scanning-update", &[]));
         self.set_label1(String::new());
+        self.set_label3(String::new());
         self.set_progress(0.0);
     }
 
@@ -147,12 +155,14 @@ impl Reporter for GuiReporter {
         // An update was found: create/append the log file now.
         self.open_log();
         self.set_label2(tr("gui-patcher-installing-update-from", &[current, target]));
+        self.set_label3(String::new());
         self.set_progress(0.0);
     }
 
     fn begin_download(&self, index: usize, count: usize, total: u64) {
         *self.dl.lock().unwrap() = DownloadCtx { index, count, total };
         *self.speed.lock().unwrap() = SpeedState::reset();
+        self.set_label3(String::new());
         self.set_progress(0.0);
         // Show the label immediately with a 0 speed.
         self.render_download(0);
@@ -172,6 +182,7 @@ impl Reporter for GuiReporter {
         // Shown between download and apply; for a package that is a single huge
         // file the subsequent patch step reports no per-file progress until it
         // completes, so this label reassures the user work is ongoing.
+        self.set_label3(String::new());
         self.set_label1(tr(
             "gui-patcher-extracting-package",
             &[&index.to_string(), &count.to_string()],
@@ -180,6 +191,7 @@ impl Reporter for GuiReporter {
 
     fn begin_apply(&self, _total: usize) {
         // Requirement 6: reset the progress bar to 0 for the apply phase.
+        self.set_label3(String::new());
         self.set_progress(0.0);
     }
 
@@ -198,6 +210,7 @@ impl Reporter for GuiReporter {
     fn begin_repair(&self, _total: usize, total_bytes: u64) {
         *self.repair_total_bytes.lock().unwrap() = total_bytes;
         *self.speed.lock().unwrap() = SpeedState::reset();
+        self.set_label3(String::new());
         self.set_progress(0.0);
     }
 
@@ -217,10 +230,12 @@ impl Reporter for GuiReporter {
 
     fn purging(&self) {
         self.set_label1(tr("gui-patcher-purge", &[]));
+        self.set_label3(String::new());
         self.set_progress(0.0);
     }
 
     fn finish(&self, msg: &str, close: bool) {
+        self.set_label3(String::new());
         if !msg.is_empty() {
             self.set_label1(msg.to_string());
         }
@@ -233,7 +248,8 @@ impl Reporter for GuiReporter {
 }
 
 impl GuiReporter {
-    /// Render the label1 "downloading" line for the current package + speed.
+    /// Render the label1 "downloading" line for the current package + speed,
+    /// and update the ETA label.
     fn render_download(&self, downloaded: u64) {
         let ctx = *self.dl.lock().unwrap();
         let speed = self.speed.lock().unwrap().tick(downloaded);
@@ -241,6 +257,15 @@ impl GuiReporter {
             "gui-patcher-downloading-update",
             &[&ctx.index.to_string(), &ctx.count.to_string(), &format_speed(speed)],
         ));
+        // ETA: remaining bytes / current speed.
+        let remaining = ctx.total.saturating_sub(downloaded);
+        let eta_secs = if speed > 0.0 { remaining as f64 / speed } else { 0.0 };
+        let eta_text = if eta_secs > 1.0 {
+            format_eta(eta_secs)
+        } else {
+            String::new()
+        };
+        self.set_label3(eta_text);
     }
 }
 

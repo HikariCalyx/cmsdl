@@ -13,3 +13,7 @@ gui-patcher-launch-fail = 游戏启动失败
 gui-downloader-client-version = 正在下载 %s %s (%s)
 gui-downloader-downloading = 已经下载 %s 个文件，共 %s 个 (%s / %s)
 gui-downloader-complete = 下载完成
+gui-downloader-eta = 预估剩余时间：%s
+gui-downloader-hour = 小时
+gui-downloader-minute = 分钟
+gui-downloader-second = 秒

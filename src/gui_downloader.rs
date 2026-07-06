@@ -55,6 +55,25 @@ impl SpeedState {
     }
 }
 
+/// Format an ETA duration (in seconds) into a localised human-readable string.
+pub(crate) fn format_eta(total_secs: f64) -> String {
+    let total = total_secs.round() as u64;
+    let hours = total / 3600;
+    let minutes = (total % 3600) / 60;
+    let seconds = total % 60;
+
+    let mut parts = Vec::new();
+    if hours > 0 {
+        parts.push(format!("{} {}", hours, tr("gui-downloader-hour", &[])));
+    }
+    if minutes > 0 || hours > 0 {
+        parts.push(format!("{} {}", minutes, tr("gui-downloader-minute", &[])));
+    }
+    parts.push(format!("{} {}", seconds, tr("gui-downloader-second", &[])));
+
+    tr("gui-downloader-eta", &[&parts.join(" ")])
+}
+
 /// Buffered log writer for `cmsdl_downloader.log`.
 struct LogState {
     file: Option<File>,
@@ -103,6 +122,12 @@ impl GuiDownloadReporter {
         }
     }
 
+    fn set_label3(&self, text: String) {
+        if let Ok(mut m) = self.ui.lock() {
+            m.label3 = text;
+        }
+    }
+
     fn set_progress(&self, ratio: f32) {
         if let Ok(mut m) = self.ui.lock() {
             m.progress = ratio.clamp(0.0, 1.0);
@@ -141,6 +166,7 @@ impl DownloadReporter for GuiDownloadReporter {
         // list (and therefore the totals) is known.
         self.set_label2(tr("gui-patcher-scanning-update", &[]));
         self.set_label1(String::new());
+        self.set_label3(String::new());
         self.set_progress(0.0);
     }
 
@@ -184,6 +210,15 @@ impl DownloadReporter for GuiDownloadReporter {
                 &format_size(total_bytes),
             ],
         ));
+        // ETA: remaining bytes / current speed.
+        let remaining = total_bytes.saturating_sub(bytes_done);
+        let eta_secs = if speed > 0.0 { remaining as f64 / speed } else { 0.0 };
+        let eta_text = if eta_secs > 1.0 {
+            format_eta(eta_secs)
+        } else {
+            String::new()
+        };
+        self.set_label3(eta_text);
         if total_bytes > 0 {
             self.set_progress(bytes_done as f32 / total_bytes as f32);
         }
@@ -203,6 +238,7 @@ impl DownloadReporter for GuiDownloadReporter {
     fn finish(&self, close: bool) {
         self.done.store(true, Ordering::Relaxed);
         self.set_progress(1.0);
+        self.set_label3(String::new());
         crate::progress::dl_log("download complete.");
         if close {
             if let Ok(mut m) = self.ui.lock() {
@@ -215,6 +251,7 @@ impl DownloadReporter for GuiDownloadReporter {
 
     fn fail(&self, msg: &str) {
         self.done.store(true, Ordering::Relaxed);
+        self.set_label3(String::new());
         crate::progress::dl_log(&format!("download failed: {msg}"));
         // Surface the failure on the status line; leave the window open.
         self.set_label1(msg.to_string());

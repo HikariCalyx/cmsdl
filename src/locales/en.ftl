@@ -13,3 +13,7 @@ gui-patcher-launch-fail = Game launch failed
 gui-downloader-client-version = Downloading %s %s (%s)
 gui-downloader-downloading = %s of %s files have downloaded (%s / %s)
 gui-downloader-complete = Download complete
+gui-downloader-eta = Estimated Remaining Time: %s
+gui-downloader-hour = Hr
+gui-downloader-minute = Min
+gui-downloader-second = Sec
