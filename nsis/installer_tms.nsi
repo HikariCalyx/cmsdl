@@ -44,6 +44,8 @@ Var RadioInstall
 Var RadioUpdateCMSDL
 Var RadioMSVC
 Var CheckConsole
+Var NoGuiFlag
+Var CloseFlag
 
 ; ============================================================================
 ; MUI2 Settings
