@@ -861,11 +861,32 @@ pub fn apply_patches(
         return Ok(PatchOutcome::AlreadyUpToDate);
     }
     let start_idx = match installed.as_deref() {
-        Some(v) => data
-            .packages
-            .iter()
-            .position(|p| p.from == v)
-            .unwrap_or(0),
+        Some(v) => {
+            if let Some(pos) = data.packages.iter().position(|p| p.from == v) {
+                pos
+            } else {
+                // The recorded version is not a known patch starting point
+                // (e.g. a newer or non-standard build) — fall back to WZ
+                // detection before defaulting to the beginning of the chain.
+                plog!(
+                    "warning: recorded version '{v}' is not a known patch starting point; \
+                     attempting to detect version from Base.wz."
+                );
+                if let Some((idx, detected_ver)) =
+                    try_detect_version_from_wz(target_dir, &data.packages)
+                {
+                    plog!("detected version {detected_ver} from Base.wz.");
+                    if detected_ver == final_version {
+                        plog!("already at the target version; nothing to do.");
+                        return Ok(PatchOutcome::AlreadyUpToDate);
+                    }
+                    idx + 1
+                } else {
+                    plog!("warning: could not detect version from Base.wz; starting from the beginning of the patch chain.");
+                    0
+                }
+            }
+        }
         None => {
             // LocalVersion3.xml does not provide a version —
             // try to detect it from Base.wz.
