@@ -86,6 +86,17 @@ pub struct Cli {
     #[arg(long)]
     pub purge_wz_files: bool,
 
+    /// Preserve original WZ files during patching by renaming mxd/Data to
+    /// mxd/DataBk before applying patches that touch files under mxd/Data.
+    ///
+    /// When a patch manifest contains delta or new entries under mxd/Data, the
+    /// directory is backed up and patched files are written to a fresh mxd/Data.
+    /// Files outside mxd/Data are overwritten normally. If patching is interrupted
+    /// the presence of mxd/Data/.incomplete triggers the same behaviour on resume,
+    /// so this flag only needs to be passed once.
+    #[arg(long, alias = "keep-old-wz")]
+    pub keep_old_wz_files: bool,
+
     /// Launch the game through Locale Remulator when present.
     ///
     /// With `--create-shortcut`: if the LocaleRemulator directory with all

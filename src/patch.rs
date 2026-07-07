@@ -13,7 +13,7 @@
 //! Actual byte-level patching of `HDIFFSF20` deltas is delegated to the
 //! `hdiffpatch-rs` crate.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -51,6 +51,129 @@ const MAX_STALL_RETRIES: usize = 30;
 
 /// Pause before re-signing and resuming a stalled download.
 const RESUME_BACKOFF: Duration = Duration::from_millis(500);
+
+// --- keep-old-wz-files support ------------------------------------------------
+
+/// Marker file inside `mxd/Data` that signals keep-old-wz-files mode is active.
+/// Its presence (together with `mxd/DataBk`) means reads should be redirected
+/// from `mxd/DataBk` and the session was interrupted.
+const KEEP_OLD_DATA_MARKER: &str = "mxd/Data/.incomplete";
+
+/// Check whether `key` (a backslash-separated path relative to the client root)
+/// lives under the `mxd/Data` directory.
+fn is_under_data(key: &str) -> bool {
+    let lower = key.to_lowercase().replace('\\', "/");
+    lower.starts_with("mxd/data/") || lower == "mxd/data"
+}
+
+/// Check whether keep-old-wz mode is active (both the backup directory and the
+/// marker file exist).
+fn is_keep_old_wz_active(target_dir: &Path) -> bool {
+    target_dir.join("mxd").join("DataBk").is_dir()
+        && target_dir.join(KEEP_OLD_DATA_MARKER).exists()
+}
+
+/// Check whether a [`Manifest`] contains any delta or new entries under
+/// `mxd/Data`.
+fn manifest_has_data_entries(manifest: &Manifest) -> bool {
+    manifest.deltas.keys().any(|k| is_under_data(k))
+        || manifest.news.keys().any(|k| is_under_data(k))
+}
+
+/// Set up the keep-old-wz directory layout: rename `mxd/Data` → `mxd/DataBk`,
+/// create a fresh `mxd/Data`, and write the `.incomplete` marker.
+///
+/// Returns `true` when setup was performed (or was already in place); returns
+/// `false` when the manifest does not contain any Data entries and there is
+/// nothing to back up.
+fn setup_keep_old_wz(target_dir: &Path, manifest: &Manifest) -> Result<bool> {
+    let data_dir = target_dir.join("mxd").join("Data");
+    let data_bk = target_dir.join("mxd").join("DataBk");
+    let marker = target_dir.join(KEEP_OLD_DATA_MARKER);
+
+    // Already set up from a previous patch in this session.
+    if marker.exists() && data_bk.is_dir() {
+        return Ok(true);
+    }
+
+    if !manifest_has_data_entries(manifest) {
+        return Ok(false);
+    }
+
+    // The Data directory must exist to be backed up.  If it doesn't, this is
+    // likely a fresh install or the layout is already in the desired state.
+    if data_dir.is_dir() {
+        // If DataBk already exists from a previous interrupted run, remove it
+        // so the rename below succeeds (it was stale anyway — the marker was
+        // absent, meaning we are starting fresh).
+        if data_bk.exists() {
+            std::fs::remove_dir_all(&data_bk)
+                .with_context(|| format!("failed to remove stale {}", data_bk.display()))?;
+        }
+        std::fs::rename(&data_dir, &data_bk)
+            .with_context(|| format!("failed to rename {} to {}", data_dir.display(), data_bk.display()))?;
+    }
+    std::fs::create_dir_all(&data_dir)
+        .with_context(|| format!("failed to create {}", data_dir.display()))?;
+
+    // Copy all non-.wz files from the backup into the fresh Data directory so
+    // configuration and other support files are available before patching begins.
+    copy_non_wz_files(&data_bk, &data_dir)?;
+
+    std::fs::write(&marker, "")
+        .with_context(|| format!("failed to create {}", marker.display()))?;
+
+    Ok(true)
+}
+
+/// Resolve the source path for a delta entry. In keep-old-wz mode, files under
+/// `mxd/Data` are read from `mxd/DataBk` instead, while the patched result is
+/// still written to `mxd/Data` via the normal target path.
+fn source_path_for_delta(target_dir: &Path, source_key: &str) -> PathBuf {
+    if is_keep_old_wz_active(target_dir) && is_under_data(source_key) {
+        // Strip the "mxd/Data" prefix (with either separator style) and prepend
+        // "mxd/DataBk".
+        let rel = source_key
+            .strip_prefix("mxd\\Data\\")
+            .or_else(|| source_key.strip_prefix("mxd/Data/"))
+            .or_else(|| source_key.strip_prefix("mxd\\Data"))
+            .or_else(|| source_key.strip_prefix("mxd/Data"))
+            .unwrap_or(source_key);
+        target_dir.join("mxd").join("DataBk").join(rel)
+    } else {
+        rel_join(target_dir, source_key)
+    }
+}
+
+/// Recursively copy all files whose extension is **not** `.wz` from `src` to
+/// `dst`, preserving the relative directory structure.
+fn copy_non_wz_files(src: &Path, dst: &Path) -> Result<()> {
+    if !src.is_dir() {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(src)
+        .with_context(|| format!("failed to read {}", src.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        let rel = path.strip_prefix(src).unwrap_or(&path);
+        let dest = dst.join(rel);
+
+        if path.is_dir() {
+            copy_non_wz_files(&path, &dest)?;
+        } else if !path.extension().map(|e| e.eq_ignore_ascii_case("wz")).unwrap_or(false) {
+            if let Some(parent) = dest.parent() {
+                std::fs::create_dir_all(parent)
+                    .with_context(|| format!("failed to create {}", parent.display()))?;
+            }
+            std::fs::copy(&path, &dest)
+                .with_context(|| format!("failed to copy {} to {}", path.display(), dest.display()))?;
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 
 /// A single file to be patched with an HDiffPatch delta.
 #[derive(Debug, Clone)]
@@ -416,7 +539,10 @@ fn apply_delta_entry<R: Read>(
     zip_name: &str,
 ) -> Result<Outcome> {
     let de = &manifest.deltas[source_key];
-    let source_path = rel_join(target_dir, source_key);
+    let source_path = source_path_for_delta(target_dir, source_key);
+    // The final destination is always under the real target directory
+    // (mxd/Data, not mxd/DataBk).
+    let dest_path = rel_join(target_dir, source_key);
 
     // The source must exist and currently match the expected origin checksum.
     if !source_path.exists() {
@@ -446,7 +572,7 @@ fn apply_delta_entry<R: Read>(
     let outcome = if applied {
         let patched_md5 = md5_file_upper(&patched_path).unwrap_or_default();
         if patched_md5.eq_ignore_ascii_case(&de.result_md5) {
-            replace_file(&patched_path, &source_path)?;
+            replace_file(&patched_path, &dest_path)?;
             Outcome::Patched
         } else {
             Outcome::Corrupted
@@ -821,6 +947,7 @@ pub fn apply_patches(
     allow_insecure: bool,
     proxy: Option<&str>,
     purge_wz_files: bool,
+    keep_old_wz_files: bool,
 ) -> Result<PatchOutcome> {
     // 1. The client must already be present.
     if !target_dir.join("mxd").is_dir() {
@@ -962,6 +1089,10 @@ pub fn apply_patches(
     }
     let global_total: usize = zip_counts.iter().sum();
 
+    // If a previous keep-old-wz run was interrupted the marker still exists;
+    // resume with the same mode automatically.
+    let effective_keep = keep_old_wz_files || target_dir.join(KEEP_OLD_DATA_MARKER).exists();
+
     // 4-5. Apply each patch in turn. The version marker is only advanced when a
     // patch's every zip part applied with no corrupted files.
     let mut last_corrupted: Vec<String> = Vec::new();
@@ -972,6 +1103,7 @@ pub fn apply_patches(
         apply_one_patch(
             &agent, &challenge, &ver2_base, pkg, from_view,
             global_offset, global_total, target_dir, &mut corrupted,
+            effective_keep,
         )?;
         global_offset += zip_counts[idx];
         if corrupted.is_empty() {
@@ -995,6 +1127,7 @@ pub fn apply_patches(
     // 6. Report, and optionally repair corrupted files from the latest index.
     if last_corrupted.is_empty() {
         plog!("patching successful: now at version {final_version}.");
+        cleanup_keep_old_wz_marker(target_dir);
         return Ok(PatchOutcome::Updated);
     }
 
@@ -1016,6 +1149,7 @@ pub fn apply_patches(
                 .unwrap_or("");
             write_installed_version(target_dir, &final_version, final_view)?;
             plog!("all corrupted files were repaired; now at version {final_version}.");
+            cleanup_keep_old_wz_marker(target_dir);
         } else {
             plog!("{} file(s) still could not be repaired:", still_failed.len());
             for f in &still_failed {
@@ -1037,7 +1171,14 @@ pub fn apply_patches(
         cms::purge_wz_files_after_patch(target_dir, allow_insecure, proxy)?;
     }
 
+    cleanup_keep_old_wz_marker(target_dir);
     Ok(PatchOutcome::Updated)
+}
+
+/// Remove the keep-old-wz `.incomplete` marker from `mxd/Data` if present.
+fn cleanup_keep_old_wz_marker(target_dir: &Path) {
+    let marker = target_dir.join(KEEP_OLD_DATA_MARKER);
+    let _ = std::fs::remove_file(&marker);
 }
 
 /// Download, then apply, every zip part of a single patch.
@@ -1066,6 +1207,7 @@ fn apply_one_patch(
     global_total: usize,
     target_dir: &Path,
     corrupted: &mut Vec<String>,
+    keep_old_wz: bool,
 ) -> Result<()> {
     if from_view.is_empty() {
         plog!("\npatch {} -> {} ({})", pkg.from, pkg.to, pkg.version_view);
@@ -1090,7 +1232,7 @@ fn apply_one_patch(
 
     // --- Determine resume state. ---
     let resuming = incomplete_path.exists() && saved_manifest_path.exists();
-    let completed_zips: std::collections::HashSet<String>;
+    let completed_zips: HashSet<String>;
     let mut manifest: Option<Manifest>;
 
     if resuming {
@@ -1101,6 +1243,13 @@ fn apply_one_patch(
             .context("failed to parse saved patch manifest")?);
         plog!("  resuming: {}/{} zip(s) already applied.",
             completed_zips.len(), filelist.file_list.len());
+        // Re-establish keep-old-wz layout if needed (the setup call is
+        // idempotent — if DataBk already exists this is a no-op).
+        if keep_old_wz {
+            if let Some(ref m) = manifest {
+                setup_keep_old_wz(target_dir, m)?;
+            }
+        }
     } else {
         completed_zips = std::collections::HashSet::new();
         manifest = None;
@@ -1144,6 +1293,12 @@ fn apply_one_patch(
                     .with_context(|| format!("failed to create {}", incomplete_path.display()))?;
             }
             manifest = Some(parse_manifest(&xml)?);
+            // Set up keep-old-wz layout before any files are processed.
+            if keep_old_wz {
+                if let Some(ref m) = manifest {
+                    setup_keep_old_wz(target_dir, m)?;
+                }
+            }
         }
 
         let m = manifest
@@ -1173,6 +1328,14 @@ fn apply_one_patch(
             let p = rel_join(target_dir, del);
             if p.exists() {
                 let _ = std::fs::remove_file(&p);
+            }
+            // In keep-old-wz mode also remove from the backup so stale files
+            // don't linger there.
+            if is_keep_old_wz_active(target_dir) && is_under_data(del) {
+                let bk = source_path_for_delta(target_dir, del);
+                if bk.exists() {
+                    let _ = std::fs::remove_file(&bk);
+                }
             }
         }
     }
@@ -1208,7 +1371,7 @@ fn read_manifest_xml_from_zip(zip_path: &Path) -> Result<String> {
 
 /// Return the set of zip file names already fully applied, as recorded in the
 /// `.incomplete` sidecar (one name per line).
-fn read_completed_zips(path: &Path) -> std::collections::HashSet<String> {
+fn read_completed_zips(path: &Path) -> HashSet<String> {
     std::fs::read_to_string(path)
         .unwrap_or_default()
         .lines()

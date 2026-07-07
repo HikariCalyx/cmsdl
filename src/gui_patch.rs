@@ -282,6 +282,7 @@ pub fn run_gui_patch(
     purge_wz_files: bool,
     lrhook: bool,
     close_after_finishing: bool,
+    keep_old_wz_files: bool,
 ) -> Result<()> {
     // Validate the client directory before showing anything. (Done before
     // hiding the console so an invalid-path error is still visible when run
@@ -310,6 +311,7 @@ pub fn run_gui_patch(
         let res = run_patch_flow(
             &target_buf, &version_buf, launch_after,
             allow_insecure, proxy, purge_wz_files, lrhook, close_after_finishing,
+            keep_old_wz_files,
         );
         if let Err(e) = &res {
             crate::plog!("error: {e:#}");
@@ -332,10 +334,11 @@ fn run_patch_flow(
     purge_wz_files: bool,
     lrhook: bool,
     close_after_finishing: bool,
+    keep_old_wz_files: bool,
 ) -> Result<()> {
     use crate::patch::{apply_patches, launch_client, PatchOutcome};
 
-    let outcome = apply_patches(target, version, allow_insecure, proxy, purge_wz_files)?;
+    let outcome = apply_patches(target, version, allow_insecure, proxy, purge_wz_files, keep_old_wz_files)?;
 
     // Choose the terminal label based on whether an update was applied and
     // whether we were asked to launch the game (requirements 9 and 10).

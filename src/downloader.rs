@@ -451,6 +451,7 @@ pub fn patch_apply(
     lrhook: bool,
     no_gui: bool,
     close_after_finishing: bool,
+    keep_old_wz_files: bool,
 ) -> Result<()> {
     match region {
         Region::Cms => {
@@ -479,7 +480,7 @@ pub fn patch_apply(
             if use_gui {
                 return crate::gui_patch::run_gui_patch(
                     target, version, launch_after, allow_insecure, proxy, purge_wz_files, lrhook,
-                    close_after_finishing,
+                    close_after_finishing, keep_old_wz_files,
                 );
             }
 
@@ -487,7 +488,7 @@ pub fn patch_apply(
                 "cmsdl {VERSION}: patching region '{region}' client at '{}' up to '{version}'.",
                 target.display()
             );
-            crate::patch::apply_patches(target, version, allow_insecure, proxy, purge_wz_files)?;
+            crate::patch::apply_patches(target, version, allow_insecure, proxy, purge_wz_files, keep_old_wz_files)?;
             if launch_after {
                 crate::patch::launch_client(target, lrhook)?;
             }

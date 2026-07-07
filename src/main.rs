@@ -196,6 +196,7 @@ fn main() -> Result<()> {
             cli.lrhook,
             cli.no_gui,
             cli.close_after_finishing,
+            cli.keep_old_wz_files,
         )?,
         Action::CreateShortcut(path) => downloader::create_shortcut(cli.region, &path, cli.lrhook, cli.no_gui, cli.close_after_finishing)?,
         Action::ManualDownload { url, target_dir, output } => downloader::manual_download(
