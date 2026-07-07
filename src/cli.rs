@@ -111,10 +111,13 @@ pub struct Cli {
     #[arg(long)]
     pub dry_run: bool,
 
-    /// Output the result of --check as JSON (suppresses informational messages).
+    /// Output the result as JSON (suppresses informational messages).
     ///
-    /// Only valid with `--check`. Prints a single JSON object with `region`,
-    /// `build`, `version`, `files`, and `total_size` fields, or `{}` on failure.
+    /// With `--check`: prints a single JSON object with `region`, `build`,
+    /// `version`, `files`, and `total_size` fields, or `{}` on failure.
+    ///
+    /// With `--patch list`: prints a JSON array of objects with `from`, `to`,
+    /// `version_view`, and `size` (bytes) fields, or `[]` on failure.
     #[arg(long)]
     pub json: bool,
 

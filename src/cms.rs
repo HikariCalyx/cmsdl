@@ -294,6 +294,34 @@ pub fn get_patch_data(allow_insecure: bool, proxy: Option<&str>) -> Result<Patch
     serde_json::from_str(&body).context("failed to parse patch metadata JSON")
 }
 
+/// Fetch a patch's `FileList.dat` (signed) and return the sum of all zip
+/// part sizes in bytes.
+///
+/// `base_url` and `file_list_url` come from [`PatchData`] and [`PatchPackage`]
+/// respectively.  The download host is stripped from `base_url` and the
+/// resulting path is signed with `challenge_code` before fetching.
+pub fn get_patch_total_size(
+    agent: &ureq::Agent,
+    challenge_code: &str,
+    base_url: &str,
+    file_list_url: &str,
+) -> Result<u64> {
+    let base_path = strip_download_host(base_url);
+    let path = format!("{base_path}{file_list_url}");
+    let t = get_current_utc8_time();
+    let url = build_signed_url(challenge_code, t, &path);
+    let json =
+        http_get_text(agent, &url).context("failed to fetch patch FileList.dat for sizing")?;
+    let fl: crate::patch::PatchFileList =
+        serde_json::from_str(&json).context("failed to parse patch FileList.dat for sizing")?;
+    let total: u64 = fl
+        .file_list
+        .iter()
+        .filter_map(|z| z.size.parse::<u64>().ok())
+        .sum();
+    Ok(total)
+}
+
 /// Strip the leading download host from a full URL, returning the path portion
 /// (e.g. `https://mxdver0.jijiagames.com/v3client/...` -> `/v3client/...`).
 ///

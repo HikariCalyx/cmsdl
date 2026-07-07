@@ -529,22 +529,22 @@ fn replace_file(from: &Path, to: &Path) -> Result<()> {
 
 /// A single zip part listed in a patch's `FileList.dat`.
 #[derive(Debug, Clone, serde::Deserialize)]
-struct PatchZip {
+pub(crate) struct PatchZip {
     /// Path of the zip relative to the patch `baseUrl` (e.g. `/5_..._1.zip`).
-    url: String,
+    pub(crate) url: String,
     /// Expected MD5 of the zip.
-    md5: String,
+    pub(crate) md5: String,
     /// Expected size in bytes, as a string.
-    size: String,
+    pub(crate) size: String,
 }
 
 /// A patch's `FileList.dat`: a base URL plus the ordered list of zip parts.
 #[derive(Debug, Clone, serde::Deserialize)]
-struct PatchFileList {
+pub(crate) struct PatchFileList {
     #[serde(rename = "baseUrl")]
-    base_url: String,
+    pub(crate) base_url: String,
     #[serde(rename = "fileList")]
-    file_list: Vec<PatchZip>,
+    pub(crate) file_list: Vec<PatchZip>,
 }
 
 /// Read the installed version from `<target>/mxd/LocalVersion3.xml`, if any.

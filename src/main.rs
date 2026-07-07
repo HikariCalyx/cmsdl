@@ -183,7 +183,7 @@ fn main() -> Result<()> {
             downloader::get_bit_torrent(cli.region, output.as_deref(), cli.allow_insecure, proxy)?
         }
         Action::Patch(PatchAction::List) => {
-            downloader::patch_list(cli.region, cli.allow_insecure, proxy)?
+            downloader::patch_list(cli.region, cli.allow_insecure, proxy, cli.json)?
         }
         Action::Patch(PatchAction::Apply { version, target }) => downloader::patch_apply(
             cli.region,

@@ -342,25 +342,86 @@ pub fn get_bit_torrent(
 /// List the published incremental patches for the given region.
 ///
 /// Only the CMS region publishes patch metadata.
-pub fn patch_list(region: Region, allow_insecure: bool, proxy: Option<&str>) -> Result<()> {
+///
+/// When `json` is true, output is a JSON array of objects with `from`, `to`,
+/// `version_view`, and `size` (bytes; `null` if unavailable) fields.
+pub fn patch_list(
+    region: Region,
+    allow_insecure: bool,
+    proxy: Option<&str>,
+    json: bool,
+) -> Result<()> {
     match region {
         Region::Cms => {
-            println!("cmsdl {VERSION}: listing patches for region '{region}'.");
-            let patches = cms::get_patch_data(allow_insecure, proxy)?.packages;
+            if !json {
+                println!("cmsdl {VERSION}: listing patches for region '{region}'.");
+            }
+            let data = cms::get_patch_data(allow_insecure, proxy)?;
+            let patches = &data.packages;
 
             if patches.is_empty() {
-                println!("no patches published.");
+                if json {
+                    println!("[]");
+                } else {
+                    println!("no patches published.");
+                }
                 return Ok(());
             }
 
-            println!();
-            println!("{:<12}  {:<12}  {}", "FROM", "TO", "VERSION VIEW");
-            println!("{:<12}  {:<12}  {}", "----", "--", "------------");
-            for p in &patches {
-                println!("{:<12}  {:<12}  {}", p.from, p.to, p.version_view);
+            let agent = crate::net::agent(allow_insecure, proxy);
+            let challenge =
+                cms::get_challenge_key(&agent).context("failed to obtain challenge code")?;
+
+            if json {
+                let list: Vec<serde_json::Value> = patches
+                    .iter()
+                    .map(|p| {
+                        let size = cms::get_patch_total_size(
+                            &agent,
+                            &challenge,
+                            &data.base_url,
+                            &p.file_list_url,
+                        )
+                        .ok();
+                        serde_json::json!({
+                            "from": p.from,
+                            "to": p.to,
+                            "version_view": p.version_view,
+                            "size": size,
+                        })
+                    })
+                    .collect();
+                println!(
+                    "{}",
+                    serde_json::to_string(&list).unwrap_or_else(|_| "[]".into())
+                );
+            } else {
+                println!();
+                println!(
+                    "{:<12}  {:<12}  {:<12}  {}",
+                    "FROM", "TO", "PATCH SIZE", "VERSION VIEW"
+                );
+                println!(
+                    "{:<12}  {:<12}  {:<12}  {}",
+                    "----", "--", "----------", "------------"
+                );
+                for p in patches {
+                    let size_str = cms::get_patch_total_size(
+                        &agent,
+                        &challenge,
+                        &data.base_url,
+                        &p.file_list_url,
+                    )
+                    .map(|s| crate::progress::format_size(s))
+                    .unwrap_or_else(|_| "?".to_string());
+                    println!(
+                        "{:<12}  {:<12}  {:<12}  {}",
+                        p.from, p.to, size_str, p.version_view
+                    );
+                }
+                println!();
+                println!("{} patch(es) total.", patches.len());
             }
-            println!();
-            println!("{} patch(es) total.", patches.len());
         }
         Region::Tms => {
             bail!("region '{region}' does not publish patch metadata");
