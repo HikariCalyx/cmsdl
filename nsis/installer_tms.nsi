@@ -224,7 +224,7 @@ Function ModeSelectPage
   StrCmp $NoGuiFlag " --no-gui" 0 +2
     ${NSD_Check} $CheckConsole
 
-  ; Gaming VPN Mode checkbox. When checked, cmsdl is extracted to $TMPDIR
+  ; Gaming VPN Mode checkbox. When checked, cmsdl is extracted to $TEMP
   ; as MapleStory.exe so gaming VPN software can detect and route it.
   ${NSD_CreateCheckbox} 10u 92u 95% 12u "$(STR_GAMING_VPN_MODE)"
   Pop $CheckGamingVPN
@@ -345,16 +345,16 @@ Section "Install"
     ; Registry + uninstaller.
     Call WriteRegInfo
 
-    ; When Gaming VPN Mode is enabled, copy cmsdl.exe to $TMPDIR as
+    ; When Gaming VPN Mode is enabled, copy cmsdl.exe to $TEMP as
     ; MapleStory.exe so that gaming VPN / accelerator software can
     ; detect and route the process by its executable name.
     StrCmp $GamingVPNFlag "1" 0 vpnDone
-      CopyFiles /SILENT "$INSTDIR\cmsdl.exe" "$TMPDIR\MapleStory.exe"
+      CopyFiles /SILENT "$INSTDIR\cmsdl.exe" "$TEMP\MapleStory.exe"
     vpnDone:
 
     ; Warn if the connection is metered before starting the download.
     StrCmp $GamingVPNFlag "1" 0 +3
-      ExecWait '"$TMPDIR\MapleStory.exe" is_metered' $0
+      ExecWait '"$TEMP\MapleStory.exe" is_metered' $0
       Goto +2
     ExecWait '"$INSTDIR\cmsdl.exe" is_metered' $0
     StrCmp $0 "1" 0 +3
@@ -365,7 +365,7 @@ Section "Install"
     ; window where its indicatif progress bars can render.
     DetailPrint "$(STR_DOWNLOADING)"
     StrCmp $GamingVPNFlag "1" 0 +3
-      ExecWait '"$TMPDIR\MapleStory.exe" tms --download "$INSTDIR" --purge-wz-files$NoGuiFlag$CloseFlag$ProxyFlag' $0
+      ExecWait '"$TEMP\MapleStory.exe" tms --download "$INSTDIR" --allow-insecure --purge-wz-files$NoGuiFlag$CloseFlag$ProxyFlag' $0
       Goto checkDownloadResult
     ExecWait '"$INSTDIR\cmsdl.exe" tms --download "$INSTDIR" --purge-wz-files$NoGuiFlag$CloseFlag$ProxyFlag' $0
     checkDownloadResult:

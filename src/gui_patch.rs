@@ -306,6 +306,7 @@ pub fn run_gui_patch(
     let target_buf = target.to_path_buf();
     let version_buf = version.to_string();
     let proxy_buf = proxy.map(|s| s.to_string());
+    let ui_for_result = Arc::clone(&ui);
     std::thread::spawn(move || {
         let proxy = proxy_buf.as_deref();
         let res = run_patch_flow(
@@ -317,11 +318,20 @@ pub fn run_gui_patch(
             crate::plog!("error: {e:#}");
             // Surface the failure on the status line; leave the window open.
             progress::finish(&format!("{e}"), false);
+        } else if let Ok(mut m) = ui_for_result.lock() {
+            m.exit_code = 0;
         }
     });
 
     // Block on the window's message loop until it closes.
-    gui::run_window(ui)
+    let ui_hold = Arc::clone(&ui);
+    gui::run_window(ui)?;
+
+    let exit_code = ui_hold.lock().unwrap().exit_code;
+    if exit_code != 0 {
+        anyhow::bail!("patch failed (exit code {exit_code})");
+    }
+    Ok(())
 }
 
 /// The patch + optional launch flow, reporting through `progress::*`.

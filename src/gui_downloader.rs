@@ -339,6 +339,7 @@ pub fn run_gui_download(
     let proxy_buf = proxy.map(|s| s.to_string());
     let filter_owned = filter.cloned();
 
+    let ui_for_result = Arc::clone(&ui);
     std::thread::spawn(move || {
         let proxy = proxy_buf.as_deref();
         let res = crate::downloader::run_download_core(
@@ -352,11 +353,26 @@ pub fn run_gui_download(
             purge_wz_files,
         );
         match res {
-            Ok(()) => progress::dl_finish(close_after_finishing),
+            Ok(()) => {
+                if let Ok(mut m) = ui_for_result.lock() {
+                    m.exit_code = 0;
+                }
+                progress::dl_finish(close_after_finishing);
+            }
             Err(e) => progress::dl_fail(&format!("{e}")),
         }
     });
 
     // Block on the window's message loop until it closes.
-    gui::run_window(ui)
+    let ui_hold = Arc::clone(&ui);
+    gui::run_window(ui)?;
+
+    // The background thread sets exit_code = 0 on success. If the user
+    // closed the window during an error (or before completion), the
+    // default exit_code of 1 is preserved, and we propagate the failure.
+    let exit_code = ui_hold.lock().unwrap().exit_code;
+    if exit_code != 0 {
+        anyhow::bail!("download failed (exit code {exit_code})");
+    }
+    Ok(())
 }

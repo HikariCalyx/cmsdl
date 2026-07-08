@@ -29,7 +29,6 @@ use std::sync::{Arc, Mutex};
 
 /// Shared UI model driven by whatever task owns the window (the demo animation
 /// or the real patcher). The window's repaint timer reads this on each tick.
-#[derive(Default)]
 pub struct UiModel {
     /// Primary status line (label1), drawn at (12, 540) in #979497.
     pub label1: String,
@@ -42,6 +41,22 @@ pub struct UiModel {
     pub progress: f32,
     /// When set, the window closes itself on the next timer tick.
     pub should_close: bool,
+    /// Exit code: 0 = success, non-zero = failure. Defaults to 1 so that
+    /// manually closing the window before completion is treated as an error.
+    pub exit_code: i32,
+}
+
+impl Default for UiModel {
+    fn default() -> Self {
+        UiModel {
+            label1: String::new(),
+            label2: String::new(),
+            label3: String::new(),
+            progress: 0.0,
+            should_close: false,
+            exit_code: 1,
+        }
+    }
 }
 
 impl UiModel {
