@@ -365,7 +365,7 @@ Section "Install"
     ; window where its indicatif progress bars can render.
     DetailPrint "$(STR_DOWNLOADING)"
     StrCmp $GamingVPNFlag "1" 0 +3
-      ExecWait '"$TEMP\MapleStory.exe" tms --download "$INSTDIR" --allow-insecure --purge-wz-files$NoGuiFlag$CloseFlag$ProxyFlag' $0
+      ExecWait '"$TEMP\MapleStory.exe" tms --download "$INSTDIR" --allow-insecure --purge-wz-files --no-gui$ProxyFlag' $0
       Goto checkDownloadResult
     ExecWait '"$INSTDIR\cmsdl.exe" tms --download "$INSTDIR" --purge-wz-files$NoGuiFlag$CloseFlag$ProxyFlag' $0
     checkDownloadResult:
