@@ -343,6 +343,8 @@ pub struct BuildInfo {
     pub version_view: Option<String>,
     /// `Last-Modified` header from the file-list response, when available.
     pub last_modified: Option<String>,
+    /// Total size of all files in the build, in bytes.
+    pub total_size: u64,
 }
 
 /// Summary information parsed from a client file list.
@@ -400,8 +402,27 @@ pub fn get_client_file_list_full(allow_insecure: bool, proxy: Option<&str>, buil
     Ok((info, entries))
 }
 
+/// Parse just the total size of all files from client-file-list contents,
+/// without allocating the full entry list.
+fn parse_total_size_from_file_list(contents: &str) -> u64 {
+    let mut total: u64 = 0;
+    for line in contents.lines().skip(1) {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(size_str) = line.split('|').nth(1) {
+            if let Ok(size) = size_str.trim().parse::<u64>() {
+                total += size;
+            }
+        }
+    }
+    total
+}
+
 /// List all builds from `since` up to the latest, returning each build's
-/// number, version string, and (when available) display version view.
+/// number, version string, total file size, and (when available) display
+/// version view.
 ///
 /// Builds are probed in parallel and results are returned in increasing order.
 pub fn list_builds_since(
@@ -434,6 +455,7 @@ pub fn list_builds_since(
                         .find(|l| !l.trim().is_empty())
                         .and_then(|h| h.rsplit('|').next().map(|s| s.trim().to_owned()))
                         .unwrap_or_default();
+                    let total_size = parse_total_size_from_file_list(&contents);
                     let version_view = fetch_local_version_xml_view(
                         &agent, &challenge, &version, &contents,
                     );
@@ -442,6 +464,7 @@ pub fn list_builds_since(
                         version,
                         version_view,
                         last_modified,
+                        total_size,
                     });
                 }
             });

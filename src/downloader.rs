@@ -54,6 +54,7 @@ pub fn check(region: Region, filter: Option<&FileFilter>, verbose: bool, json: b
                         "build": b.number,
                         "version": b.version,
                         "version_view": b.version_view,
+                        "total_size": b.total_size,
                         "last_modified": b.last_modified.as_deref()
                             .and_then(http_date_to_unix),
                     })
@@ -62,14 +63,15 @@ pub fn check(region: Region, filter: Option<&FileFilter>, verbose: bool, json: b
             println!("{}", serde_json::to_string(&list).unwrap_or_else(|_| "[]".into()));
         } else {
             println!();
-            println!("{:<8}  {:<12}  {:<8}  {}", "BUILD", "VERSION", "VIEW", "LAST-MODIFIED");
-            println!("{:<8}  {:<12}  {:<8}  {}", "-----", "-------", "----", "-------------");
+            println!("{:<8}  {:<12}  {:<8}  {:<12}  {}", "BUILD", "VERSION", "VIEW", "SIZE", "LAST-MODIFIED");
+            println!("{:<8}  {:<12}  {:<8}  {:<12}  {}", "-----", "-------", "----", "----", "-------------");
             for b in &builds {
                 println!(
-                    "{:<8}  {:<12}  {:<8}  {}",
+                    "{:<8}  {:<12}  {:<8}  {:<12}  {}",
                     b.number,
                     b.version,
                     b.version_view.as_deref().unwrap_or("-"),
+                    human_readable_size(b.total_size),
                     b.last_modified.as_deref().unwrap_or("-"),
                 );
             }
@@ -545,6 +547,22 @@ fn with_thousands_separator(value: u64) -> String {
     }
 
     out
+}
+
+/// Format a byte count in human-readable form (e.g. `12.34 GB`).
+fn human_readable_size(bytes: u64) -> String {
+    const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
+    let mut size = bytes as f64;
+    let mut unit_idx = 0;
+    while size >= 1024.0 && unit_idx < UNITS.len() - 1 {
+        size /= 1024.0;
+        unit_idx += 1;
+    }
+    if unit_idx == 0 {
+        format!("{} B", bytes)
+    } else {
+        format!("{:.2} {}", size, UNITS[unit_idx])
+    }
 }
 
 /// Parse an HTTP-date string (RFC 2822) into a Unix timestamp.
