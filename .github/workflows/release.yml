@@ -177,10 +177,6 @@ jobs:
           files: artifacts/*
           prerelease: ${{ contains(github.ref_name, '-') }}
 
-      - name: Exclude MapleStoryTW installer from Gitee release
-        if: ${{ !contains(github.ref_name, '-') }}
-        run: rm -f artifacts/MapleStoryTW*
-
       - name: Publish Gitee release
         if: ${{ !contains(github.ref_name, '-') }} # Only publish to Gitee for non-prerelease tags (no hyphen in tag name).
         uses: nicennnnnnnlee/action-gitee-release@master
