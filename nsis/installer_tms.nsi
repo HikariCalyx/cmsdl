@@ -49,6 +49,10 @@ Var RadioMSVC
 Var CheckConsole
 Var NoGuiFlag
 Var CloseFlag
+Var CheckGamingVPN
+Var CheckSystemProxy
+Var GamingVPNFlag
+Var ProxyFlag
 
 ; ============================================================================
 ; MUI2 Settings
@@ -96,6 +100,8 @@ LangString STR_LINK_TROUBLESHOOTING ${LANG_ENGLISH} "Troubleshooting (Traditiona
 LangString STR_USE_CONSOLE_TYPE ${LANG_ENGLISH} "Use the console-type CMSDL interface"
 LangString STR_UPDATE_ABORT ${LANG_ENGLISH} "No existing game installation was found in the selected directory. Update cannot continue."
 LangString STR_METERED_WARNING ${LANG_ENGLISH} "Your network connection is metered.$\nDownloading the game may incur additional costs.$\n$\nDo you want to continue?"
+LangString STR_GAMING_VPN_MODE ${LANG_ENGLISH} "Gaming VPN Mode (e.g. WTFast, ExitLag, Mudfish, etc.)"
+LangString STR_SYSTEM_PROXY_MODE ${LANG_ENGLISH} "Use System Proxy"
 
 ; ============================================================================
 ; Language Strings - Traditional Chinese
@@ -121,6 +127,8 @@ LangString STR_LINK_TROUBLESHOOTING ${LANG_TRADCHINESE} "使用遇到問題了�
 LangString STR_USE_CONSOLE_TYPE ${LANG_TRADCHINESE} "使用指令樣式的CMSDL介面"
 LangString STR_UPDATE_ABORT ${LANG_TRADCHINESE} "在所選目錄中未找到現有的遊戲安裝。無法繼續更新。"
 LangString STR_METERED_WARNING ${LANG_TRADCHINESE} "您的網路連線為按流量計費的連線。$\n下載遊戲可能會產生額外費用。$\n$\n您是否要繼續？"
+LangString STR_GAMING_VPN_MODE ${LANG_TRADCHINESE} "遊戲 VPN / 加速器模式 (例如 WTFast, ExitLag, Mudfish 等)"
+LangString STR_SYSTEM_PROXY_MODE ${LANG_TRADCHINESE} "使用系統代理"
 
 ; ============================================================================
 ; Installer Attributes
@@ -163,6 +171,8 @@ Function .onInit
   ; --no-gui is selected.
   StrCpy $NoGuiFlag ""
   StrCpy $CloseFlag " --close-after-finishing"
+  StrCpy $GamingVPNFlag ""
+  StrCpy $ProxyFlag ""
 
   ; Select language based on OS language (Traditional Chinese = 0404).
   ; Set this first so the requirement-check message boxes are localized.
@@ -214,6 +224,20 @@ Function ModeSelectPage
   StrCmp $NoGuiFlag " --no-gui" 0 +2
     ${NSD_Check} $CheckConsole
 
+  ; Gaming VPN Mode checkbox. When checked, cmsdl is extracted to $TMPDIR
+  ; as MapleStory.exe so gaming VPN software can detect and route it.
+  ${NSD_CreateCheckbox} 10u 132u 95% 12u "$(STR_GAMING_VPN_MODE)"
+  Pop $CheckGamingVPN
+  StrCmp $GamingVPNFlag "1" 0 +2
+    ${NSD_Check} $CheckGamingVPN
+
+  ; System Proxy Mode checkbox. When checked, --proxy is added to the
+  ; command line so cmsdl uses the configured system proxy.
+  ${NSD_CreateCheckbox} 10u 152u 95% 12u "$(STR_SYSTEM_PROXY_MODE)"
+  Pop $CheckSystemProxy
+  StrCmp $ProxyFlag " --proxy" 0 +2
+    ${NSD_Check} $CheckSystemProxy
+
   ; Restore previous selection
   StrCmp $InstallMode "2" selUpdateCMSDL
   StrCmp $InstallMode "3" selMSVC
@@ -252,6 +276,22 @@ Function ModeSelectPageLeave
     ${Else}
       StrCpy $NoGuiFlag ""
       StrCpy $CloseFlag " --close-after-finishing"
+    ${EndIf}
+
+    ; Gaming VPN Mode checkbox
+    ${NSD_GetState} $CheckGamingVPN $0
+    ${If} $0 == 1
+      StrCpy $GamingVPNFlag "1"
+    ${Else}
+      StrCpy $GamingVPNFlag ""
+    ${EndIf}
+
+    ; System Proxy Mode checkbox
+    ${NSD_GetState} $CheckSystemProxy $0
+    ${If} $0 == 1
+      StrCpy $ProxyFlag " --proxy"
+    ${Else}
+      StrCpy $ProxyFlag ""
     ${EndIf}
 FunctionEnd
 
@@ -305,7 +345,17 @@ Section "Install"
     ; Registry + uninstaller.
     Call WriteRegInfo
 
+    ; When Gaming VPN Mode is enabled, copy cmsdl.exe to $TMPDIR as
+    ; MapleStory.exe so that gaming VPN / accelerator software can
+    ; detect and route the process by its executable name.
+    StrCmp $GamingVPNFlag "1" 0 vpnDone
+      CopyFiles /SILENT "$INSTDIR\cmsdl.exe" "$TMPDIR\MapleStory.exe"
+    vpnDone:
+
     ; Warn if the connection is metered before starting the download.
+    StrCmp $GamingVPNFlag "1" 0 +3
+      ExecWait '"$TMPDIR\MapleStory.exe" is_metered' $0
+      Goto +2
     ExecWait '"$INSTDIR\cmsdl.exe" is_metered' $0
     StrCmp $0 "1" 0 +3
       MessageBox MB_YESNO|MB_ICONEXCLAMATION "$(STR_METERED_WARNING)" IDYES +2
@@ -314,7 +364,11 @@ Section "Install"
     ; Execute download command. ExecWait gives cmsdl.exe a real console
     ; window where its indicatif progress bars can render.
     DetailPrint "$(STR_DOWNLOADING)"
-    ExecWait '"$INSTDIR\cmsdl.exe" tms --download "$INSTDIR" --purge-wz-files$NoGuiFlag$CloseFlag' $0
+    StrCmp $GamingVPNFlag "1" 0 +3
+      ExecWait '"$TMPDIR\MapleStory.exe" tms --download "$INSTDIR" --purge-wz-files$NoGuiFlag$CloseFlag$ProxyFlag' $0
+      Goto checkDownloadResult
+    ExecWait '"$INSTDIR\cmsdl.exe" tms --download "$INSTDIR" --purge-wz-files$NoGuiFlag$CloseFlag$ProxyFlag' $0
+    checkDownloadResult:
     StrCmp $0 "0" makeShortcuts
       MessageBox MB_ICONSTOP "$(STR_DOWNLOAD_FAILED)"
       Abort
