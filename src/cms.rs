@@ -1173,8 +1173,10 @@ pub fn download_client(
     });
 
     // Write a matching LocalVersion3.xml for the launcher (unless the server
-    // already provides it as part of the downloaded file list).
-    if let Err(e) = write_local_version_xml(target_dir, &version, &version_view, !has_local_version_xml) {
+    // already provides it as part of the downloaded file list, or the user
+    // has specified a path filter which means this is a partial download).
+    let write_xml = !has_local_version_xml && filter.is_none();
+    if let Err(e) = write_local_version_xml(target_dir, &version, &version_view, write_xml) {
         eprintln!("warning: failed to write version file: {e:#}");
     }
 

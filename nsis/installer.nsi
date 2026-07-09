@@ -48,6 +48,7 @@ Var RadioInstall
 Var RadioUpdate
 Var RadioUpdateCMSDL
 Var RadioMSVC
+Var RadioFixSDOLogin
 Var LinkTroubleshooting
 Var CheckNoLR
 Var CheckConsole
@@ -100,6 +101,10 @@ LangString STR_MODE_INSTALL ${LANG_ENGLISH} "Install or repair (download the ful
 LangString STR_MODE_UPDATE ${LANG_ENGLISH} "Update (update an existing game installation)"
 LangString STR_MODE_UPDATE_CMSDL ${LANG_ENGLISH} "Update CMSDL"
 LangString STR_MODE_MSVC ${LANG_ENGLISH} "Repair Runtime (VCRUNTIME140.dll missing, etc)"
+LangString STR_MODE_FIX_SDOLOGIN ${LANG_ENGLISH} "Fix SDOLogin error"
+LangString STR_FIX_SDOLOGIN_WARNING ${LANG_ENGLISH} "Fixing the SDOLogin error will clear all your existing account records.$\nDo you want to continue?"
+LangString STR_FIX_SDOLOGIN_NO_GAME ${LANG_ENGLISH} "MapleStory.exe was not found in the selected directory. Please select a valid game installation."
+LangString STR_FIX_SDOLOGIN_FAILED ${LANG_ENGLISH} "SDOLogin fix failed with error code $0."
 LangString STR_LINK_TROUBLESHOOTING ${LANG_ENGLISH} "Troubleshooting (Simplified Chinese only)"
 LangString STR_UPDATE_ABORT ${LANG_ENGLISH} "No existing game installation was found in the selected directory. Update cannot continue."
 LangString STR_DO_NOT_INCLUDE_LR ${LANG_ENGLISH} "Do not include Locale Remulator"
@@ -129,6 +134,10 @@ LangString STR_MODE_INSTALL ${LANG_SIMPCHINESE} "安装或修复（下载完整�
 LangString STR_MODE_UPDATE ${LANG_SIMPCHINESE} "更新（更新现有游戏）"
 LangString STR_MODE_UPDATE_CMSDL ${LANG_SIMPCHINESE} "升级 CMSDL"
 LangString STR_MODE_MSVC ${LANG_SIMPCHINESE} "修复运行时（VCRUNTIME140.dll 丢失等错误）"
+LangString STR_MODE_FIX_SDOLOGIN ${LANG_SIMPCHINESE} "尝试修复登录器错误"
+LangString STR_FIX_SDOLOGIN_WARNING ${LANG_SIMPCHINESE} "修复登录器将会清除您原有的所有账号记录。$\n您还想继续吗？"
+LangString STR_FIX_SDOLOGIN_NO_GAME ${LANG_SIMPCHINESE} "在所选目录中未找到 MapleStory.exe。请选择有效的游戏安装目录。"
+LangString STR_FIX_SDOLOGIN_FAILED ${LANG_SIMPCHINESE} "登录器修复失败，错误代码：$0。"
 LangString STR_LINK_TROUBLESHOOTING ${LANG_SIMPCHINESE} "使用遇到问题了？点击查看帮助"
 LangString STR_UPDATE_ABORT ${LANG_SIMPCHINESE} "在所选目录中未找到现有的游戏安装。无法继续更新。"
 LangString STR_DO_NOT_INCLUDE_LR ${LANG_SIMPCHINESE} "你不应该看到这个选项"
@@ -137,6 +146,7 @@ LangString STR_REMOVE_OFFICIAL_LAUNCHER ${LANG_SIMPCHINESE} "您想要移除官�
 LangString STR_REMOVE_OFFICIAL_LAUNCHER_UAC ${LANG_SIMPCHINESE} "您当前正在运行官方启动器，但尚未关闭它。关闭后，请点击重试。"
 LangString STR_METERED_WARNING ${LANG_SIMPCHINESE} "您的网络连接为按流量计费的连接。$\n下载游戏可能会产生额外费用。$\n$\n您是否要继续？"
 LangString STR_KEEP_OLD_WZ ${LANG_SIMPCHINESE} "保留旧的 WZ 文件（仅供高级用户）"
+
 ; ============================================================================
 ; Installer Attributes
 ; ============================================================================
@@ -240,22 +250,24 @@ Function ModeSelectPage
   Pop $RadioUpdateCMSDL
   ${NSD_CreateRadioButton} 10u 60u 95% 12u "$(STR_MODE_MSVC)"
   Pop $RadioMSVC
+  ${NSD_CreateRadioButton} 10u 78u 95% 12u "$(STR_MODE_FIX_SDOLOGIN)"
+  Pop $RadioFixSDOLogin
 
-  ${NSD_CreateLink} 10u 80u 95% 12u "$(STR_LINK_TROUBLESHOOTING)"
+  ${NSD_CreateLink} 10u 96u 95% 12u "$(STR_LINK_TROUBLESHOOTING)"
   Pop $LinkTroubleshooting
   ${NSD_OnClick} $LinkTroubleshooting OpenTroubleshootingLink
 
   ; Console-mode opt-in checkbox (always available). When checked, the created
   ; shortcut and the post-install launch pass --no-gui so the patcher runs in
   ; the console instead of the graphical window.
-  ${NSD_CreateCheckbox} 10u 112u 95% 12u "$(STR_USE_CONSOLE_TYPE)"
+  ${NSD_CreateCheckbox} 10u 128u 95% 12u "$(STR_USE_CONSOLE_TYPE)"
   Pop $CheckConsole
   ; Restore previous state if the user went back.
   StrCmp $NoGuiFlag " --no-gui" 0 +2
     ${NSD_Check} $CheckConsole
 
   ; Keep-old-WZ-files checkbox (only visible in Update mode).
-  ${NSD_CreateCheckbox} 10u 128u 95% 12u "$(STR_KEEP_OLD_WZ)"
+  ${NSD_CreateCheckbox} 10u 144u 95% 12u "$(STR_KEEP_OLD_WZ)"
   Pop $CheckKeepOldWz
   ; Restore previous state.
   StrCmp $KeepOldWzFlag " --keep-old-wz-files" 0 +2
@@ -276,6 +288,7 @@ Function ModeSelectPage
   StrCmp $InstallMode "2" selUpdate
   StrCmp $InstallMode "3" selUpdateCMSDL
   StrCmp $InstallMode "4" selMSVC
+  StrCmp $InstallMode "5" selFixSDOLogin
     ${NSD_Check} $RadioInstall
     Goto modeShow
   selUpdate:
@@ -286,6 +299,9 @@ Function ModeSelectPage
     Goto modeShow
   selMSVC:
     ${NSD_Check} $RadioMSVC
+    Goto modeShow
+  selFixSDOLogin:
+    ${NSD_Check} $RadioFixSDOLogin
 
   modeShow:
   nsDialogs::Show
@@ -299,6 +315,8 @@ Function ModeSelectPageLeave
   StrCmp $0 "1" setUpdateCMSDL
   ${NSD_GetState} $RadioMSVC $0
   StrCmp $0 "1" setMSVC
+  ${NSD_GetState} $RadioFixSDOLogin $0
+  StrCmp $0 "1" setFixSDOLogin
     StrCpy $InstallMode "1"
     Goto leaveDone
   setUpdate:
@@ -309,6 +327,9 @@ Function ModeSelectPageLeave
     Goto leaveDone
   setMSVC:
     StrCpy $InstallMode "4"
+    Goto leaveDone
+  setFixSDOLogin:
+    StrCpy $InstallMode "5"
   leaveDone:
     ; If the opt-out checkbox exists and is checked, clear the lrhook flag.
     StrCmp $LrHookFlag "" doneLR
@@ -378,6 +399,9 @@ FunctionEnd
 
 Section "Install"
   SetOutPath "$INSTDIR"
+
+  ; Fix SDOLogin mode: skip LR extraction, registry, and uninstaller.
+  StrCmp $InstallMode "5" modeFixSDOLogin
 
   ; Extract LocaleRemulator files (only for non-Simplified-Chinese systems).
   ; The flag variable is empty on zh-CN systems, contains " --lrhook" otherwise.
@@ -533,6 +557,38 @@ Section "Install"
     StrCmp $0 "0" sectionDone
       MessageBox MB_ICONSTOP "$(STR_MSVC_FAILED)"
       Abort
+
+  ; ----------------------------------------------------------------------
+  ; FIX SDOLOGIN MODE
+  ; ----------------------------------------------------------------------
+  modeFixSDOLogin:
+    ; Verify the selected directory contains a game installation.
+    IfFileExists "$INSTDIR\mxd\MapleStory.exe" sdoCheckOk
+      MessageBox MB_ICONSTOP "$(STR_FIX_SDOLOGIN_NO_GAME)"
+      Abort
+
+    sdoCheckOk:
+    ; Confirm the fix (clears existing account records).
+    MessageBox MB_YESNO|MB_ICONEXCLAMATION "$(STR_FIX_SDOLOGIN_WARNING)" IDYES sdoProceed
+      Abort
+
+    sdoProceed:
+    ; Extract cmsdl.exe to the game directory (skip registry and uninstaller).
+    SetOutPath "$INSTDIR"
+    File "..\target\release\cmsdl.exe"
+
+    ; Remove the SDO directory entirely.
+    RMDir /r "$INSTDIR\mxd\SDO"
+
+    ; Run the filtered download to restore the SDO files.
+    DetailPrint "Fixing SDOLogin error..."
+    ExecWait '"$INSTDIR\cmsdl.exe" cms --download "$INSTDIR" --filter="SDO"$NoGuiFlag$CloseFlag' $0
+    StrCmp $0 "0" sdoDone
+      MessageBox MB_ICONSTOP "$(STR_FIX_SDOLOGIN_FAILED)"
+      Abort
+
+    sdoDone:
+    Goto sectionDone
 
   ; ----------------------------------------------------------------------
   ; SHARED: shortcuts
