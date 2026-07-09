@@ -246,36 +246,37 @@ Function ModeSelectPage
   Pop $RadioInstall
   ${NSD_CreateRadioButton} 10u 24u 95% 12u "$(STR_MODE_UPDATE)"
   Pop $RadioUpdate
-  ${NSD_CreateRadioButton} 10u 42u 95% 12u "$(STR_MODE_UPDATE_CMSDL)"
+
+  ; Keep-old-WZ-files checkbox (only visible in Update mode).
+  ${NSD_CreateCheckbox} 20u 40u 90% 12u "$(STR_KEEP_OLD_WZ)"
+  Pop $CheckKeepOldWz
+  ; Restore previous state.
+  StrCmp $KeepOldWzFlag " --keep-old-wz-files" 0 +2
+    ${NSD_Check} $CheckKeepOldWz
+
+  ${NSD_CreateRadioButton} 10u 58u 95% 12u "$(STR_MODE_UPDATE_CMSDL)"
   Pop $RadioUpdateCMSDL
-  ${NSD_CreateRadioButton} 10u 60u 95% 12u "$(STR_MODE_MSVC)"
+  ${NSD_CreateRadioButton} 10u 76u 95% 12u "$(STR_MODE_MSVC)"
   Pop $RadioMSVC
-  ${NSD_CreateRadioButton} 10u 78u 95% 12u "$(STR_MODE_FIX_SDOLOGIN)"
+  ${NSD_CreateRadioButton} 10u 94u 95% 12u "$(STR_MODE_FIX_SDOLOGIN)"
   Pop $RadioFixSDOLogin
 
-  ${NSD_CreateLink} 10u 96u 95% 12u "$(STR_LINK_TROUBLESHOOTING)"
+  ${NSD_CreateLink} 10u 112u 95% 12u "$(STR_LINK_TROUBLESHOOTING)"
   Pop $LinkTroubleshooting
   ${NSD_OnClick} $LinkTroubleshooting OpenTroubleshootingLink
 
   ; Console-mode opt-in checkbox (always available). When checked, the created
   ; shortcut and the post-install launch pass --no-gui so the patcher runs in
   ; the console instead of the graphical window.
-  ${NSD_CreateCheckbox} 10u 128u 95% 12u "$(STR_USE_CONSOLE_TYPE)"
+  ${NSD_CreateCheckbox} 10u 144u 95% 12u "$(STR_USE_CONSOLE_TYPE)"
   Pop $CheckConsole
   ; Restore previous state if the user went back.
   StrCmp $NoGuiFlag " --no-gui" 0 +2
     ${NSD_Check} $CheckConsole
 
-  ; Keep-old-WZ-files checkbox (only visible in Update mode).
-  ${NSD_CreateCheckbox} 10u 144u 95% 12u "$(STR_KEEP_OLD_WZ)"
-  Pop $CheckKeepOldWz
-  ; Restore previous state.
-  StrCmp $KeepOldWzFlag " --keep-old-wz-files" 0 +2
-    ${NSD_Check} $CheckKeepOldWz
-
   ; Locale Remulator opt-out checkbox (only visible on non-zh-CN systems).
   StrCmp $LrHookFlag "" restoreSelection
-    ${NSD_CreateCheckbox} 10u 96u 95% 12u "$(STR_DO_NOT_INCLUDE_LR)"
+    ${NSD_CreateCheckbox} 10u 112u 95% 12u "$(STR_DO_NOT_INCLUDE_LR)"
     Pop $CheckNoLR
     ; Restore previous checkbox state if going back.
     StrCmp $LrHookFlag " --lrhook" 0 +2
