@@ -249,22 +249,22 @@ Function ModeSelectPage
   ${NSD_CreateRadioButton} 10u 78u 95% 12u "$(STR_MODE_FIX_SDOLOGIN)"
   Pop $RadioFixSDOLogin
 
-  ${NSD_CreateLink} 10u 96u 95% 12u "$(STR_LINK_TROUBLESHOOTING)"
-  Pop $LinkTroubleshooting
-  ${NSD_OnClick} $LinkTroubleshooting OpenTroubleshootingLink
-
   ; Console-mode opt-in checkbox (always available). When checked, the created
   ; shortcut and the post-install launch pass --no-gui so the patcher runs in
   ; the console instead of the graphical window.
-  ${NSD_CreateCheckbox} 10u 128u 95% 12u "$(STR_USE_CONSOLE_TYPE)"
+  ${NSD_CreateCheckbox} 10u 96u 95% 12u "$(STR_USE_CONSOLE_TYPE)"
   Pop $CheckConsole
   ; Restore previous state if the user went back.
   StrCmp $NoGuiFlag " --no-gui" 0 +2
     ${NSD_Check} $CheckConsole
 
+  ${NSD_CreateLink} 10u 128u 95% 12u "$(STR_LINK_TROUBLESHOOTING)"
+  Pop $LinkTroubleshooting
+  ${NSD_OnClick} $LinkTroubleshooting OpenTroubleshootingLink
+
   ; Locale Remulator opt-out checkbox (only visible on non-zh-CN systems).
   StrCmp $LrHookFlag "" restoreSelection
-    ${NSD_CreateCheckbox} 10u 96u 95% 12u "$(STR_DO_NOT_INCLUDE_LR)"
+    ${NSD_CreateCheckbox} 10u 112u 95% 12u "$(STR_DO_NOT_INCLUDE_LR)"
     Pop $CheckNoLR
     ; Restore previous checkbox state if going back.
     StrCmp $LrHookFlag " --lrhook" 0 +2
