@@ -277,6 +277,7 @@ pub fn run_gui_patch(
     target: &Path,
     version: &str,
     launch_after: bool,
+    launch_even_if_patch_fails: bool,
     allow_insecure: bool,
     proxy: Option<&str>,
     purge_wz_files: bool,
@@ -311,6 +312,7 @@ pub fn run_gui_patch(
         let proxy = proxy_buf.as_deref();
         let res = run_patch_flow(
             &target_buf, &version_buf, launch_after,
+            launch_even_if_patch_fails,
             allow_insecure, proxy, purge_wz_files, lrhook, close_after_finishing,
             keep_old_wz_files,
         );
@@ -339,6 +341,7 @@ fn run_patch_flow(
     target: &Path,
     version: &str,
     launch_after: bool,
+    launch_even_if_patch_fails: bool,
     allow_insecure: bool,
     proxy: Option<&str>,
     purge_wz_files: bool,
@@ -348,38 +351,61 @@ fn run_patch_flow(
 ) -> Result<()> {
     use crate::patch::{apply_patches, launch_client, PatchOutcome};
 
-    let outcome = apply_patches(target, version, allow_insecure, proxy, purge_wz_files, keep_old_wz_files)?;
+    let outcome = apply_patches(target, version, allow_insecure, proxy, purge_wz_files, keep_old_wz_files);
 
-    // Choose the terminal label based on whether an update was applied and
-    // whether we were asked to launch the game (requirements 9 and 10).
-    let (done_key, launch_key) = match outcome {
-        PatchOutcome::Updated => {
-            ("gui-patcher-patch-successful", "gui-patcher-patch-successful-launch")
-        }
-        PatchOutcome::AlreadyUpToDate => {
-            ("gui-patcher-nopatch-successful", "gui-patcher-nopatch-successful-launch")
-        }
-    };
+    match outcome {
+        Ok(outcome) => {
+            // Choose the terminal label based on whether an update was applied
+            // and whether we were asked to launch the game.
+            let (done_key, launch_key) = match outcome {
+                PatchOutcome::Updated => {
+                    ("gui-patcher-patch-successful", "gui-patcher-patch-successful-launch")
+                }
+                PatchOutcome::AlreadyUpToDate => {
+                    ("gui-patcher-nopatch-successful", "gui-patcher-nopatch-successful-launch")
+                }
+            };
 
-    if launch_after {
-        // Show the "launching" message, then attempt the (UAC-elevated) launch.
-        progress::finish(&tr(launch_key, &[]), false);
-        match launch_client(target, lrhook) {
-            Ok(()) => {
-                crate::plog!("launch requested; closing patcher.");
-                progress::finish("", true); // close the window
+            if launch_after {
+                // Show the "launching" message, then attempt the launch.
+                progress::finish(&tr(launch_key, &[]), false);
+                match launch_client(target, lrhook) {
+                    Ok(()) => {
+                        crate::plog!("launch requested; closing patcher.");
+                        progress::finish("", true);
+                    }
+                    Err(e) => {
+                        crate::plog!("launch failed or was declined: {e:#}");
+                        progress::finish(&tr("gui-patcher-launch-fail", &[]), false);
+                    }
+                }
+            } else {
+                progress::finish(&tr(done_key, &[]), close_after_finishing);
             }
-            Err(e) => {
-                // Keep the window open on a launch failure so the error stays
-                // visible, even when --close-after-finishing was requested.
-                crate::plog!("launch failed or was declined: {e:#}");
-                progress::finish(&tr("gui-patcher-launch-fail", &[]), false);
+
+            Ok(())
+        }
+        Err(e) => {
+            if launch_after && launch_even_if_patch_fails {
+                // Patch server unreachable or patching failed, but the user
+                // asked to launch anyway. Show a warning and proceed.
+                crate::plog!("warning: patch failed, launching anyway: {e:#}");
+                progress::finish(&tr("gui-patcher-patch-failed-launch", &[]), false);
+                match launch_client(target, lrhook) {
+                    Ok(()) => {
+                        crate::plog!("launch requested; closing patcher.");
+                        progress::finish("", true);
+                        Ok(())
+                    }
+                    Err(launch_err) => {
+                        crate::plog!("launch failed or was declined: {launch_err:#}");
+                        progress::finish(&tr("gui-patcher-launch-fail", &[]), false);
+                        Err(e)
+                    }
+                }
+            } else {
+                Err(e)
             }
         }
-    } else {
-        // Show the final status; close automatically when requested.
-        progress::finish(&tr(done_key, &[]), close_after_finishing);
     }
-
-    Ok(())
 }

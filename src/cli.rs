@@ -51,6 +51,11 @@ pub struct Cli {
     #[arg(long)]
     pub launch_after_patching: bool,
 
+    /// Launch the game even if the patch server cannot be reached or patching
+    /// fails. Without this flag a patch failure prevents launching entirely.
+    #[arg(long)]
+    pub launch_even_if_patch_fails: bool,
+
     /// Close the graphical window automatically once the operation finishes.
     ///
     /// Applies to the GUI patcher (`cms --patch <version> <dir>`) and the GUI

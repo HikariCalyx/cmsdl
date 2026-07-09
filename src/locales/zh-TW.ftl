@@ -10,6 +10,7 @@ gui-patcher-patch-successful-launch = 更新完成，即將啟動遊戲
 gui-patcher-nopatch-successful = 沒有發現更新
 gui-patcher-nopatch-successful-launch = 沒有發現更新，即將啟動遊戲
 gui-patcher-launch-fail = 遊戲啟動失敗
+gui-patcher-patch-failed-launch = 更新失敗，仍然啟動遊戲
 gui-downloader-client-version = 正在下載 %s %s (%s)
 gui-downloader-downloading = 已經下載 %s 個檔案，共 %s 個 (%s / %s)
 gui-downloader-complete = 下載完成

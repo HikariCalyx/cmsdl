@@ -190,6 +190,7 @@ fn main() -> Result<()> {
             &version,
             &target,
             cli.launch_after_patching,
+            cli.launch_even_if_patch_fails,
             cli.allow_insecure,
             proxy,
             cli.purge_wz_files,

@@ -447,6 +447,7 @@ pub fn patch_apply(
     version: &str,
     target: &Path,
     launch_after: bool,
+    launch_even_if_patch_fails: bool,
     allow_insecure: bool,
     proxy: Option<&str>,
     purge_wz_files: bool,
@@ -481,7 +482,8 @@ pub fn patch_apply(
             let use_gui = cfg!(windows) && !no_gui;
             if use_gui {
                 return crate::gui_patch::run_gui_patch(
-                    target, version, launch_after, allow_insecure, proxy, purge_wz_files, lrhook,
+                    target, version, launch_after, launch_even_if_patch_fails,
+                    allow_insecure, proxy, purge_wz_files, lrhook,
                     close_after_finishing, keep_old_wz_files,
                 );
             }
@@ -490,7 +492,16 @@ pub fn patch_apply(
                 "cmsdl {VERSION}: patching region '{region}' client at '{}' up to '{version}'.",
                 target.display()
             );
-            crate::patch::apply_patches(target, version, allow_insecure, proxy, purge_wz_files, keep_old_wz_files)?;
+            match crate::patch::apply_patches(target, version, allow_insecure, proxy, purge_wz_files, keep_old_wz_files) {
+                Ok(_) => {}
+                Err(e) => {
+                    if launch_even_if_patch_fails {
+                        eprintln!("warning: patch failed: {e:#}");
+                    } else {
+                        return Err(e);
+                    }
+                }
+            }
             if launch_after {
                 crate::patch::launch_client(target, lrhook)?;
             }
