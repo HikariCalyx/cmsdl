@@ -56,8 +56,6 @@ Var LrHookFlag
 Var NoGuiFlag
 Var CloseFlag
 Var BuildFlag
-Var CheckKeepOldWz
-Var KeepOldWzFlag
 
 ; ============================================================================
 ; MUI2 Settings
@@ -112,7 +110,6 @@ LangString STR_USE_CONSOLE_TYPE ${LANG_ENGLISH} "Use the console-type CMSDL inte
 LangString STR_REMOVE_OFFICIAL_LAUNCHER ${LANG_ENGLISH} "Would you like to remove the official game launcher? Removing it does not affect game launching."
 LangString STR_REMOVE_OFFICIAL_LAUNCHER_UAC ${LANG_ENGLISH} "You're currently running official launcher, but you didn't close it. Once you finish closing, please click Retry."
 LangString STR_METERED_WARNING ${LANG_ENGLISH} "Your network connection is metered.$\nDownloading the game may incur additional costs.$\n$\nDo you want to continue?"
-LangString STR_KEEP_OLD_WZ ${LANG_ENGLISH} "Keep old WZ files (for advanced users only)"
 
 ; ============================================================================
 ; Language Strings - Simplified Chinese
@@ -145,7 +142,6 @@ LangString STR_USE_CONSOLE_TYPE ${LANG_SIMPCHINESE} "使用命令行样式的CMS
 LangString STR_REMOVE_OFFICIAL_LAUNCHER ${LANG_SIMPCHINESE} "您想要移除官方游戏启动器吗？移除该启动器不会影响启动游戏。"
 LangString STR_REMOVE_OFFICIAL_LAUNCHER_UAC ${LANG_SIMPCHINESE} "您当前正在运行官方启动器，但尚未关闭它。关闭后，请点击重试。"
 LangString STR_METERED_WARNING ${LANG_SIMPCHINESE} "您的网络连接为按流量计费的连接。$\n下载游戏可能会产生额外费用。$\n$\n您是否要继续？"
-LangString STR_KEEP_OLD_WZ ${LANG_SIMPCHINESE} "保留旧的 WZ 文件（仅供高级用户）"
 
 ; ============================================================================
 ; Installer Attributes
@@ -188,7 +184,6 @@ Function .onInit
   ; --no-gui is selected.
   StrCpy $NoGuiFlag ""
   StrCpy $CloseFlag " --close-after-finishing"
-  StrCpy $KeepOldWzFlag ""
 
   ; Select language based on OS language (Simplified Chinese = 0804).
   ; Set this first so the requirement-check message boxes are localized.
@@ -244,15 +239,8 @@ Function ModeSelectPage
 
   ${NSD_CreateRadioButton} 10u 6u 95% 12u "$(STR_MODE_INSTALL)"
   Pop $RadioInstall
-  ${NSD_CreateRadioButton} 10u 24u 55% 12u "$(STR_MODE_UPDATE)"
+  ${NSD_CreateRadioButton} 10u 24u 95% 12u "$(STR_MODE_UPDATE)"
   Pop $RadioUpdate
-
-  ; Keep-old-WZ-files checkbox (only visible in Update mode).
-  ${NSD_CreateCheckbox} 55u 24u 40% 12u "$(STR_KEEP_OLD_WZ)"
-  Pop $CheckKeepOldWz
-  ; Restore previous state.
-  StrCmp $KeepOldWzFlag " --keep-old-wz-files" 0 +2
-    ${NSD_Check} $CheckKeepOldWz
 
   ${NSD_CreateRadioButton} 10u 42u 95% 12u "$(STR_MODE_UPDATE_CMSDL)"
   Pop $RadioUpdateCMSDL
@@ -353,13 +341,6 @@ Function ModeSelectPageLeave
       StrCpy $CloseFlag " --close-after-finishing"
     ${EndIf}
 
-    ; Keep-old-WZ-files checkbox.
-    ${NSD_GetState} $CheckKeepOldWz $0
-    ${If} $0 == 1
-      StrCpy $KeepOldWzFlag " --keep-old-wz-files"
-    ${Else}
-      StrCpy $KeepOldWzFlag ""
-    ${EndIf}
 FunctionEnd
 
 Function OpenTroubleshootingLink
@@ -509,7 +490,7 @@ Section "Install"
       ; Always run the installer's own patch step in the console: it relies on
       ; the exit code and shows its own progress. In GUI mode a successful patch
       ; leaves the window open, which would block ExecWait until closed.
-      ExecWait '"$INSTDIR\cmsdl.exe" cms --patch latest "$INSTDIR" --purge-wz-files$NoGuiFlag$CloseFlag$KeepOldWzFlag' $0
+      ExecWait '"$INSTDIR\cmsdl.exe" cms --patch latest "$INSTDIR" --purge-wz-files$NoGuiFlag$CloseFlag' $0
       StrCmp $0 "0" makeShortcuts
         MessageBox MB_ICONSTOP "$(STR_PATCH_FAILED)"
         Abort
