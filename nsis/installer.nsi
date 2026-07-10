@@ -580,7 +580,7 @@ Section "Install"
     File "..\nsis\add_firewall_rules.ps1"
     ${DisableX64FSRedirection}
     fwRetry:
-    ExecWait 'powershell.exe -ExecutionPolicy Bypass -Command "Start-Process powershell -Verb RunAs -Wait -ArgumentList @(\"-NoProfile\",\"-ExecutionPolicy\",\"Bypass\",\"-File\",\"$TEMP\add_firewall_rules.ps1\",\"-InstallDir\",\"$INSTDIR\")'" $0
+    ExecWait 'powershell.exe -ExecutionPolicy Bypass -Command "Start-Process powershell -Verb RunAs -Wait -ArgumentList @(\"-NoProfile\",\"-ExecutionPolicy\",\"Bypass\",\"-File\",\"$TEMP\add_firewall_rules.ps1\",\"-InstallDir\",\"$INSTDIR\")"' $0
     ${EnableX64FSRedirection}
     StrCmp $0 "0" fwDone
       MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "$(STR_FIX_SDOLOGIN_UAC_RETRY)" IDRETRY fwRetry
