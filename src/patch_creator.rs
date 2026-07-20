@@ -32,6 +32,7 @@ const OLD_CLIENT_EXCLUSIONS: &[&str] = &[
     "*.log",
     "*.txt",
     "*.webm",
+    r"*.$$$\*",
     "106690*",
     "16785939*",
     "589825*",
@@ -57,8 +58,10 @@ const OLD_CLIENT_EXCLUSIONS: &[&str] = &[
     "NGM*.*",
     "obd-manifest*",
     "Patcher.exe",
+    "Setup.exe",
     r"SDO\*",
     r"VideoDecodeStats\*",
+    r"XignCode3\*",
 ];
 
 /// Glob-style patterns for paths that must be excluded from the *new* client
