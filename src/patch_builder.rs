@@ -282,6 +282,7 @@ struct PatchEntry {
 #[derive(Debug, Clone)]
 enum RebuildInst {
     FromPatch { len: usize, data: Vec<u8> },
+    #[allow(dead_code)]
     Fill { len: usize, byte: u8 },
     FromOld { len: usize, offset: usize, from_file: String },
 }
@@ -394,6 +395,25 @@ fn diff_files_exact(
 
     on_progress(new_len, new_len);
     coalesce_instructions(insts)
+}
+
+// ---------------------------------------------------------------------------
+// WZ type extraction (for cross-file optimisation)
+// ---------------------------------------------------------------------------
+
+/// Extract the WZ type from a path, matching against
+/// [`crate::miniwzlib::WZ_TYPES`].
+///
+/// `Base.wz` → `Some("Base")`, `Data\Base\Base_000.wz` → `Some("Base")`.
+fn wz_type(path: &str) -> Option<&'static str> {
+    for &ty in crate::miniwzlib::WZ_TYPES {
+        let lower = path.to_lowercase();
+        let ty_lower = ty.to_lowercase();
+        if lower.contains(&format!("\\{ty_lower}")) || lower.starts_with(&ty_lower) {
+            return Some(ty);
+        }
+    }
+    None
 }
 
 /// Hash-indexed diff — O(n) build + O(n) scan.  Stores the first occurrence
@@ -559,6 +579,7 @@ fn coalesce_instructions(insts: Vec<RebuildInst>) -> Vec<RebuildInst> {
 struct FileInfo {
     rel: String,
     crc: u32,
+    size: u64,
 }
 
 /// Walk `root`, collecting every non-excluded file as `(rel_path, abs_path)`.
@@ -641,11 +662,13 @@ fn scan_client(
                         Ok(c) => c,
                         Err(_) => continue,
                     };
+                    let size = fs::metadata(abs).map(|m| m.len()).unwrap_or(0);
                     {
                         let mut map = results.lock().unwrap();
                         map.insert(rel.to_lowercase(), FileInfo {
                             rel: rel.clone(),
                             crc,
+                            size,
                         });
                     }
                     let n = counter.fetch_add(1, Ordering::Relaxed) + 1;
@@ -906,7 +929,7 @@ fn write_patch(out_path: &Path, entries: &[PatchEntry]) -> Result<()> {
     // file does NOT start with "MZ".  A 32-bit footer is only used inside
     // self-extracting ("MZ") patches.
 
-    let notice = b"Created by cmsdl patch creator\r\n";
+    let notice = b"Created by cmsdl patch builder.\r\nTo learn more, please visit: https://github.com/HikariCalyx/cmsdl\r\n";
     let patch_block_len = patch_block.len() as i64;
     let notice_len = notice.len() as i64;
 
@@ -1101,6 +1124,73 @@ pub fn create_patch(old_dir: &Path, new_dir: &Path, out_file: &Path) -> Result<(
                 old_crc: Some(old_info.crc),
             });
         }
+    }
+
+    // ---- Phase 3b: cross-file optimisation -------------------------------
+    // For Create entries that have no exact-match old file, try matching
+    // against old files of the same WZ type (e.g. 32-bit `Base.wz` → the
+    // various `Data\Base\*.wz` files in a 64-bit restructuring).
+    eprintln!("Cross-file matching...");
+    let mut cross_matched = 0usize;
+    for i in 0..entries.len() {
+        if entries[i].entry_type != EntryType::Create {
+            continue;
+        }
+        let new_type = match wz_type(&entries[i].path) {
+            Some(t) => t,
+            None => continue,
+        };
+
+        // Collect old files of the same WZ type, sorted largest first.
+        let mut candidates: Vec<&FileInfo> = old_files
+            .values()
+            .filter(|fi| wz_type(&fi.rel) == Some(new_type) && fi.size > 0)
+            .collect();
+        candidates.sort_by_key(|fi| -(fi.size as i64));
+
+        let new_path = entries[i].new_full_path.as_deref().unwrap();
+        let new_data = match fs::read(new_path) {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+        let new_len = new_data.len();
+
+        for old_fi in &candidates {
+            let old_path = old_dir.join(&old_fi.rel);
+            let old_data = match fs::read(&old_path) {
+                Ok(d) => d,
+                Err(_) => continue,
+            };
+
+            // Quick skip: old file must be at least as large as new.
+            if old_data.len() < new_len {
+                continue;
+            }
+
+            let insts = diff_files(
+                &old_data, &new_data, &old_fi.rel, 16, &|_, _| {},
+            );
+            let from_old: usize = insts
+                .iter()
+                .filter_map(|inst| match inst {
+                    RebuildInst::FromOld { len, .. } => Some(*len),
+                    _ => None,
+                })
+                .sum();
+
+            // Require >5% of the new file to be matched from old.
+            if from_old > new_len / 20 {
+                entries[i].entry_type = EntryType::Rebuild;
+                entries[i].old_full_path = Some(old_path);
+                entries[i].old_crc = Some(old_fi.crc);
+                cross_matched += 1;
+                break;
+            }
+        }
+    }
+
+    if cross_matched > 0 {
+        eprintln!("  Cross-matched: {cross_matched} Create → Rebuild");
     }
 
     let n_create = entries.iter().filter(|e| e.entry_type == EntryType::Create).count();
@@ -1391,7 +1481,7 @@ mod tests {
 
     #[test]
     fn round_trip() -> Result<()> {
-        let tmp = std::env::temp_dir().join("cmsdl_patch_creator_test");
+        let tmp = std::env::temp_dir().join("cmsdl_patch_builder_test");
         let old_dir = tmp.join("old");
         let new_dir = tmp.join("new");
         let patch_file = tmp.join("test.patch");

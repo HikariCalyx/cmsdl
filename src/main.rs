@@ -11,7 +11,7 @@ mod metered;
 mod miniwzlib;
 mod net;
 mod patch;
-mod patch_creator;
+mod patch_builder;
 mod progress;
 mod resume;
 mod taskprogress;
@@ -201,7 +201,7 @@ fn main() -> Result<()> {
         )?,
         Action::CreateShortcut(path) => downloader::create_shortcut(cli.region, &path, cli.lrhook, cli.no_gui, cli.close_after_finishing)?,
         Action::CreatePatch { old_dir, new_dir, out_file } => {
-            patch_creator::create_patch(&old_dir, &new_dir, &out_file)?
+            patch_builder::create_patch(&old_dir, &new_dir, &out_file)?
         }
         Action::ManualDownload { url, target_dir, output } => downloader::manual_download(
             &url,

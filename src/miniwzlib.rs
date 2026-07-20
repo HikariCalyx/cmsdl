@@ -11,6 +11,28 @@ use std::path::Path;
 /// Magic bytes for a standard PKG1 WZ file.
 const PKG1_MAGIC: &[u8; 4] = b"PKG1";
 
+/// Known WZ file types, for optimization of rebuild diffing.
+pub const WZ_TYPES: &[&str] = &[
+    "Base",
+    "Character",
+    "DataMap",
+    "Effect",
+    "Etc",
+    "Item",
+    "Language",
+    "Map",
+    "Mob",
+    "Morph",
+    "Npc",
+    "Quest",
+    "Reactor",
+    "Skill",
+    "Sound",
+    "String",
+    "TamingMob",
+    "UI",
+];
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
