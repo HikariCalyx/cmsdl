@@ -8,7 +8,7 @@ use clap::{ArgGroup, Parser, ValueEnum};
 #[command(group(
     ArgGroup::new("action")
         .required(true)
-        .args(["check", "download", "get_bit_torrent", "patch", "create_shortcut"]),
+        .args(["check", "download", "get_bit_torrent", "patch", "create_shortcut", "create_patch"]),
 ))]
 pub struct Cli {
     /// The region to operate on (case-insensitive).
@@ -114,6 +114,20 @@ pub struct Cli {
     /// (Windows only.)
     #[arg(long, value_name = "PATH")]
     pub create_shortcut: Option<PathBuf>,
+
+    /// Create a KMST1125-format binary patch from two client directories.
+    ///
+    /// The generated patch file can be applied with WzComparerR2.
+    #[arg(long)]
+    pub create_patch: bool,
+
+    /// Path to the *old* client directory (used with `--create-patch`).
+    #[arg(long, value_name = "PATH")]
+    pub old: Option<PathBuf>,
+
+    /// Path to the *new* client directory (used with `--create-patch`).
+    #[arg(long, value_name = "PATH")]
+    pub new: Option<PathBuf>,
 
     /// Only validate and print information; do not download anything.
     ///
@@ -236,6 +250,11 @@ pub enum Action {
     GetBitTorrent(Option<PathBuf>),
     Patch(PatchAction),
     CreateShortcut(PathBuf),
+    CreatePatch {
+        old_dir: PathBuf,
+        new_dir: PathBuf,
+        out_file: PathBuf,
+    },
 }
 
 impl Cli {
@@ -297,6 +316,27 @@ impl Cli {
                     version: patch.clone(),
                     target: sanitize_path(target),
                 })
+            }
+        } else if self.create_patch {
+            if self.region != Region::Manual {
+                anyhow::bail!(
+                    "--create-patch is only supported for region 'manual'; \
+                     use `cmsdl manual --create-patch ...`"
+                );
+            }
+            let old_dir = self.old.as_deref().ok_or_else(|| {
+                anyhow::anyhow!("--create-patch requires --old <PATH>")
+            })?;
+            let new_dir = self.new.as_deref().ok_or_else(|| {
+                anyhow::anyhow!("--create-patch requires --new <PATH>")
+            })?;
+            let out_file = self.output.as_deref().ok_or_else(|| {
+                anyhow::anyhow!("--create-patch requires --output <PATH>")
+            })?;
+            Action::CreatePatch {
+                old_dir: sanitize_path(old_dir),
+                new_dir: sanitize_path(new_dir),
+                out_file: sanitize_path(out_file),
             }
         } else {
             unreachable!("clap ArgGroup guarantees exactly one action is set")

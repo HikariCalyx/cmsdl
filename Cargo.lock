@@ -203,12 +203,13 @@ checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
 name = "cmsdl"
-version = "0.2.5"
+version = "0.2.6-prerelease1"
 dependencies = [
  "anyhow",
  "base64",
  "chrono",
  "clap",
+ "flate2",
  "hdiffpatch-rs",
  "hex",
  "indicatif",
