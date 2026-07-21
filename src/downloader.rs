@@ -292,6 +292,9 @@ pub(crate) fn run_download_core(
     build: Option<u32>,
     purge_wz_files: bool,
 ) -> Result<()> {
+    // Prevent the system from sleeping while downloading.
+    let _awake = crate::keep_awake::KeepAwake::new();
+
     // Ensure the target directory exists so the sentinel file can be placed inside it.
     std::fs::create_dir_all(path)
         .with_context(|| format!("failed to create target directory {}", path.display()))?;

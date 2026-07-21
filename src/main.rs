@@ -6,6 +6,7 @@ mod gui;
 mod gui_downloader;
 mod gui_patch;
 mod is_hdd;
+mod keep_awake;
 mod locale;
 mod manual;
 mod metered;

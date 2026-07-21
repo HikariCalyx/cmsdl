@@ -950,6 +950,9 @@ pub fn apply_patches(
     purge_wz_files: bool,
     keep_old_wz_files: bool,
 ) -> Result<PatchOutcome> {
+    // Prevent the system from sleeping while patching.
+    let _awake = crate::keep_awake::KeepAwake::new();
+
     // 1. The client must already be present.
     if !target_dir.join("mxd").is_dir() {
         bail!(
