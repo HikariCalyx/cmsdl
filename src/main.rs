@@ -5,6 +5,7 @@ mod filter;
 mod gui;
 mod gui_downloader;
 mod gui_patch;
+mod is_hdd;
 mod locale;
 mod manual;
 mod metered;
@@ -148,6 +149,21 @@ fn main() -> Result<()> {
             || metered::is_windows_metered();
         println!("{}", metered as u8);
         std::process::exit(metered as i32);
+    }
+
+    // `is_hdd` is a stand-alone probe that checks whether the given path
+    // resides on a mechanical hard disk.  It takes a single path argument.
+    //
+    // NSIS callers can use either:
+    //   ExecWait '"cmsdl.exe" is_hdd "$INSTDIR"' $0   ; $0 = exit code (0/1)
+    //   nsExec::ExecToStack '"cmsdl.exe" is_hdd "$INSTDIR"'
+    //   Pop $0  ; exit code
+    //   Pop $1  ; stdout text: "0" or "1"
+    if std::env::args().nth(1).as_deref() == Some("is_hdd") {
+        let path = std::env::args().nth(2).unwrap_or_else(|| String::from("."));
+        let hdd = is_hdd::is_hdd(std::path::Path::new(&path));
+        println!("{}", hdd as u8);
+        std::process::exit(hdd as i32);
     }
 
     let cli = Cli::parse();

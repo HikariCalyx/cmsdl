@@ -17,3 +17,4 @@ gui-downloader-eta = Estimated Remaining Time: %s
 gui-downloader-hour = Hr
 gui-downloader-minute = Min
 gui-downloader-second = Sec
+gui-is-hdd = For best experience, we recommend you to run game on SSD.

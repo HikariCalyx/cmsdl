@@ -351,6 +351,7 @@ pub(crate) fn apply_zip(
     target_dir: &Path,
     patchdata: &Path,
     corrupted: &mut Vec<String>,
+    max_parallel: usize,
 ) -> Result<ZipStats> {
     let patchfile_dir = patchdata.join("patchfile");
     let patched_dir = patchdata.join("patched");
@@ -406,7 +407,7 @@ pub(crate) fn apply_zip(
     let local_corrupted: Mutex<Vec<String>> = Mutex::new(Vec::new());
     let first_err: Mutex<Option<anyhow::Error>> = Mutex::new(None);
 
-    let workers = PARALLEL_FILES.min(items.len()).max(1);
+    let workers = max_parallel.min(items.len()).max(1);
     std::thread::scope(|scope| {
         for _ in 0..workers {
             scope.spawn(|| {
@@ -1089,6 +1090,16 @@ pub fn apply_patches(
     }
     let global_total: usize = zip_counts.iter().sum();
 
+    // 3. Detect whether the target directory resides on a mechanical hard disk.
+    //    Patching many files in parallel on an HDD can cause severe thrashing;
+    //    single-threaded patching is much faster on spinning rust.
+    let max_parallel = if crate::is_hdd::is_hdd(target_dir) {
+        plog!("HDD detected — patching files one at a time to avoid thrashing.");
+        1
+    } else {
+        PARALLEL_FILES
+    };
+
     // If a previous keep-old-wz run was interrupted the marker still exists;
     // resume with the same mode automatically.
     let effective_keep = keep_old_wz_files || target_dir.join(KEEP_OLD_DATA_MARKER).exists();
@@ -1103,7 +1114,7 @@ pub fn apply_patches(
         apply_one_patch(
             &agent, &challenge, &ver2_base, pkg, from_view,
             global_offset, global_total, target_dir, &mut corrupted,
-            effective_keep,
+            effective_keep, max_parallel,
         )?;
         global_offset += zip_counts[idx];
         if corrupted.is_empty() {
@@ -1208,6 +1219,7 @@ fn apply_one_patch(
     target_dir: &Path,
     corrupted: &mut Vec<String>,
     keep_old_wz: bool,
+    max_parallel: usize,
 ) -> Result<()> {
     if from_view.is_empty() {
         plog!("\npatch {} -> {} ({})", pkg.from, pkg.to, pkg.version_view);
@@ -1310,7 +1322,7 @@ fn apply_one_patch(
         crate::progress::extracting(global_offset + i + 1, global_total);
         plog!("  [{}/{}] extracting {zip_name}...", i + 1, total);
 
-        let stats = apply_zip(&zip_path, m, target_dir, &patchdata, corrupted)?;
+        let stats = apply_zip(&zip_path, m, target_dir, &patchdata, corrupted, max_parallel)?;
         plog!(
             "    applied: {} patched, {} added, {} skipped, {} corrupted",
             stats.patched, stats.added, stats.skipped, stats.corrupted
@@ -1826,7 +1838,7 @@ mod tests {
         let xml = read_manifest_xml_from_zip(&zip_path).unwrap();
         let manifest = parse_manifest(&xml).unwrap();
         let mut corrupted = Vec::new();
-        let stats = apply_zip(&zip_path, &manifest, work, &patchdata, &mut corrupted).unwrap();
+        let stats = apply_zip(&zip_path, &manifest, work, &patchdata, &mut corrupted, PARALLEL_FILES).unwrap();
         eprintln!("stats: {stats:?}");
 
         for (rel, want) in [

@@ -112,6 +112,7 @@ LangString STR_USE_CONSOLE_TYPE ${LANG_ENGLISH} "Use the console-type CMSDL inte
 LangString STR_REMOVE_OFFICIAL_LAUNCHER ${LANG_ENGLISH} "Would you like to remove the official game launcher? Removing it does not affect game launching."
 LangString STR_REMOVE_OFFICIAL_LAUNCHER_UAC ${LANG_ENGLISH} "You're currently running official launcher, but you didn't close it. Once you finish closing, please click Retry."
 LangString STR_METERED_WARNING ${LANG_ENGLISH} "Your network connection is metered.$\nDownloading the game may incur additional costs.$\n$\nDo you want to continue?"
+LangString STR_IS_HDD_WARNING ${LANG_ENGLISH} "You are using a mechanical hard drive, and updating game files may be very slow.$\n$\nDo you want to continue?"
 
 ; ============================================================================
 ; Language Strings - Simplified Chinese
@@ -146,6 +147,7 @@ LangString STR_USE_CONSOLE_TYPE ${LANG_SIMPCHINESE} "使用命令行样式的CMS
 LangString STR_REMOVE_OFFICIAL_LAUNCHER ${LANG_SIMPCHINESE} "您想要移除官方游戏启动器吗？移除该启动器不会影响启动游戏。"
 LangString STR_REMOVE_OFFICIAL_LAUNCHER_UAC ${LANG_SIMPCHINESE} "您当前正在运行官方启动器，但尚未关闭它。关闭后，请点击重试。"
 LangString STR_METERED_WARNING ${LANG_SIMPCHINESE} "您的网络连接为按流量计费的连接。$\n下载游戏可能会产生额外费用。$\n$\n您是否要继续？"
+LangString STR_IS_HDD_WARNING ${LANG_SIMPCHINESE} "您正在使用机械硬盘，游戏文件的更新可能会非常缓慢。$\n$\n您是否要继续？"
 
 ; ============================================================================
 ; Installer Attributes
@@ -488,6 +490,12 @@ Section "Install"
         MessageBox MB_YESNO|MB_ICONEXCLAMATION "$(STR_METERED_WARNING)" IDYES +2
         Abort
 
+      ; Warn if the target drive is a mechanical hard disk (HDD).
+      ExecWait '"$INSTDIR\cmsdl.exe" is_hdd "$INSTDIR"' $0
+      StrCmp $0 "1" 0 +3
+        MessageBox MB_YESNO|MB_ICONEXCLAMATION "$(STR_IS_HDD_WARNING)" IDYES +2
+        Abort
+
       ; Run the patch. ExecWait gives cmsdl.exe a real console for its
       ; indicatif progress bars.
       DetailPrint "$(STR_PATCHING)"
@@ -513,6 +521,12 @@ Section "Install"
     ExecWait '"$INSTDIR\cmsdl.exe" is_metered' $0
     StrCmp $0 "1" 0 +3
       MessageBox MB_YESNO|MB_ICONEXCLAMATION "$(STR_METERED_WARNING)" IDYES +2
+      Abort
+
+    ; Warn if the target drive is a mechanical hard disk (HDD).
+    ExecWait '"$INSTDIR\cmsdl.exe" is_hdd "$INSTDIR"' $0
+    StrCmp $0 "1" 0 +3
+      MessageBox MB_YESNO|MB_ICONEXCLAMATION "$(STR_IS_HDD_WARNING)" IDYES +2
       Abort
 
     ; Execute download command. ExecWait gives cmsdl.exe a real console

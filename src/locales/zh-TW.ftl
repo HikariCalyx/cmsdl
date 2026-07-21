@@ -17,3 +17,4 @@ gui-downloader-eta = 預估剩餘時間：%s
 gui-downloader-hour = 小時
 gui-downloader-minute = 分鐘
 gui-downloader-second = 秒
+gui-is-hdd = 為了獲得最佳體驗，我們建議您在固態硬碟上執行遊戲。
