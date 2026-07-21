@@ -3,6 +3,8 @@
 
 A downloader designed for Greater China region mushroom game.
 
+*This project is not officially supported or endorsed by SQ Games*
+
 ## Why create this?
 I don't want to use the bloated launcher developed by SQ Games at all.
 This program is meant for a full replacement of CMS official v3 Launcher.
