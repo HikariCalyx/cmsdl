@@ -331,6 +331,15 @@ pub fn run_gui_download(
         Arc::clone(&ui),
         path.join("cmsdl_downloader.log"),
     ));
+
+    // Show an advisory when downloading to a mechanical hard disk.
+    if crate::is_hdd::is_hdd(path) {
+        reporter.log("warning: target drive is a mechanical hard disk (HDD); download may be slower than on an SSD.");
+        if let Ok(mut m) = ui.lock() {
+            m.hdd_notice = tr("gui-is-hdd", &[]);
+        }
+    }
+
     progress::set_download_reporter(reporter as Arc<dyn DownloadReporter>);
 
     // Own the arguments so the download can run on a background thread while the

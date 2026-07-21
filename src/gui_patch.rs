@@ -302,6 +302,14 @@ pub fn run_gui_patch(
     let reporter = Arc::new(GuiReporter::new(Arc::clone(&ui), target.join("cmsdl_patcher.log")));
     progress::set_reporter(reporter.clone() as Arc<dyn Reporter>);
 
+    // Show an advisory when patching on a mechanical hard disk.
+    if crate::is_hdd::is_hdd(target) {
+        reporter.log("warning: target drive is a mechanical hard disk (HDD); patching may be slower than on an SSD.");
+        if let Ok(mut m) = ui.lock() {
+            m.hdd_notice = tr("gui-is-hdd", &[]);
+        }
+    }
+
     // Run the patch on a background thread so the message loop stays live.
     let target_buf = target.to_path_buf();
     let version_buf = version.to_string();

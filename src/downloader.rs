@@ -299,6 +299,11 @@ pub(crate) fn run_download_core(
     std::fs::create_dir_all(path)
         .with_context(|| format!("failed to create target directory {}", path.display()))?;
 
+    // Warn if downloading to a mechanical hard disk.
+    if crate::is_hdd::is_hdd(path) {
+        crate::plog!("warning: target drive is a mechanical hard disk (HDD); download may be slower than on an SSD.");
+    }
+
     // Create a sentinel file that signals an in-progress or incomplete download.
     // It is removed only on success, so a leftover file indicates a failed run.
     let sentinel = path.join(format!(".incomplete_{region}"));

@@ -235,8 +235,25 @@ mod imp {
     /// Given a path, return its volume root (e.g. `D:\`) or `None` if it
     /// cannot be determined.
     fn get_volume_root(path: &Path) -> Option<String> {
-        // Canonicalize if possible to get an absolute path.
-        let abs = path.canonicalize().ok()?;
+        // Try canonicalizing first (fast path for existing paths).  Fall back
+        // to parsing the raw path when the directory doesn't exist yet (e.g.
+        // the target of a fresh download).
+        let candidate = path.canonicalize().ok().or_else(|| {
+            // If the path is already absolute (e.g. "G:\hdd_test"), use it
+            // directly.  Otherwise resolve it against the current directory.
+            if path.is_absolute() {
+                Some(path.to_path_buf())
+            } else {
+                std::env::current_dir().ok().map(|cwd| cwd.join(path))
+            }
+        })?;
+
+        extract_drive_root(&candidate)
+    }
+
+    /// Parse a Windows path (which may use the `\\?\` extended-length
+    /// prefix) and return its drive root (e.g. `D:\`).
+    fn extract_drive_root(abs: &Path) -> Option<String> {
         abs.to_str().and_then(|s| {
             // Handle extended-length paths (\\?\) and UNC paths.
             let rest = if let Some(rest) = s.strip_prefix("\\\\?\\") {
