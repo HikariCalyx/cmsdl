@@ -8,6 +8,7 @@ mod gui_patch;
 mod is_hdd;
 mod keep_awake;
 mod locale;
+mod maintenance;
 mod manual;
 mod metered;
 mod miniwzlib;
@@ -219,6 +220,10 @@ fn main() -> Result<()> {
         Action::CreateShortcut(path) => downloader::create_shortcut(cli.region, &path, cli.lrhook, cli.no_gui, cli.close_after_finishing)?,
         Action::CreatePatch { old_dir, new_dir, out_file } => {
             patch_builder::create_patch(&old_dir, &new_dir, &out_file)?
+        }
+        Action::Maintenance => {
+            let agent = net::agent(cli.allow_insecure, proxy);
+            maintenance::show_maintenance(&agent, cli.region, cli.json, cli.discord)?
         }
         Action::ManualDownload { url, target_dir, output } => downloader::manual_download(
             &url,

@@ -8,7 +8,7 @@ use clap::{ArgGroup, Parser, ValueEnum};
 #[command(group(
     ArgGroup::new("action")
         .required(true)
-        .args(["check", "download", "get_bit_torrent", "patch", "create_shortcut", "create_patch"]),
+        .args(["check", "download", "get_bit_torrent", "patch", "create_shortcut", "create_patch", "maintenance"]),
 ))]
 pub struct Cli {
     /// The region to operate on (case-insensitive).
@@ -121,6 +121,10 @@ pub struct Cli {
     #[arg(long)]
     pub create_patch: bool,
 
+    /// Fetch and display the most recent maintenance notice for CMS.
+    #[arg(long)]
+    pub maintenance: bool,
+
     /// Path to the *old* client directory (used with `--create-patch`).
     #[arg(long, value_name = "PATH")]
     pub old: Option<PathBuf>,
@@ -143,8 +147,19 @@ pub struct Cli {
     ///
     /// With `--patch list`: prints a JSON array of objects with `from`, `to`,
     /// `version_view`, and `size` (bytes) fields, or `[]` on failure.
+    ///
+    /// With `--maintenance`: prints a JSON object with `id`, `title`,
+    /// `publish_date`, and `body` fields.  The body is markdown-formatted
+    /// plain text.  Combine with `--discord` to include ANSI color codes in
+    /// the body (for Discord `ansi` code blocks).
     #[arg(long)]
     pub json: bool,
+
+    /// Include ANSI color codes in the `--json` body (only meaningful with
+    /// `--maintenance --json`).  The resulting body is suitable for use inside
+    /// a Discord ```ansi … ``` code block.
+    #[arg(long)]
+    pub discord: bool,
 
     /// Enable verbose output.
     ///
@@ -255,6 +270,8 @@ pub enum Action {
         new_dir: PathBuf,
         out_file: PathBuf,
     },
+    /// Fetch and display the most recent CMS maintenance notice.
+    Maintenance,
 }
 
 impl Cli {
@@ -338,6 +355,14 @@ impl Cli {
                 new_dir: sanitize_path(new_dir),
                 out_file: sanitize_path(out_file),
             }
+        } else if self.maintenance {
+            if self.region == Region::Manual {
+                anyhow::bail!(
+                    "--maintenance is not supported for region 'manual'; \
+                     use `cmsdl cms --maintenance` or `cmsdl tms --maintenance`"
+                );
+            }
+            Action::Maintenance
         } else {
             unreachable!("clap ArgGroup guarantees exactly one action is set")
         };

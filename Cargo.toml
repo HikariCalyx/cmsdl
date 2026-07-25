@@ -16,7 +16,7 @@ winresource = "0.1"
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
-ureq = { version = "2", features = ["socks-proxy"] }
+ureq = { version = "2", features = ["cookies", "socks-proxy"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 roxmltree = "0.20"
 rsa = { version = "0.9", features = ["pem"] }
