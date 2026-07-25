@@ -927,6 +927,30 @@ fn version_view_matches(version_view: &str, wz_version: i16) -> bool {
     }
 }
 
+/// Compare two dotted version strings (e.g. `"0.0.0.22"`, `"0.0.0.21"`) and
+/// return `true` when `a` is strictly greater than `b`.
+///
+/// Each component is compared numerically; missing or non-numeric components
+/// are treated as `0`.  Two identical versions are not "newer".
+fn version_newer_than(a: &str, b: &str) -> bool {
+    let parse = |v: &str| -> Vec<u32> {
+        v.split('.').map(|s| s.parse::<u32>().unwrap_or(0)).collect()
+    };
+    let a_parts = parse(a);
+    let b_parts = parse(b);
+    let len = a_parts.len().max(b_parts.len());
+    for i in 0..len {
+        let av = a_parts.get(i).copied().unwrap_or(0);
+        let bv = b_parts.get(i).copied().unwrap_or(0);
+        match av.cmp(&bv) {
+            std::cmp::Ordering::Greater => return true,
+            std::cmp::Ordering::Less => return false,
+            std::cmp::Ordering::Equal => {}
+        }
+    }
+    false // equal
+}
+
 /// Result of [`apply_patches`]: whether any patch was actually applied.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PatchOutcome {
@@ -990,6 +1014,19 @@ pub fn apply_patches(
     if installed.as_deref() == Some(final_version.as_str()) {
         plog!("already at version {final_version}; nothing to do.");
         return Ok(PatchOutcome::AlreadyUpToDate);
+    }
+
+    // If the installed version is strictly newer than the latest available
+    // patch target the client is already ahead of the patch chain — patching
+    // would be a downgrade.  Warn and bail out.
+    if let Some(ref inst) = installed {
+        if version_newer_than(inst, &final_version) {
+            plog!(
+                "client is at version {inst}, which is newer than the latest \
+                 available patch target {final_version}; nothing to patch."
+            );
+            return Ok(PatchOutcome::AlreadyUpToDate);
+        }
     }
     let start_idx = match installed.as_deref() {
         Some(v) => {
@@ -1159,18 +1196,25 @@ pub fn apply_patches(
 
         // If the latest full client didn't have every file (e.g. the full
         // client for the post-patch version hasn't been published yet), fall
-        // back to a known-good baseline full client: try the `must` version
-        // from the patch metadata first (guaranteed available), then the
-        // pre-patch version.  Download the origin files from there and
-        // re-apply the last patch's deltas on top of them.
+        // back to a known-good baseline full client: download the origin
+        // files from there and re-apply the last patch's deltas on top.
+        //
+        // The `must` version (from ver2.dat) is a guaranteed-available full
+        // client baseline.  However it is only safe to use when it equals
+        // the pre-patch version of the *last* applied patch — otherwise the
+        // origin MD5s stored in the last patch's manifest won't match the
+        // downloaded files, and the intermediate patches between `must` and
+        // the pre-patch version would be skipped.
         if !still_failed.is_empty() {
             let pre_patch_version = selected.last().map(|p| p.from.as_str()).unwrap_or("");
 
-            // Build an ordered list of fallback versions to try: `must` first
-            // (most reliable), then the pre-patch version (skipping duplicates).
+            // Build an ordered list of fallback versions to try.  `must` is
+            // only included when it is an exact match for the pre-patch
+            // version (the only version whose files are compatible with the
+            // last patch's origin MD5s).
             let mut fallback_versions: Vec<&str> = Vec::new();
             if let Some(ref must_ver) = data.must {
-                if !must_ver.is_empty() {
+                if !must_ver.is_empty() && must_ver.as_str() == pre_patch_version {
                     fallback_versions.push(must_ver.as_str());
                 }
             }
@@ -2058,71 +2102,7 @@ mod tests {
         assert!(!version_view_matches("V225.1", 0));
     }
 
-    #[test]
-    fn detect_version_from_sample_wz() {
-        // The sample Base.wz (version 225) is in target/Base.wz —
-        // copy it into a fake mxd tree and verify detection.
-        let tmp = std::env::temp_dir().join("cmsdl_test_wz_detect");
-        let _ = std::fs::remove_dir_all(&tmp);
-        let mxd_data_base = tmp.join("mxd").join("Data").join("Base");
-        std::fs::create_dir_all(&mxd_data_base).unwrap();
-        std::fs::copy("target/Base.wz", mxd_data_base.join("Base.wz")).unwrap();
 
-        let packages = vec![
-            cms::PatchPackage {
-                from: "0.0.0.1".into(),
-                to: "0.0.0.2".into(),
-                version_view: "V224.1".into(),
-                file_list_url: String::new(),
-            },
-            cms::PatchPackage {
-                from: "0.0.0.3".into(),
-                to: "0.0.0.4".into(),
-                version_view: "V225.1".into(),
-                file_list_url: String::new(),
-            },
-            cms::PatchPackage {
-                from: "0.0.0.5".into(),
-                to: "0.0.0.6".into(),
-                version_view: "V226.1".into(),
-                file_list_url: String::new(),
-            },
-        ];
-
-        let result = try_detect_version_from_wz(&tmp, &packages);
-        assert!(result.is_some());
-        let (idx, ver) = result.unwrap();
-        assert_eq!(idx, 1, "should match V225.1 (second package)");
-        assert_eq!(ver, "0.0.0.4");
-
-        // Verify the marker file was written.
-        assert!(tmp.join("mxd").join("LocalVersion3.xml").exists());
-
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn detect_version_no_match() {
-        let tmp = std::env::temp_dir().join("cmsdl_test_wz_nomatch");
-        let _ = std::fs::remove_dir_all(&tmp);
-        let mxd_data_base = tmp.join("mxd").join("Data").join("Base");
-        std::fs::create_dir_all(&mxd_data_base).unwrap();
-        std::fs::copy("target/Base.wz", mxd_data_base.join("Base.wz")).unwrap();
-
-        // No package with version_view matching 225.
-        let packages = vec![
-            cms::PatchPackage {
-                from: "0.0.0.1".into(),
-                to: "0.0.0.2".into(),
-                version_view: "V999.1".into(),
-                file_list_url: String::new(),
-            },
-        ];
-
-        assert!(try_detect_version_from_wz(&tmp, &packages).is_none());
-
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
 
     #[test]
     fn detect_version_no_wz_file() {

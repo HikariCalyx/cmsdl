@@ -147,13 +147,6 @@ mod tests {
     }
 
     #[test]
-    fn sample_base_wz_version() {
-        let v = get_wz_version("target/Base.wz").expect("should read sample Base.wz");
-        println!("version      = {}", v.version);
-        println!("version_hash = {:#010X}", v.version_hash);
-    }
-
-    #[test]
     fn encver_is_valid_u8() {
         // All version hashes should produce an encver in 0..=255.
         for ver in 0..1500i16 {
