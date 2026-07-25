@@ -27,6 +27,7 @@ use crate::cli::Region;
 use crate::filter::FileFilter;
 use crate::gui::{self, UiModel};
 use crate::locale::tr;
+use crate::maintenance;
 use crate::progress::{self, format_size, format_speed, DownloadReporter};
 
 /// Rolling transfer-speed estimator, updated from cumulative byte counts.
@@ -339,6 +340,20 @@ pub fn run_gui_download(
             m.hdd_notice = tr("gui-is-hdd", &[]);
         }
     }
+
+    // Fetch the most recent maintenance notice in the background and show
+    // it above the HDD warning when available.
+    let ui_maint = Arc::clone(&ui);
+    let agent_maint = crate::net::agent(allow_insecure, proxy);
+    std::thread::spawn(move || {
+        if let Some((title, body, date)) = maintenance::fetch_for_gui(&agent_maint, region) {
+            if let Ok(mut m) = ui_maint.lock() {
+                m.maintenance_title = format!("{title} ({})", maintenance::fmt_gui_date(&date));
+                m.maintenance_body = body;
+                m.maintenance_folded = false;
+            }
+        }
+    });
 
     progress::set_download_reporter(reporter as Arc<dyn DownloadReporter>);
 

@@ -18,3 +18,5 @@ gui-downloader-hour = 小時
 gui-downloader-minute = 分鐘
 gui-downloader-second = 秒
 gui-is-hdd = 為了獲得最佳體驗，我們建議您在固態硬碟上執行遊戲。
+gui-click-to-expand = 點開閲讀
+gui-maint-scroll-hint = 使用滑鼠滾輪查看更多內容

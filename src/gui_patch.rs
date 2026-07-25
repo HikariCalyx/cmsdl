@@ -13,9 +13,11 @@ use std::time::Instant;
 
 use anyhow::{bail, Result};
 
+use crate::cli::Region;
 use crate::gui::{self, UiModel};
 use crate::gui_downloader::format_eta;
 use crate::locale::tr;
+use crate::maintenance;
 use crate::progress::{self, format_speed, Reporter};
 
 /// Download/repair context used to compute transfer speed.
@@ -309,6 +311,19 @@ pub fn run_gui_patch(
             m.hdd_notice = tr("gui-is-hdd", &[]);
         }
     }
+
+    // Fetch the most recent maintenance notice in the background.
+    let ui_maint = Arc::clone(&ui);
+    let agent_maint = crate::net::agent(allow_insecure, proxy);
+    std::thread::spawn(move || {
+        if let Some((title, body, date)) = maintenance::fetch_for_gui(&agent_maint, Region::Cms) {
+            if let Ok(mut m) = ui_maint.lock() {
+                m.maintenance_title = format!("{title} ({})", maintenance::fmt_gui_date(&date));
+                m.maintenance_body = body;
+                m.maintenance_folded = false;
+            }
+        }
+    });
 
     // Run the patch on a background thread so the message loop stays live.
     let target_buf = target.to_path_buf();

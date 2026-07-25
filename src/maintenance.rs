@@ -46,6 +46,8 @@ enum RenderMode {
     Markdown,
     /// Markdown-formatted text with embedded ANSI color codes (for Discord).
     Discord,
+    /// ANSI colour + bold codes, for GUI rendering (GDI parses ANSI codes).
+    Gui,
 }
 
 /// An entry in the news list.
@@ -162,6 +164,74 @@ pub fn show_maintenance(
         Region::Cms => show_cms_maintenance(agent, json, discord),
         Region::Tms => show_tms_maintenance(agent, json, discord),
         Region::Manual => bail!("--maintenance is not supported for region 'manual'"),
+    }
+}
+
+/// Fetch the maintenance notice for GUI display, returning `(title, body, date)`
+/// where `date` is a normalised `YYYY-MM-DD` string.
+/// Silently returns `None` on any error.
+pub fn fetch_for_gui(agent: &ureq::Agent, region: Region) -> Option<(String, String, String)> {
+    let result = match region {
+        Region::Cms => fetch_cms_for_gui(agent),
+        Region::Tms => fetch_tms_for_gui(agent),
+        Region::Manual => return None,
+    };
+    result.ok()
+}
+
+fn fetch_cms_for_gui(agent: &ureq::Agent) -> Result<(String, String, String)> {
+    let news_list = fetch_cms_news_list(agent)?;
+    let item = find_cms_maintenance(&news_list)?;
+    let content = fetch_cms_news_content(agent, item.id)?;
+    let body = render_html(&content.content, RenderMode::Gui);
+    let body = collapse_blank_lines(&body);
+    // Normalise to date-only: "2026-07-24 17:15:29" → "2026-07-24"
+    let date = content.publish_date.split_whitespace().next().unwrap_or(&content.publish_date).to_string();
+    Ok((content.title, body, date))
+}
+
+fn fetch_tms_for_gui(agent: &ureq::Agent) -> Result<(String, String, String)> {
+    let csrf_token = acquire_tms_csrf(agent)?;
+    let items = fetch_tms_bulletins(agent, &csrf_token, 5)?;
+    let main_item = items
+        .iter()
+        .filter(|i| i.title.contains("維護公告"))
+        .max_by_key(|i| &i.start_date)
+        .ok_or_else(|| anyhow::anyhow!("no maintenance announcement"))?;
+    let detail = fetch_tms_bulletin_detail(agent, &csrf_token, &main_item.bulletin_id)?;
+    let mut body = render_html(&detail.content, RenderMode::Gui);
+    if let Some(d) = items.iter().find(|i| {
+        i.title.contains("延後開機公告") && i.start_date >= main_item.start_date
+    }) {
+        if let Ok(dd) = fetch_tms_bulletin_detail(agent, &csrf_token, &d.bulletin_id) {
+            body.push_str("\n\n---\n\n");
+            body.push_str(&dd.title);
+            body.push_str("\n\n");
+            body.push_str(&render_html(&dd.content, RenderMode::Gui));
+        }
+    }
+    let body = collapse_blank_lines(&body);
+    // Normalise TMS date format: "2026/07/23" → "2026-07-23"
+    let date = detail.start_date.replace('/', "-");
+    Ok((detail.title, body, date))
+}
+
+/// Format a date string `YYYY-MM-DD` for GUI display using the current locale.
+pub fn fmt_gui_date(date_str: &str) -> String {
+    let d = match chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
+        Ok(d) => d,
+        Err(_) => return date_str.to_string(),
+    };
+    // Detect CJK locale by sampling a known translation.
+    let sample = crate::locale::tr("gui-click-to-expand", &[]);
+    let is_cjk = sample.contains(|c: char| c >= '\u{4E00}' && c <= '\u{9FFF}');
+    if is_cjk {
+        let y = d.format("%Y").to_string();
+        let m = d.format("%m").to_string().trim_start_matches('0').to_string();
+        let d2 = d.format("%d").to_string().trim_start_matches('0').to_string();
+        format!("{y}年{m}月{d2}日")
+    } else {
+        d.format("%b %d, %Y").to_string()
     }
 }
 
@@ -611,7 +681,7 @@ fn render_mode(json: bool, discord: bool) -> RenderMode {
 
 fn apply_bold_open(output: &mut String, mode: RenderMode) {
     match mode {
-        RenderMode::Terminal => output.push_str("\x1b[1m"),
+        RenderMode::Terminal | RenderMode::Gui => output.push_str("\x1b[1m"),
         RenderMode::Markdown => output.push_str("**"),
         RenderMode::Discord => {
             output.push_str("\x1b[1m**");
@@ -621,7 +691,7 @@ fn apply_bold_open(output: &mut String, mode: RenderMode) {
 
 fn apply_bold_close(output: &mut String, mode: RenderMode) {
     match mode {
-        RenderMode::Terminal => output.push_str("\x1b[22m"),
+        RenderMode::Terminal | RenderMode::Gui => output.push_str("\x1b[22m"),
         RenderMode::Markdown => output.push_str("**"),
         RenderMode::Discord => {
             output.push_str("**\x1b[22m");
@@ -635,7 +705,7 @@ fn apply_open(output: &mut String, color: AnsiColor, mode: RenderMode) {
         return;
     }
     match mode {
-        RenderMode::Terminal => output.push_str(&color.to_ansi_fg()),
+        RenderMode::Terminal | RenderMode::Gui => output.push_str(&color.to_ansi_fg()),
         RenderMode::Markdown => { /* no-op */ }
         RenderMode::Discord => output.push_str(&color.to_ansi_fg()),
     }
@@ -643,7 +713,7 @@ fn apply_open(output: &mut String, color: AnsiColor, mode: RenderMode) {
 
 fn apply_close(output: &mut String, _color: &Option<AnsiColor>, mode: RenderMode) {
     match mode {
-        RenderMode::Terminal => output.push_str("\x1b[39m"),
+        RenderMode::Terminal | RenderMode::Gui => output.push_str("\x1b[39m"),
         RenderMode::Markdown => { /* no-op */ }
         RenderMode::Discord => output.push_str("\x1b[39m"),
     }
@@ -651,7 +721,7 @@ fn apply_close(output: &mut String, _color: &Option<AnsiColor>, mode: RenderMode
 
 fn format_img(src: &str, mode: RenderMode) -> String {
     match mode {
-        RenderMode::Terminal => format!("Image: {src}"),
+        RenderMode::Terminal | RenderMode::Gui => format!("Image: {src}"),
         RenderMode::Markdown => format!("![image]({src})"),
         RenderMode::Discord => format!("![image]({src})"),
     }
@@ -669,7 +739,6 @@ fn collapse_blank_lines(text: &str) -> String {
         if is_blank {
             blank_run += 1;
         } else {
-            // Before emitting the first non-blank line, skip leading blanks.
             if at_start {
                 at_start = false;
             } else if blank_run > 0 {

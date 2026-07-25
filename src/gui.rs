@@ -40,6 +40,16 @@ pub struct UiModel {
     /// HDD notice label, drawn at (16, 477) in #FFA500.  Shown only when
     /// the target drive is a mechanical hard disk.
     pub hdd_notice: String,
+    /// Maintenance notice — title line + optional body.  Shown above the
+    /// HDD warning when a recent maintenance announcement is available.
+    pub maintenance_title: String,
+    /// Full body of the maintenance notice (plain text).  Visible only when
+    /// `maintenance_folded` is false.
+    pub maintenance_body: String,
+    /// Whether the maintenance notice body is currently folded (hidden).
+    pub maintenance_folded: bool,
+    /// Scroll offset for the maintenance body (in lines from the top).
+    pub maint_scroll: i32,
     /// Progress-bar fill ratio, 0.0..=1.0.
     pub progress: f32,
     /// When set, the window closes itself on the next timer tick.
@@ -56,6 +66,10 @@ impl Default for UiModel {
             label2: String::new(),
             label3: String::new(),
             hdd_notice: String::new(),
+            maintenance_title: String::new(),
+            maintenance_body: String::new(),
+            maintenance_folded: false,
+            maint_scroll: 0,
             progress: 0.0,
             should_close: false,
             exit_code: 1,
@@ -227,8 +241,32 @@ mod win32 {
     const HDD_BOX_W: i32 = 602;
     const HDD_BOX_H: i32 = 36;
     const HDD_BOX_RADIUS: i32 = 8;
+
+    // Maintenance notice — anchored at the bottom (above HDD warning), grows
+    // upward when expanded.  The header line is clickable to fold/expand.
+    /// Y position of the bottom of the maintenance area (just above HDD box).
+    const MAINT_BOTTOM_Y: i32 = 468;
+    /// Header line is drawn at this Y (near the bottom of the area).
+    const MAINT_HEADER_H: i32 = 22;
+    const MAINT_HEADER_X: i32 = 16;
+    /// Line height between body lines.
+    const MAINT_LINE_H: i32 = 18;
+    const MAINT_HEADER_COLOR_R: u8 = 0xFF;
+    const MAINT_HEADER_COLOR_G: u8 = 0xA5;
+    const MAINT_HEADER_COLOR_B: u8 = 0x00;
+    /// Body text colour (white).
+    const MAINT_BODY_COLOR_R: u8 = 0xFF;
+    const MAINT_BODY_COLOR_G: u8 = 0xFF;
+    const MAINT_BODY_COLOR_B: u8 = 0xFF;
+    /// Minimum Y coordinate for the maintenance area (prevents overflow).
+    const MAINT_MIN_Y: i32 = 60;
+    /// Maximum visible body lines (viewport height in lines).
+    const MAINT_MAX_VISIBLE: usize = 10;
     // Semi-transparent dark background: ARGB 0x72000000 (~45% black).
     const HDD_BOX_BG: u32 = 0xAF00_0000;
+
+    // Maintenance notice backdrop — darker for readability.
+    const MAINT_BOX_BG: u32 = 0xDF00_0000;
 
     // cmsdl version label (top area). Same style as label1 (#979497).
     const LABEL_VER_X: i32 = 343;
@@ -264,6 +302,7 @@ mod win32 {
     const WM_NCHITTEST:   u32 = 0x0084;
     const WM_SETCURSOR:   u32 = 0x0020;
     const WM_TIMER:       u32 = 0x0113;
+    const WM_MOUSEWHEEL:  u32 = 0x020A;
     const WM_SYSCOMMAND:  u32 = 0x0112;
     const WM_SETICON:     u32 = 0x0080;
     const ICON_SMALL:     usize = 0;
@@ -301,6 +340,7 @@ mod win32 {
 
     // Font creation
     const FW_NORMAL:      i32 = 400;
+    const FW_BOLD:        i32 = 700;
     const DEFAULT_CHARSET: u32 = 1;
     const OUT_DEFAULT_PRECIS: u32 = 0;
     const CLIP_DEFAULT_PRECIS: u32 = 0;
@@ -488,6 +528,8 @@ mod win32 {
 
         /// Font used to draw the status labels (SimSun, 9pt).
         label_font:    HGDIOBJ,
+        /// Bold variant of the label font (for maintenance body).
+        label_font_bold: HGDIOBJ,
         /// Font for the HDD notice (Segoe UI, 10pt) — better Unicode coverage.
         hdd_label_font: HGDIOBJ,
 
@@ -516,11 +558,33 @@ mod win32 {
             x >= MIN_BTN_X && x < MIN_BTN_X + BTN_W && y >= MIN_BTN_Y && y < MIN_BTN_Y + BTN_H
         }
 
+        fn hit_maint_header(&self, x: i32, y: i32) -> bool {
+            // Covers both positions: MAINT_BOTTOM_Y and MAINT_BOTTOM_Y+39
+            let hy_lo = MAINT_BOTTOM_Y - MAINT_HEADER_H;
+            let hy_hi = MAINT_BOTTOM_Y + 39;
+            x >= MAINT_HEADER_X && x < MAINT_HEADER_X + 400
+                && y >= hy_lo && y < hy_hi
+        }
+
         /// Snapshot the current label text and progress from the shared model.
-        fn snapshot(&self) -> (String, String, String, String, f32, bool) {
+        fn snapshot(&self) -> (String, String, String, String, f32, bool, String, String, bool, i32) {
             match self.ui.lock() {
-                Ok(m) => (m.label1.clone(), m.label2.clone(), m.label3.clone(), m.hdd_notice.clone(), m.progress.clamp(0.0, 1.0), m.should_close),
-                Err(_) => (String::new(), String::new(), String::new(), String::new(), 0.0, false),
+                Ok(m) => (
+                    m.label1.clone(),
+                    m.label2.clone(),
+                    m.label3.clone(),
+                    m.hdd_notice.clone(),
+                    m.progress.clamp(0.0, 1.0),
+                    m.should_close,
+                    m.maintenance_title.clone(),
+                    m.maintenance_body.clone(),
+                    m.maintenance_folded,
+                    m.maint_scroll,
+                ),
+                Err(_) => (
+                    String::new(), String::new(), String::new(), String::new(),
+                    0.0, false, String::new(), String::new(), true, 0,
+                ),
             }
         }
 
@@ -567,6 +631,9 @@ mod win32 {
         fn drop(&mut self) {
             if self.label_font != 0 {
                 unsafe { DeleteObject(self.label_font) };
+            }
+            if self.label_font_bold != 0 {
+                unsafe { DeleteObject(self.label_font_bold) };
             }
             if self.hdd_label_font != 0 {
                 unsafe { DeleteObject(self.hdd_label_font) };
@@ -653,6 +720,119 @@ mod win32 {
                 ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_DONTCARE,
                 face.as_ptr(),
             )
+        }
+    }
+
+    /// Create the SimSun 9pt bold font used for maintenance body bold spans.
+    fn create_label_bold_font() -> HGDIOBJ {
+        let height = -(LABEL_FONT_PT * 96 / 72);
+        let face: Vec<u16> = LABEL_FONT_NAME.encode_utf16().chain(Some(0)).collect();
+        unsafe {
+            CreateFontW(
+                height, 0, 0, 0, FW_BOLD, 0, 0, 0,
+                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_DONTCARE,
+                face.as_ptr(),
+            )
+        }
+    }
+
+    /// Draw a single line of text with ANSI escape code interpretation.
+    /// Colour codes (`\x1b[38;2;R;G;Bm`) switch the foreground colour;
+    /// `\x1b[1m` / `\x1b[22m` toggle bold; `\x1b[39m` resets colour to
+    /// `default_color`.  Each segment is drawn with the appropriate font.
+    fn draw_ansi_line(
+        dib: &mut [u32],
+        text: &str,
+        x: i32,
+        y: i32,
+        default_color: (u8, u8, u8),
+        font: HGDIOBJ,
+        bold_font: HGDIOBJ,
+        hdc: HDC,
+    ) {
+        if text.is_empty() { return; }
+
+        // Collect segments: (text, colour, is_bold)
+        let mut segments: Vec<(String, (u8, u8, u8), bool)> = Vec::new();
+        let mut cur = String::new();
+        let mut cur_color = default_color;
+        let mut cur_bold = false;
+        let mut chars = text.chars().peekable();
+
+        while let Some(c) = chars.next() {
+            if c == '\x1b' && chars.peek() == Some(&'[') {
+                // Flush current segment.
+                if !cur.is_empty() {
+                    segments.push((std::mem::take(&mut cur), cur_color, cur_bold));
+                }
+                chars.next(); // consume '['
+                let mut code = String::new();
+                while let Some(&nc) = chars.peek() {
+                    if nc == 'm' {
+                        chars.next();
+                        break;
+                    }
+                    code.push(chars.next().unwrap());
+                }
+                // Parse ANSI code.
+                if code == "0" || code == "39" {
+                    cur_color = default_color;
+                } else if code == "1" {
+                    cur_bold = true;
+                } else if code == "22" {
+                    cur_bold = false;
+                } else if code.starts_with("38;2;") {
+                    // 24-bit colour: 38;2;R;G;B
+                    let parts: Vec<&str> = code[5..].split(';').collect();
+                    if parts.len() == 3 {
+                        if let (Ok(r), Ok(g), Ok(b)) = (
+                            parts[0].parse::<u8>(),
+                            parts[1].parse::<u8>(),
+                            parts[2].parse::<u8>(),
+                        ) {
+                            cur_color = (r, g, b);
+                        }
+                    }
+                }
+            } else {
+                cur.push(c);
+            }
+        }
+        if !cur.is_empty() {
+            segments.push((cur, cur_color, cur_bold));
+        }
+
+        // Draw each segment.
+        let mut cx = x;
+        let draw_label = |dib: &mut [u32], text: &str, dx: i32, dy: i32, color: (u8, u8, u8), fnt: HGDIOBJ| {
+            let wide_text: Vec<u16> = text.encode_utf16().collect();
+            let Some((mask, mask_w, mask_h)) = render_text_mask(hdc, fnt, &wide_text)
+            else { return 0i32 };
+            let (cr, cg, cb) = color;
+            for my in 0..mask_h {
+                for mx in 0..mask_w {
+                    let coverage = mask[(my * mask_w + mx) as usize];
+                    if coverage == 0 { continue; }
+                    let px = dx + mx;
+                    let py = dy + my;
+                    if px < 0 || px >= WIN_W || py < 0 || py >= WIN_H { continue; }
+                    let a = coverage as u32;
+                    let r = (cr as u32) * a / 255;
+                    let g = (cg as u32) * a / 255;
+                    let b = (cb as u32) * a / 255;
+                    let src_dib = b | (g << 8) | (r << 16) | (a << 24);
+                    let di = (py * WIN_W + px) as usize;
+                    dib[di] = alpha_blend_dib(dib[di], src_dib);
+                }
+            }
+            mask_w
+        };
+
+        for (seg_text, seg_color, seg_bold) in &segments {
+            let seg_font = if *seg_bold { bold_font } else { font };
+            let w = draw_label(dib, seg_text, cx, y, *seg_color, seg_font);
+            cx += w;
         }
     }
 
@@ -978,7 +1158,8 @@ mod win32 {
         // ── Fill (top layer): B + tiled C + D, grown to reflect the model's
         // progress ratio. Starts at the same x as A and grows to cover the
         // entire track (A + E + F, i.e. all of PROG_TOTAL_W) ────────────────
-        let (label1_text, label2_text, label3_text, hdd_notice_text, progress_ratio, _close) = s.snapshot();
+        let (label1_text, label2_text, label3_text, hdd_notice_text, progress_ratio, _close,
+             maint_title, maint_body, maint_folded, maint_scroll) = s.snapshot();
         let fill_len = (PROG_TOTAL_W as f64 * progress_ratio as f64).round() as i32;
 
         if fill_len > 0 {
@@ -1068,10 +1249,103 @@ mod win32 {
                 (LABEL3_COLOR_R, LABEL3_COLOR_G, LABEL3_COLOR_B), s.label_font);
         }
 
+        // ── Maintenance notice ────────────────────────────────────────────────
+        // Anchored at the bottom of the window (above HDD warning), grows
+        // upward when expanded.  Mouse wheel scrolls when content overflows.
+        if !maint_title.is_empty() {
+            // Build combined list: title, blank spacer, then body lines.
+            let mut combined: Vec<String> = vec![maint_title.clone(), String::new()];
+            combined.extend(maint_body.lines().map(String::from));
+            let total_body_lines = combined.len();
+
+            let visible_body = if maint_folded {
+                0
+            } else {
+                total_body_lines.saturating_sub(maint_scroll as usize).min(MAINT_MAX_VISIBLE)
+            };
+            let total_lines = 1 + visible_body; // header + visible body
+            // Shift down when no HDD warning is shown.
+            let bottom_y = if hdd_notice_text.is_empty() {
+                MAINT_BOTTOM_Y + 39
+            } else {
+                MAINT_BOTTOM_Y
+            };
+            let box_h = total_lines as i32 * MAINT_LINE_H + 12;
+            let box_y = (bottom_y - box_h).max(MAINT_MIN_Y);
+            let box_w = 600;
+            let box_x = 13;
+
+            // Apply box blur to the background behind the maintenance box
+            // for a frosted-glass effect.
+            box_blur(dib, box_x, box_y, box_w, box_h, WIN_W, WIN_H, 4);
+
+            // Draw backdrop (only for the visible portion).
+            let box_dib = to_dib(MAINT_BOX_BG);
+            for dy in 0..box_h {
+                for dx in 0..box_w {
+                    let px = box_x + dx;
+                    let py = box_y + dy;
+                    if px < 0 || px >= WIN_W || py < 0 || py >= WIN_H { continue; }
+                    let in_corner = || -> bool {
+                        let rx = if dx < HDD_BOX_RADIUS {
+                            HDD_BOX_RADIUS - dx - 1
+                        } else if dx >= box_w - HDD_BOX_RADIUS {
+                            dx - (box_w - HDD_BOX_RADIUS)
+                        } else { return true; };
+                        let ry = if dy < HDD_BOX_RADIUS {
+                            HDD_BOX_RADIUS - dy - 1
+                        } else if dy >= box_h - HDD_BOX_RADIUS {
+                            dy - (box_h - HDD_BOX_RADIUS)
+                        } else { return true; };
+                        (rx as f64).powi(2) + (ry as f64).powi(2) < (HDD_BOX_RADIUS as f64).powi(2)
+                    };
+                    if in_corner() {
+                        let di = (py * WIN_W + px) as usize;
+                        dib[di] = alpha_blend_dib(dib[di], box_dib);
+                    }
+                }
+            }
+
+            // Header line — fold/unfold indicator with context-sensitive hint.
+            let header_text = if maint_folded {
+                let hint = crate::locale::tr("gui-click-to-expand", &[]);
+                format!("▲ {maint_title} — {hint}")
+            } else {
+                let hint = crate::locale::tr("gui-maint-scroll-hint", &[]);
+                format!("▼ {hint}")
+            };
+            let header_y = bottom_y - MAINT_LINE_H - 4;
+            draw_label(dib, &header_text, MAINT_HEADER_X, header_y,
+                (MAINT_HEADER_COLOR_R, MAINT_HEADER_COLOR_G, MAINT_HEADER_COLOR_B),
+                s.label_font);
+
+            // Body lines above the header (bottom-to-top), scrolled.
+            if !maint_folded {
+                let start = maint_scroll as usize;
+                let end = (start + MAINT_MAX_VISIBLE).min(total_body_lines);
+                let mut line_y = bottom_y - MAINT_LINE_H * 2 - 6;
+                for i in (start..end).rev() {
+                    let line = &combined[i];
+                    let (color, font, bold_font) = if i == 0 {
+                        ((MAINT_HEADER_COLOR_R, MAINT_HEADER_COLOR_G, MAINT_HEADER_COLOR_B),
+                         s.label_font, s.label_font)
+                    } else {
+                        ((MAINT_BODY_COLOR_R, MAINT_BODY_COLOR_G, MAINT_BODY_COLOR_B),
+                         s.label_font, s.label_font_bold)
+                    };
+                    draw_ansi_line(dib, line, MAINT_HEADER_X, line_y, color, font, bold_font, hdc_screen);
+                    line_y -= MAINT_LINE_H;
+                }
+            }
+        }
+
         // HDD notice — drawn at the bottom of the window when the target
         // drive is a mechanical hard disk.  A semi-transparent rounded
         // rectangle provides a subtle background behind the advisory text.
         if !hdd_notice_text.is_empty() {
+            // Apply box blur for frosted-glass effect.
+            box_blur(dib, HDD_BOX_X, HDD_BOX_Y, HDD_BOX_W, HDD_BOX_H, WIN_W, WIN_H, 4);
+
             // Draw the rounded-rectangle background first.
             let box_dib = to_dib(HDD_BOX_BG);
             for dy in 0..HDD_BOX_H {
@@ -1218,6 +1492,104 @@ mod win32 {
 
     /// Alpha-blend a pre-multiplied source DIB pixel over a destination DIB pixel.
     /// Both pixels use DIB BGRA layout: bytes [B,G,R,A] = u32 B|G<<8|R<<16|A<<24.
+    /// Apply a box blur to a rectangular region of the DIB.
+    /// Uses a separable two-pass approach for O(radius) per pixel.
+    fn box_blur(
+        dib: &mut [u32],
+        bx: i32, by: i32, bw: i32, bh: i32,
+        win_w: i32, win_h: i32, radius: i32,
+    ) {
+        if radius < 1 { return; }
+        let bx = bx.max(0);
+        let by = by.max(0);
+        let bw = bw.min(win_w - bx);
+        let bh = bh.min(win_h - by);
+        if bw <= 0 || bh <= 0 { return; }
+
+        let stride = win_w as usize;
+        let mut tmp = vec![0u32; (bw * bh) as usize];
+
+        // Horizontal pass: blur into temp buffer.
+        for y in 0..bh {
+            let row_start = ((by + y) as usize) * stride + bx as usize;
+            let tmp_start = (y * bw) as usize;
+            let mut r_sum = 0u64; let mut g_sum = 0u64;
+            let mut b_sum = 0u64; let mut a_sum = 0u64;
+            let mut count = 0u64;
+
+            for x in -radius..bw + radius {
+                let out_x = x - radius - 1;
+                if out_x >= 0 && out_x < bw {
+                    if count > 0 {
+                        let c = count;
+                        tmp[tmp_start + out_x as usize] =
+                            ((r_sum / c) as u32)
+                            | (((g_sum / c) as u32) << 8)
+                            | (((b_sum / c) as u32) << 16)
+                            | (((a_sum / c) as u32) << 24);
+                    }
+                    // Remove leftmost pixel from window.
+                    let left_x = x - radius * 2 - 1;
+                    if left_x >= 0 && (bx + left_x) < win_w {
+                        let p = dib[row_start + left_x as usize];
+                        r_sum -= ((p >> 16) & 0xFF) as u64;
+                        g_sum -= ((p >> 8) & 0xFF) as u64;
+                        b_sum -= (p & 0xFF) as u64;
+                        a_sum -= ((p >> 24) & 0xFF) as u64;
+                        count -= 1;
+                    }
+                }
+                // Add rightmost pixel to window.
+                if x + radius < bw && (bx + x + radius) < win_w {
+                    let p = dib[row_start + (x + radius) as usize];
+                    r_sum += ((p >> 16) & 0xFF) as u64;
+                    g_sum += ((p >> 8) & 0xFF) as u64;
+                    b_sum += (p & 0xFF) as u64;
+                    a_sum += ((p >> 24) & 0xFF) as u64;
+                    count += 1;
+                }
+            }
+        }
+
+        // Vertical pass: blur temp back into DIB.
+        for x in 0..bw {
+            let mut r_sum = 0u64; let mut g_sum = 0u64;
+            let mut b_sum = 0u64; let mut a_sum = 0u64;
+            let mut count = 0u64;
+
+            for y in -radius..bh + radius {
+                let out_y = y - radius - 1;
+                if out_y >= 0 && out_y < bh {
+                    if count > 0 {
+                        let c = count;
+                        let di = ((by + out_y) as usize) * stride + (bx + x) as usize;
+                        dib[di] = ((r_sum / c) as u32)
+                            | (((g_sum / c) as u32) << 8)
+                            | (((b_sum / c) as u32) << 16)
+                            | (((a_sum / c) as u32) << 24);
+                    }
+                    let top_y = y - radius * 2 - 1;
+                    if top_y >= 0 && top_y < bh {
+                        let p = tmp[(top_y * bw + x) as usize];
+                        r_sum -= ((p >> 16) & 0xFF) as u64;
+                        g_sum -= ((p >> 8) & 0xFF) as u64;
+                        b_sum -= (p & 0xFF) as u64;
+                        a_sum -= ((p >> 24) & 0xFF) as u64;
+                        count -= 1;
+                    }
+                }
+                if y + radius < bh {
+                    let p = tmp[((y + radius) * bw + x) as usize];
+                    r_sum += ((p >> 16) & 0xFF) as u64;
+                    g_sum += ((p >> 8) & 0xFF) as u64;
+                    b_sum += (p & 0xFF) as u64;
+                    a_sum += ((p >> 24) & 0xFF) as u64;
+                    count += 1;
+                }
+            }
+        }
+    }
+
     fn alpha_blend_dib(dst: u32, src: u32) -> u32 {
         let sa = (src >> 24) & 0xFF;
         if sa == 0   { return dst; }
@@ -1292,6 +1664,12 @@ mod win32 {
                 } else if s.hit_min(x, y) {
                     s.min_btn_state = BtnState::Pressed;
                     update_layered(s, None);
+                } else if s.hit_maint_header(x, y) {
+                    // Toggle maintenance fold state.
+                    if let Ok(mut m) = s.ui.lock() {
+                        m.maintenance_folded = !m.maintenance_folded;
+                    }
+                    update_layered(s, None);
                 }
                 0
             }
@@ -1316,7 +1694,8 @@ mod win32 {
                 0
             }
 
-            // Whole window draggable; close-button area stays as HTCLIENT.
+            // Whole window draggable; button and maintenance-header areas stay
+            // as HTCLIENT so clicks are delivered to the window procedure.
             WM_NCHITTEST => {
                 let result = unsafe { DefWindowProcW(hwnd, msg, w, l) };
                 if result == HTCLIENT {
@@ -1328,12 +1707,28 @@ mod win32 {
                     let cy = sy - rect[1];
                     let in_close = cx >= BTN_X && cx < BTN_X + BTN_W && cy >= BTN_Y && cy < BTN_Y + BTN_H;
                     let in_min = cx >= MIN_BTN_X && cx < MIN_BTN_X + BTN_W && cy >= MIN_BTN_Y && cy < MIN_BTN_Y + BTN_H;
-                    if in_close || in_min {
+                    if in_close || in_min || (!sp.is_null() && unsafe { &*sp }.hit_maint_header(cx, cy)) {
                         return HTCLIENT;
                     }
                     return HTCAPTION;
                 }
                 result
+            }
+
+            WM_MOUSEWHEEL => {
+                if sp.is_null() { return 0; }
+                let s = unsafe { &mut *sp };
+                let delta = ((w >> 16) as i16) as i32; // HIWORD(w)
+                let scroll_lines = -(delta / 120); // WHEEL_DELTA = 120
+                if scroll_lines != 0 {
+                    if let Ok(mut m) = s.ui.lock() {
+                        let total = m.maintenance_body.lines().count() + 2; // +1 title +1 spacer
+                        let max_scroll = total.saturating_sub(MAINT_MAX_VISIBLE) as i32;
+                        m.maint_scroll = (m.maint_scroll + scroll_lines).clamp(0, max_scroll.max(0));
+                    }
+                    update_layered(s, None);
+                }
+                0
             }
 
             WM_SETCURSOR => {
@@ -1348,7 +1743,7 @@ mod win32 {
                 if w == SC_RESTORE && !sp.is_null() {
                     let s = unsafe { &mut *sp };
                     update_layered(s, None);
-                    let (_, _, _, _, progress, _) = s.snapshot();
+                    let (_, _, _, _, progress, _, _, _, _, _) = s.snapshot();
                     set_taskbar_progress(s, progress);
                 }
                 unsafe { DefWindowProcW(hwnd, msg, w, l) }
@@ -1359,7 +1754,7 @@ mod win32 {
                     // Repaint to reflect the latest shared UI model, and close
                     // the window if the owning task requested it.
                     let s = unsafe { &mut *sp };
-                    let (_, _, _, _, progress, should_close) = s.snapshot();
+                    let (_, _, _, _, progress, should_close, _, _, _, _) = s.snapshot();
                     // When the window is minimised there is nothing to paint —
                     // skip the expensive UpdateLayeredWindow call and only
                     // keep the taskbar indicators live.
@@ -1502,6 +1897,7 @@ mod win32 {
             btn_state:  BtnState::Normal,
             min_btn_state: BtnState::Normal,
             label_font: create_label_font(),
+            label_font_bold: create_label_bold_font(),
             hdd_label_font: create_hdd_label_font(),
             ui,
             icon_bg:    {
