@@ -264,6 +264,7 @@ mod win32 {
     const WM_NCHITTEST:   u32 = 0x0084;
     const WM_SETCURSOR:   u32 = 0x0020;
     const WM_TIMER:       u32 = 0x0113;
+    const WM_SYSCOMMAND:  u32 = 0x0112;
     const WM_SETICON:     u32 = 0x0080;
     const ICON_SMALL:     usize = 0;
     const ICON_BIG:       usize = 1;
@@ -290,6 +291,9 @@ mod win32 {
 
     // ShowWindow commands
     const SW_MINIMIZE: i32 = 6;
+
+    // System command — window restored from minimised state.
+    const SC_RESTORE: usize = 0xF120;
 
     // GDI+ pixel format
     const PIXEL_FORMAT_32BPP_ARGB: i32 = 0x26200A;
@@ -413,6 +417,7 @@ mod win32 {
         fn SendMessageW(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT;
         fn CreateIconIndirect(info: *const ICONINFO) -> HICON;
         fn DestroyIcon(icon: HICON) -> BOOL;
+        fn IsIconic(hwnd: HWND) -> BOOL;
     }
 
     #[allow(dead_code)]
@@ -1337,13 +1342,30 @@ mod win32 {
                 1
             }
 
+            WM_SYSCOMMAND => {
+                // When the window is restored from minimised, repaint
+                // immediately so the user never sees a stale frame.
+                if w == SC_RESTORE && !sp.is_null() {
+                    let s = unsafe { &mut *sp };
+                    update_layered(s, None);
+                    let (_, _, _, _, progress, _) = s.snapshot();
+                    set_taskbar_progress(s, progress);
+                }
+                unsafe { DefWindowProcW(hwnd, msg, w, l) }
+            }
+
             WM_TIMER => {
                 if w == IDT_ANIM && !sp.is_null() {
                     // Repaint to reflect the latest shared UI model, and close
                     // the window if the owning task requested it.
                     let s = unsafe { &mut *sp };
                     let (_, _, _, _, progress, should_close) = s.snapshot();
-                    update_layered(s, None);
+                    // When the window is minimised there is nothing to paint —
+                    // skip the expensive UpdateLayeredWindow call and only
+                    // keep the taskbar indicators live.
+                    if unsafe { IsIconic(hwnd) } == 0 {
+                        update_layered(s, None);
+                    }
                     set_taskbar_progress(s, progress);
                     s.update_taskbar_icon(progress);
                     if should_close {
