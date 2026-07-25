@@ -246,6 +246,7 @@ pub fn download(
     purge_wz_files: bool,
     no_gui: bool,
     close_after_finishing: bool,
+    maint_id: Option<u64>,
 ) -> Result<()> {
     if build.is_some() && region != Region::Cms {
         bail!("--build is only supported for region 'cms'");
@@ -266,6 +267,7 @@ pub fn download(
             build,
             purge_wz_files,
             close_after_finishing,
+            maint_id,
         );
     }
 
@@ -475,7 +477,7 @@ pub fn patch_apply(
                      performing a full client download instead of patching.",
                     sentinel.display()
                 );
-                download(Region::Cms, target, false, None, allow_insecure, proxy, None, false, true, false)?;
+                download(Region::Cms, target, false, None, allow_insecure, proxy, None, false, true, false, None)?;
                 create_shortcut(Region::Cms, target, lrhook, no_gui, close_after_finishing)?;
                 if launch_after {
                     crate::patch::launch_client(target, lrhook)?;

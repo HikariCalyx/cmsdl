@@ -20,3 +20,4 @@ gui-downloader-second = Sec
 gui-is-hdd = For best experience, we recommend you to run game on SSD.
 gui-click-to-expand = Click to Expand
 gui-maint-scroll-hint = Scroll with mouse wheel to see more
+gui-stroke-out = (stroke out)

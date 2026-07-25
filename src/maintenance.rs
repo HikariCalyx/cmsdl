@@ -169,48 +169,64 @@ pub fn show_maintenance(
 
 /// Fetch the maintenance notice for GUI display, returning `(title, body, date)`
 /// where `date` is a normalised `YYYY-MM-DD` string.
+/// If `maint_id` is set, that specific bulletin is fetched instead of
+/// searching for the latest maintenance notice.
 /// Silently returns `None` on any error.
-pub fn fetch_for_gui(agent: &ureq::Agent, region: Region) -> Option<(String, String, String)> {
+pub fn fetch_for_gui(agent: &ureq::Agent, region: Region, maint_id: Option<u64>) -> Option<(String, String, String)> {
     let result = match region {
-        Region::Cms => fetch_cms_for_gui(agent),
-        Region::Tms => fetch_tms_for_gui(agent),
+        Region::Cms => fetch_cms_for_gui(agent, maint_id),
+        Region::Tms => fetch_tms_for_gui(agent, maint_id),
         Region::Manual => return None,
     };
     result.ok()
 }
 
-fn fetch_cms_for_gui(agent: &ureq::Agent) -> Result<(String, String, String)> {
-    let news_list = fetch_cms_news_list(agent)?;
-    let item = find_cms_maintenance(&news_list)?;
-    let content = fetch_cms_news_content(agent, item.id)?;
+fn fetch_cms_for_gui(agent: &ureq::Agent, maint_id: Option<u64>) -> Result<(String, String, String)> {
+    let id = if let Some(mid) = maint_id {
+        mid
+    } else {
+        let news_list = fetch_cms_news_list(agent)?;
+        let item = find_cms_maintenance(&news_list)?;
+        item.id
+    };
+    let content = fetch_cms_news_content(agent, id)?;
     let body = render_html(&content.content, RenderMode::Gui);
     let body = collapse_blank_lines(&body);
-    // Normalise to date-only: "2026-07-24 17:15:29" → "2026-07-24"
+    let body = localize_stroke_out(&body);
     let date = content.publish_date.split_whitespace().next().unwrap_or(&content.publish_date).to_string();
     Ok((content.title, body, date))
 }
 
-fn fetch_tms_for_gui(agent: &ureq::Agent) -> Result<(String, String, String)> {
+fn fetch_tms_for_gui(agent: &ureq::Agent, maint_id: Option<u64>) -> Result<(String, String, String)> {
     let csrf_token = acquire_tms_csrf(agent)?;
-    let items = fetch_tms_bulletins(agent, &csrf_token, 5)?;
-    let main_item = items
-        .iter()
-        .filter(|i| i.title.contains("維護公告"))
-        .max_by_key(|i| &i.start_date)
-        .ok_or_else(|| anyhow::anyhow!("no maintenance announcement"))?;
-    let detail = fetch_tms_bulletin_detail(agent, &csrf_token, &main_item.bulletin_id)?;
+    let (bid, items_opt) = if let Some(mid) = maint_id {
+        (mid.to_string(), None)
+    } else {
+        let items = fetch_tms_bulletins(agent, &csrf_token, 5)?;
+        let main_item = items
+            .iter()
+            .filter(|i| i.title.contains("維護公告"))
+            .max_by_key(|i| &i.start_date)
+            .ok_or_else(|| anyhow::anyhow!("no maintenance announcement"))?;
+        (main_item.bulletin_id.clone(), Some((items.clone(), main_item.start_date.clone())))
+    };
+    let detail = fetch_tms_bulletin_detail(agent, &csrf_token, &bid)?;
     let mut body = render_html(&detail.content, RenderMode::Gui);
-    if let Some(d) = items.iter().find(|i| {
-        i.title.contains("延後開機公告") && i.start_date >= main_item.start_date
-    }) {
-        if let Ok(dd) = fetch_tms_bulletin_detail(agent, &csrf_token, &d.bulletin_id) {
-            body.push_str("\n\n---\n\n");
-            body.push_str(&dd.title);
-            body.push_str("\n\n");
-            body.push_str(&render_html(&dd.content, RenderMode::Gui));
+    // Check for delayed-opening notice (only when searching, not with --maintid).
+    if let Some((items, maint_date)) = items_opt {
+        if let Some(d) = items.iter().find(|i| {
+            i.title.contains("延後開機公告") && i.start_date >= maint_date
+        }) {
+            if let Ok(dd) = fetch_tms_bulletin_detail(agent, &csrf_token, &d.bulletin_id) {
+                body.push_str("\n\n---\n\n");
+                body.push_str(&dd.title);
+                body.push_str("\n\n");
+                body.push_str(&render_html(&dd.content, RenderMode::Gui));
+            }
         }
     }
     let body = collapse_blank_lines(&body);
+    let body = localize_stroke_out(&body);
     // Normalise TMS date format: "2026/07/23" → "2026-07-23"
     let date = detail.start_date.replace('/', "-");
     Ok((detail.title, body, date))
@@ -233,6 +249,12 @@ pub fn fmt_gui_date(date_str: &str) -> String {
     } else {
         d.format("%b %d, %Y").to_string()
     }
+}
+
+/// Replace hard-coded "(stroke out)" with the localised equivalent.
+fn localize_stroke_out(body: &str) -> String {
+    let label = crate::locale::tr("gui-stroke-out", &[]);
+    body.replace("(stroke out)", &label)
 }
 
 // ── CMS implementation ──────────────────────────────────────────────────────
@@ -536,6 +558,7 @@ fn render_html(html: &str, mode: RenderMode) -> String {
     let mut output = String::new();
     let mut color_stack: Vec<Option<AnsiColor>> = Vec::new();
     let mut bold_stack: Vec<bool> = Vec::new();
+    let mut strike_stack: Vec<bool> = Vec::new();
     let mut i = 0;
     let bytes = html.as_bytes();
 
@@ -577,6 +600,10 @@ fn render_html(html: &str, mode: RenderMode) -> String {
                         if let Some(color) = color_stack.pop() {
                             apply_close(&mut output, &color, mode);
                         }
+                    }
+                    "s" | "strike" | "del" => {
+                        strike_stack.pop();
+                        output.push_str(" (stroke out)");
                     }
                     _ => {}
                 }
@@ -626,6 +653,9 @@ fn render_html(html: &str, mode: RenderMode) -> String {
                     color_stack.push(Some(link_color));
                     apply_open(&mut output, link_color, mode);
                 }
+                "s" | "strike" | "del" => {
+                    strike_stack.push(true);
+                }
                 _ => {}
             }
         } else if bytes[i] == b'&' {
@@ -647,6 +677,8 @@ fn render_html(html: &str, mode: RenderMode) -> String {
                 "&amp;" => output.push('&'),
                 "&quot;" => output.push('"'),
                 "&apos;" => output.push('\''),
+                "&ldquo;" => output.push('\u{201C}'),
+                "&rdquo;" => output.push('\u{201D}'),
                 _ => output.push_str(entity),
             }
             i = ent_end + 1;

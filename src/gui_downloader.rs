@@ -322,6 +322,7 @@ pub fn run_gui_download(
     build: Option<u32>,
     purge_wz_files: bool,
     close_after_finishing: bool,
+    maint_id: Option<u64>,
 ) -> Result<()> {
     // Hide the empty console window when we own it (launched from Explorer /
     // a shortcut). Left untouched when launched from a real terminal.
@@ -346,7 +347,7 @@ pub fn run_gui_download(
     let ui_maint = Arc::clone(&ui);
     let agent_maint = crate::net::agent(allow_insecure, proxy);
     std::thread::spawn(move || {
-        if let Some((title, body, date)) = maintenance::fetch_for_gui(&agent_maint, region) {
+        if let Some((title, body, date)) = maintenance::fetch_for_gui(&agent_maint, region, maint_id) {
             if let Ok(mut m) = ui_maint.lock() {
                 m.maintenance_title = format!("{title} ({})", maintenance::fmt_gui_date(&date));
                 m.maintenance_body = body;

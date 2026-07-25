@@ -316,7 +316,7 @@ pub fn run_gui_patch(
     let ui_maint = Arc::clone(&ui);
     let agent_maint = crate::net::agent(allow_insecure, proxy);
     std::thread::spawn(move || {
-        if let Some((title, body, date)) = maintenance::fetch_for_gui(&agent_maint, Region::Cms) {
+        if let Some((title, body, date)) = maintenance::fetch_for_gui(&agent_maint, Region::Cms, None) {
             if let Ok(mut m) = ui_maint.lock() {
                 m.maintenance_title = format!("{title} ({})", maintenance::fmt_gui_date(&date));
                 m.maintenance_body = body;

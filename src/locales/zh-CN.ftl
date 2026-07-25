@@ -20,3 +20,4 @@ gui-downloader-second = 秒
 gui-is-hdd = 为获得最佳体验，我们建议您在固态硬盘上运行游戏。
 gui-click-to-expand = 点击查看
 gui-maint-scroll-hint = 使用鼠标滚轮查看更多内容
+gui-stroke-out = (划线)

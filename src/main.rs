@@ -197,6 +197,7 @@ fn main() -> Result<()> {
             cli.purge_wz_files,
             cli.no_gui,
             cli.close_after_finishing,
+            cli.maintid,
         )?,
         Action::GetBitTorrent(output) => {
             downloader::get_bit_torrent(cli.region, output.as_deref(), cli.allow_insecure, proxy)?
