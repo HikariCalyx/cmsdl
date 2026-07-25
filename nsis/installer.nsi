@@ -16,7 +16,7 @@ Unicode true
 !include "FileFunc.nsh"
 
 ; Version
-!define VERSION "4.226.4.3"
+!define VERSION "4.226.5.1"
 
 ; Product Info (English)
 !define PRODUCT_NAME "MapleStory CN"
@@ -217,7 +217,7 @@ Function .onInit
     Quit
   ${EndIf}
 
-  ; If the current date is on or before July 28, 2026, add --build 1036 to
+  ; If the current date is on or before July 28, 2026, add --build 1055 to
   ; the download command (required for a specific game build rollout).
   ${GetTime} "" "L" $0 $1 $2 $3 $4 $5 $6
   ; $2 = year (4 digits), $1 = month, $0 = day of month
@@ -228,7 +228,7 @@ Function .onInit
   monthEq:
     IntCmp $0 28 beforeCutoff beforeCutoff afterCutoff
   beforeCutoff:
-    StrCpy $BuildFlag "--build 1036"
+    StrCpy $BuildFlag "--build 1055"
   afterCutoff:
 FunctionEnd
 
