@@ -283,6 +283,12 @@ pub struct PatchData {
     pub base_url: String,
     /// Every published patch, in chained order.
     pub packages: Vec<PatchPackage>,
+    /// Minimum full-client version that is guaranteed to be available as a
+    /// download (e.g. `"0.0.0.20"`).  When the latest full client does not yet
+    /// contain the post-patch files, this version's files can be used as a
+    /// stable baseline for repair.
+    #[serde(default)]
+    pub must: Option<String>,
 }
 
 /// Fetch and parse the CMS patch metadata (`ver2.dat`).
@@ -720,6 +726,104 @@ fn discover_latest_client_number_with(agent: &ureq::Agent, challenge: &str) -> R
 
     save_last_client_version(current)?;
     Ok(current)
+}
+
+/// Extract the version string from a client file list header.
+///
+/// The header has the form `URL|5|0.0.0.20`; this returns the last
+/// pipe-delimited field (e.g. `"0.0.0.20"`).
+fn extract_version_from_header(contents: &str) -> Option<String> {
+    let header = contents.lines().find(|l| !l.trim().is_empty())?;
+    let version = header.rsplit('|').next()?.trim();
+    if version.is_empty() {
+        None
+    } else {
+        Some(version.to_owned())
+    }
+}
+
+/// Find a full-client build number whose file-list header version equals
+/// `target_version`.
+///
+/// Searches backwards from the latest known build (up to
+/// [`FIND_BUILD_SEARCH_WINDOW`] candidates).  Probes run in parallel across
+/// [`PARALLEL_PROBES`] threads.
+fn find_build_for_version(
+    agent: &ureq::Agent,
+    challenge: &str,
+    target_version: &str,
+) -> Result<Option<u32>> {
+    const FIND_BUILD_SEARCH_WINDOW: u32 = 320;
+
+    let latest = discover_latest_client_number_with(agent, challenge)?;
+
+    // Check the latest first — it's the most likely match.
+    if let Some((contents, _)) = fetch_client_file_list_for(agent, challenge, latest)? {
+        if extract_version_from_header(&contents).as_deref() == Some(target_version) {
+            return Ok(Some(latest));
+        }
+    }
+
+    // Search backwards in parallel.
+    let start = latest.saturating_sub(1);
+    let end = latest.saturating_sub(FIND_BUILD_SEARCH_WINDOW);
+    if start < end {
+        return Ok(None);
+    }
+
+    let found: Mutex<Option<u32>> = Mutex::new(None);
+    let next_offset = AtomicU32::new(0);
+    let first_err: Mutex<Option<anyhow::Error>> = Mutex::new(None);
+    let total = start - end + 1;
+
+    std::thread::scope(|scope| {
+        let found = &found;
+        let next_offset = &next_offset;
+        let first_err = &first_err;
+        let agent = &agent;
+
+        for _ in 0..PARALLEL_PROBES {
+            scope.spawn(move || loop {
+                // Stop early once a match is found.
+                if found.lock().unwrap().is_some() {
+                    break;
+                }
+                let offset = next_offset.fetch_add(1, Ordering::Relaxed);
+                if offset > total {
+                    break;
+                }
+                let candidate = start.saturating_sub(offset);
+                if candidate < end {
+                    break;
+                }
+                match fetch_client_file_list_for(agent, challenge, candidate) {
+                    Ok(Some((contents, _))) => {
+                        if extract_version_from_header(&contents).as_deref() == Some(target_version) {
+                            let mut slot = found.lock().unwrap();
+                            if slot.is_none() {
+                                *slot = Some(candidate);
+                            }
+                            // Signal other threads to stop.
+                            next_offset.store(total + 1, Ordering::Relaxed);
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        let mut slot = first_err.lock().unwrap();
+                        if slot.is_none() {
+                            *slot = Some(e);
+                        }
+                        next_offset.store(total + 1, Ordering::Relaxed);
+                    }
+                }
+            });
+        }
+    });
+
+    if let Some(e) = first_err.into_inner().unwrap() {
+        return Err(e);
+    }
+    Ok(found.into_inner().unwrap())
 }
 
 /// Read the highest build number recorded in [`LAST_CLIENT_VERSION_FILE`].
@@ -1940,14 +2044,8 @@ fn supports_ranges(url: &str, agent: &ureq::Agent) -> bool {
 /// `mxd\Data\Base\Base.wz`) from the latest full client index, overwriting any
 /// existing copies under `target_dir`.
 ///
-/// Used to repair files that could not be patched: the newest build's
-/// `client_all_files_list.dat` is fetched, and each requested path is matched
-/// by its `raw_path` and downloaded via its obfuscated, signed URL.
-///
-/// Downloads run with up to [`PARALLEL_FILES`] files in flight concurrently,
-/// each file fetched in up to [`SEGMENTS_PER_FILE`] parallel byte-range
-/// segments with per-segment stall detection and re-signed resume, mirroring
-/// the regular client download.
+/// Convenience wrapper around [`replace_files_from_build`] that discovers the
+/// newest available build number automatically.
 ///
 /// Returns the list of requested paths that could not be found or downloaded.
 pub(crate) fn replace_files_from_latest(
@@ -1964,11 +2062,31 @@ pub(crate) fn replace_files_from_latest(
     let challenge = get_challenge_key(&agent).context("failed to obtain challenge code")?;
     plog!("scanning for the latest build version...");
     let number = discover_latest_client_number_with(&agent, &challenge)?;
+    replace_files_from_build(target_dir, rel_paths, number, &agent, &challenge)
+}
 
+/// Download specific files from the full client index of a given build
+/// `number`, overwriting any existing copies under `target_dir`.
+///
+/// The build's `client_all_files_list.dat` is fetched, and each requested path
+/// is matched by its `raw_path` and downloaded via its obfuscated, signed URL.
+///
+/// Downloads run with up to [`PARALLEL_FILES`] files in flight concurrently,
+/// each file fetched in up to [`SEGMENTS_PER_FILE`] parallel byte-range
+/// segments with per-segment stall detection and re-signed resume.
+///
+/// Returns the list of requested paths that could not be found or downloaded.
+pub(crate) fn replace_files_from_build(
+    target_dir: &Path,
+    rel_paths: &[String],
+    number: u32,
+    agent: &ureq::Agent,
+    challenge: &str,
+) -> Result<Vec<String>> {
     let list_time = get_current_utc8_time();
-    let list_url = build_signed_url(&challenge, list_time, &client_file_list_path(number));
+    let list_url = build_signed_url(challenge, list_time, &client_file_list_path(number));
     let contents =
-        http_get_text(&agent, &list_url).context("failed to download client file list")?;
+        http_get_text(agent, &list_url).context("failed to download client file list")?;
 
     let mut lines = contents.lines().filter(|l| !l.trim().is_empty());
     let header = lines.next().context("client file list is empty")?;
@@ -1990,7 +2108,7 @@ pub(crate) fn replace_files_from_latest(
     }
 
     // Resolve each requested path to its index entry. Paths missing from the
-    // latest index are recorded as failures up front and never dispatched.
+    // index are recorded as failures up front and never dispatched.
     let mut work: Vec<(&str, &FileEntry)> = Vec::new();
     let mut failed: Vec<String> = Vec::new();
     for rel in rel_paths {
@@ -2063,7 +2181,7 @@ pub(crate) fn replace_files_from_latest(
         let failures = &failures;
         let total_pb = &total_pb;
         let agent = &agent;
-        let challenge = challenge.as_str();
+        let challenge = challenge;
         let version = version.as_str();
         let domain = domain.as_str();
         let base_path = base_path.as_str();
@@ -2110,6 +2228,35 @@ pub(crate) fn replace_files_from_latest(
 
     failed.extend(failures.into_inner().unwrap());
     Ok(failed)
+}
+
+/// Download specific files from a full client index identified by its version
+/// string (e.g. `"0.0.0.20"`), overwriting any existing copies under
+/// `target_dir`.
+///
+/// Searches backwards from the latest known build to locate a build whose
+/// file-list header matches `version`.  If no matching build is found the
+/// function returns an error.
+///
+/// Returns the list of requested paths that could not be found or downloaded.
+pub(crate) fn replace_files_from_version(
+    target_dir: &Path,
+    rel_paths: &[String],
+    version: &str,
+    allow_insecure: bool,
+    proxy: Option<&str>,
+) -> Result<Vec<String>> {
+    let agent = crate::net::agent_builder(allow_insecure, proxy)
+        .timeout_read(STALL_TIMEOUT)
+        .timeout_connect(CONNECT_TIMEOUT)
+        .build();
+
+    let challenge = get_challenge_key(&agent).context("failed to obtain challenge code")?;
+    plog!("searching for build matching version {version}...");
+    let number = find_build_for_version(&agent, &challenge, version)?
+        .ok_or_else(|| anyhow!("no full client build found for version {version}"))?;
+    plog!("found build {number} for version {version}.");
+    replace_files_from_build(target_dir, rel_paths, number, &agent, &challenge)
 }
 
 #[cfg(test)]

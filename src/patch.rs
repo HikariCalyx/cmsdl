@@ -1154,8 +1154,130 @@ pub fn apply_patches(
 
     if max_version.eq_ignore_ascii_case("latest") {
         plog!("\nrepairing corrupted files from the latest full index...");
-        let still_failed =
+        let mut still_failed =
             cms::replace_files_from_latest(target_dir, &last_corrupted, allow_insecure, proxy)?;
+
+        // If the latest full client didn't have every file (e.g. the full
+        // client for the post-patch version hasn't been published yet), fall
+        // back to a known-good baseline full client: try the `must` version
+        // from the patch metadata first (guaranteed available), then the
+        // pre-patch version.  Download the origin files from there and
+        // re-apply the last patch's deltas on top of them.
+        if !still_failed.is_empty() {
+            let pre_patch_version = selected.last().map(|p| p.from.as_str()).unwrap_or("");
+
+            // Build an ordered list of fallback versions to try: `must` first
+            // (most reliable), then the pre-patch version (skipping duplicates).
+            let mut fallback_versions: Vec<&str> = Vec::new();
+            if let Some(ref must_ver) = data.must {
+                if !must_ver.is_empty() {
+                    fallback_versions.push(must_ver.as_str());
+                }
+            }
+            if !pre_patch_version.is_empty()
+                && fallback_versions.last().copied() != Some(pre_patch_version)
+            {
+                fallback_versions.push(pre_patch_version);
+            }
+
+            if !fallback_versions.is_empty() {
+                plog!(
+                    "\n{} file(s) not available in the latest full index.",
+                    still_failed.len()
+                );
+
+                for &fb_ver in &fallback_versions {
+                    if still_failed.is_empty() {
+                        break;
+                    }
+                    plog!(
+                        "falling back: downloading origin files from \
+                         client version {fb_ver} and re-applying deltas..."
+                    );
+
+                    match cms::replace_files_from_version(
+                        target_dir,
+                        &still_failed,
+                        fb_ver,
+                        allow_insecure,
+                        proxy,
+                    ) {
+                        Ok(dl_failed) => {
+                            if !dl_failed.is_empty() {
+                                plog!(
+                                    "{} file(s) could not be downloaded \
+                                     from version {fb_ver}:",
+                                    dl_failed.len()
+                                );
+                                for f in &dl_failed {
+                                    plog!("  {f}");
+                                }
+                                still_failed = dl_failed;
+                            } else {
+                                // Re-apply the last patch so the downloaded
+                                // origin files are brought up to the target
+                                // version.  Only the originally-corrupted
+                                // files matter; new corruptions from the
+                                // re-run are ignored (they were already fine).
+                                let last_pkg = selected.last().unwrap();
+                                let last_from_view =
+                                    view_of(&last_pkg.from).unwrap_or("");
+                                let patchdata = target_dir.join("patchdata");
+                                let _ = std::fs::remove_dir_all(&patchdata);
+
+                                let mut re_corrupted = Vec::new();
+                                if let Err(e) = apply_one_patch(
+                                    &agent,
+                                    &challenge,
+                                    &ver2_base,
+                                    last_pkg,
+                                    last_from_view,
+                                    0,
+                                    0,
+                                    target_dir,
+                                    &mut re_corrupted,
+                                    effective_keep,
+                                    max_parallel,
+                                ) {
+                                    plog!(
+                                        "fallback patch re-application \
+                                         failed: {e:#}"
+                                    );
+                                }
+
+                                // Only keep the files that were originally
+                                // corrupted — the re-run may report new
+                                // "corrupted" entries for files that were
+                                // already at the target version and simply
+                                // skipped.
+                                let corrupt_set: HashSet<&str> = still_failed
+                                    .iter()
+                                    .map(|s| s.as_str())
+                                    .collect();
+                                still_failed = re_corrupted
+                                    .into_iter()
+                                    .filter(|f| {
+                                        corrupt_set.contains(f.as_str())
+                                    })
+                                    .collect();
+
+                                // Clean up the working files from the re-run.
+                                let _ = std::fs::remove_dir_all(
+                                    target_dir.join("patchdata"),
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            plog!(
+                                "fallback download from version {fb_ver} \
+                                 failed: {e:#}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
         if still_failed.is_empty() {
             let final_view = data.packages.iter()
                 .find(|p| p.to == final_version)
