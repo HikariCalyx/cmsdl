@@ -193,6 +193,7 @@ fn fetch_cms_for_gui(agent: &ureq::Agent, maint_id: Option<u64>) -> Result<(Stri
     let body = render_html(&content.content, RenderMode::Gui);
     let body = collapse_blank_lines(&body);
     let body = localize_stroke_out(&body);
+    let body = format!("{body}\n\n\n\n");
     let date = content.publish_date.split_whitespace().next().unwrap_or(&content.publish_date).to_string();
     Ok((content.title, body, date))
 }
@@ -227,6 +228,7 @@ fn fetch_tms_for_gui(agent: &ureq::Agent, maint_id: Option<u64>) -> Result<(Stri
     }
     let body = collapse_blank_lines(&body);
     let body = localize_stroke_out(&body);
+    let body = format!("{body}\n\n\n\n");
     // Normalise TMS date format: "2026/07/23" → "2026-07-23"
     let date = detail.start_date.replace('/', "-");
     Ok((detail.title, body, date))
@@ -679,6 +681,11 @@ fn render_html(html: &str, mode: RenderMode) -> String {
                 "&apos;" => output.push('\''),
                 "&ldquo;" => output.push('\u{201C}'),
                 "&rdquo;" => output.push('\u{201D}'),
+                "&lsquo;" => output.push('\u{2018}'),
+                "&rsquo;" => output.push('\u{2019}'),
+                "&mdash;" => output.push('\u{2014}'),
+                "&ndash;" => output.push('\u{2013}'),
+                "&middot;" => output.push('\u{00B7}'),
                 _ => output.push_str(entity),
             }
             i = ent_end + 1;

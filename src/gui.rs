@@ -50,6 +50,9 @@ pub struct UiModel {
     pub maintenance_folded: bool,
     /// Scroll offset for the maintenance body (in lines from the top).
     pub maint_scroll: i32,
+    /// Total number of lines after pre-processing (splitting).  Updated by the
+    /// renderer; used to compute the scroll maximum.
+    pub maint_processed_lines: usize,
     /// Progress-bar fill ratio, 0.0..=1.0.
     pub progress: f32,
     /// When set, the window closes itself on the next timer tick.
@@ -70,6 +73,7 @@ impl Default for UiModel {
             maintenance_body: String::new(),
             maintenance_folded: false,
             maint_scroll: 0,
+            maint_processed_lines: 0,
             progress: 0.0,
             should_close: false,
             exit_code: 1,
@@ -567,7 +571,7 @@ mod win32 {
         }
 
         /// Snapshot the current label text and progress from the shared model.
-        fn snapshot(&self) -> (String, String, String, String, f32, bool, String, String, bool, i32) {
+        fn snapshot(&self) -> (String, String, String, String, f32, bool, String, String, bool, i32, usize) {
             match self.ui.lock() {
                 Ok(m) => (
                     m.label1.clone(),
@@ -580,10 +584,11 @@ mod win32 {
                     m.maintenance_body.clone(),
                     m.maintenance_folded,
                     m.maint_scroll,
+                    m.maint_processed_lines,
                 ),
                 Err(_) => (
                     String::new(), String::new(), String::new(), String::new(),
-                    0.0, false, String::new(), String::new(), true, 0,
+                    0.0, false, String::new(), String::new(), true, 0, 0,
                 ),
             }
         }
@@ -1159,7 +1164,7 @@ mod win32 {
         // progress ratio. Starts at the same x as A and grows to cover the
         // entire track (A + E + F, i.e. all of PROG_TOTAL_W) ────────────────
         let (label1_text, label2_text, label3_text, hdd_notice_text, progress_ratio, _close,
-             maint_title, maint_body, maint_folded, maint_scroll) = s.snapshot();
+             maint_title, maint_body, maint_folded, maint_scroll, _plines) = s.snapshot();
         let fill_len = (PROG_TOTAL_W as f64 * progress_ratio as f64).round() as i32;
 
         if fill_len > 0 {
@@ -1250,13 +1255,40 @@ mod win32 {
         }
 
         // ── Maintenance notice ────────────────────────────────────────────────
-        // Anchored at the bottom of the window (above HDD warning), grows
-        // upward when expanded.  Mouse wheel scrolls when content overflows.
         if !maint_title.is_empty() {
             // Build combined list: title, blank spacer, then body lines.
             let mut combined: Vec<String> = vec![maint_title.clone(), String::new()];
             combined.extend(maint_body.lines().map(String::from));
-            let total_body_lines = combined.len();
+
+            // Pre-process: measure each line with GDI and split wide ones.
+            let box_w = 600;
+            let box_max_w = box_w - 8;
+            let mut processed: Vec<String> = Vec::with_capacity(combined.len());
+            for line in &combined {
+                let plain = strip_ansi(line);
+                let w = measure_text_width(hdc_screen, s.label_font, &plain);
+                if w <= box_max_w || plain.len() <= 1 {
+                    processed.push(line.clone());
+                } else {
+                    // Split into sub-lines fitting within box_max_w pixels.
+                    let mut cur = String::new();
+                    for c in plain.chars() {
+                        let test = format!("{cur}{c}");
+                        if measure_text_width(hdc_screen, s.label_font, &test) > box_max_w && !cur.is_empty() {
+                            processed.push(cur);
+                            cur = String::new();
+                        }
+                        cur.push(c);
+                    }
+                    if !cur.is_empty() {
+                        processed.push(cur);
+                    }
+                }
+            }
+            let total_body_lines = processed.len();
+            if let Ok(mut m) = s.ui.lock() {
+                m.maint_processed_lines = total_body_lines;
+            }
 
             let visible_body = if maint_folded {
                 0
@@ -1272,7 +1304,6 @@ mod win32 {
             };
             let box_h = total_lines as i32 * MAINT_LINE_H + 12;
             let box_y = (bottom_y - box_h).max(MAINT_MIN_Y);
-            let box_w = 600;
             let box_x = 13;
 
             // Apply box blur to the background behind the maintenance box
@@ -1325,7 +1356,7 @@ mod win32 {
                 let end = (start + MAINT_MAX_VISIBLE).min(total_body_lines);
                 let mut line_y = bottom_y - MAINT_LINE_H * 2 - 6;
                 for i in (start..end).rev() {
-                    let line = &combined[i];
+                    let line = &processed[i];
                     let (color, font, bold_font) = if i == 0 {
                         ((MAINT_HEADER_COLOR_R, MAINT_HEADER_COLOR_G, MAINT_HEADER_COLOR_B),
                          s.label_font, s.label_font)
@@ -1602,6 +1633,33 @@ mod win32 {
         b | (g << 8) | (r << 16) | (a << 24)
     }
 
+    fn measure_text_width(hdc: HDC, font: HGDIOBJ, text: &str) -> i32 {
+        if text.is_empty() { return 0; }
+        let wide: Vec<u16> = text.encode_utf16().collect();
+        let hdc_tmp = unsafe { CreateCompatibleDC(hdc) };
+        unsafe { SelectObject(hdc_tmp, font) };
+        let mut extent = SIZE { cx: 0, cy: 0 };
+        unsafe { GetTextExtentPoint32W(hdc_tmp, wide.as_ptr(), wide.len() as i32, &mut extent) };
+        unsafe { DeleteDC(hdc_tmp) };
+        extent.cx
+    }
+
+    fn strip_ansi(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        let mut chars = s.chars();
+        while let Some(c) = chars.next() {
+            if c == '\x1b' && chars.as_str().starts_with('[') {
+                chars.next();
+                while let Some(n) = chars.next() {
+                    if n == 'm' || n.is_ascii_alphabetic() { break; }
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
     // ── Window procedure ─────────────────────────────────────────────────────
 
     extern "system" fn wnd_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {
@@ -1722,7 +1780,7 @@ mod win32 {
                 let scroll_lines = -(delta / 120); // WHEEL_DELTA = 120
                 if scroll_lines != 0 {
                     if let Ok(mut m) = s.ui.lock() {
-                        let total = m.maintenance_body.lines().count() + 2; // +1 title +1 spacer
+                        let total = m.maint_processed_lines.max(1);
                         let max_scroll = total.saturating_sub(MAINT_MAX_VISIBLE) as i32;
                         m.maint_scroll = (m.maint_scroll + scroll_lines).clamp(0, max_scroll.max(0));
                     }
@@ -1743,7 +1801,7 @@ mod win32 {
                 if w == SC_RESTORE && !sp.is_null() {
                     let s = unsafe { &mut *sp };
                     update_layered(s, None);
-                    let (_, _, _, _, progress, _, _, _, _, _) = s.snapshot();
+                    let (_, _, _, _, progress, _, _, _, _, _, _) = s.snapshot();
                     set_taskbar_progress(s, progress);
                 }
                 unsafe { DefWindowProcW(hwnd, msg, w, l) }
@@ -1754,7 +1812,7 @@ mod win32 {
                     // Repaint to reflect the latest shared UI model, and close
                     // the window if the owning task requested it.
                     let s = unsafe { &mut *sp };
-                    let (_, _, _, _, progress, should_close, _, _, _, _) = s.snapshot();
+                    let (_, _, _, _, progress, should_close, _, _, _, _, _) = s.snapshot();
                     // When the window is minimised there is nothing to paint —
                     // skip the expensive UpdateLayeredWindow call and only
                     // keep the taskbar indicators live.
