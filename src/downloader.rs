@@ -252,6 +252,12 @@ pub fn download(
     if build.is_some() && region != Region::Cms && region != Region::CmsCw {
         bail!("--build is only supported for region 'cms' (or 'cms_cw')");
     }
+    if region == Region::CmsCw && wz_only {
+        bail!("--download-wz-only is not supported for region 'cms_cw'");
+    }
+    if region == Region::CmsCw && purge_wz_files {
+        bail!("--purge-wz-files is not supported for region 'cms_cw'");
+    }
 
     // Use the graphical downloader on Windows unless suppressed. The GUI shows
     // a progress window and downloads on a background thread; on non-Windows
@@ -467,44 +473,11 @@ pub fn patch_apply(
     keep_old_wz_files: bool,
 ) -> Result<()> {
     match region {
-        Region::Cms | Region::CmsCw => {
-            // If a sentinel file from a previous incomplete download exists,
-            // the client directory may be in an inconsistent state. Fall back
-            // to a full download rather than attempting to patch.
-            let sentinel = target.join(format!(".incomplete_{region}"));
-            if sentinel.exists() {
-                println!(
-                    "cmsdl {VERSION}: incomplete download marker detected at '{}'; \
-                     performing a full client download instead of patching.",
-                    sentinel.display()
-                );
-                download(Region::Cms, target, false, None, allow_insecure, proxy, None, false, true, false, None)?;
-                create_shortcut(Region::Cms, target, lrhook, no_gui, close_after_finishing)?;
-                if launch_after {
-                    crate::patch::launch_client(target, lrhook)?;
-                }
-                return Ok(());
-            }
-
-            // Use the graphical patcher on Windows unless suppressed. The GUI
-            // validates the client directory up front and shows no window on
-            // an invalid path (it returns an error -> non-zero exit code).
-            let use_gui = cfg!(windows) && !no_gui;
-            if use_gui {
-                return crate::gui_patch::run_gui_patch(
-                    target, version, launch_after, allow_insecure, proxy, purge_wz_files, lrhook,
-                    close_after_finishing, keep_old_wz_files,
-                );
-            }
-
-            println!(
-                "cmsdl {VERSION}: patching region '{region}' client at '{}' up to '{version}'.",
-                target.display()
-            );
-            crate::patch::apply_patches(target, version, allow_insecure, proxy, purge_wz_files, keep_old_wz_files)?;
-            if launch_after {
-                crate::patch::launch_client(target, lrhook)?;
-            }
+        Region::Cms => {
+            patch_apply_cms(target, version, launch_after, allow_insecure, proxy, purge_wz_files, lrhook, no_gui, close_after_finishing, keep_old_wz_files, region)?;
+        }
+        Region::CmsCw => {
+            patch_apply_cms_cw(target, version, launch_after, allow_insecure, proxy, purge_wz_files, no_gui, close_after_finishing, keep_old_wz_files, region)?;
         }
         Region::Tms => {
             bail!("region '{region}' does not support patching");
@@ -514,6 +487,110 @@ pub fn patch_apply(
         }
     }
 
+    Ok(())
+}
+
+/// Shared patch-apply logic for the CMS region (supports `--lrhook`).
+#[allow(clippy::too_many_arguments)]
+fn patch_apply_cms(
+    target: &Path,
+    version: &str,
+    launch_after: bool,
+    allow_insecure: bool,
+    proxy: Option<&str>,
+    purge_wz_files: bool,
+    lrhook: bool,
+    no_gui: bool,
+    close_after_finishing: bool,
+    keep_old_wz_files: bool,
+    region: Region,
+) -> Result<()> {
+    let sentinel = target.join(format!(".incomplete_{region}"));
+    if sentinel.exists() {
+        println!(
+            "cmsdl {VERSION}: incomplete download marker detected at '{}'; \
+             performing a full client download instead of patching.",
+            sentinel.display()
+        );
+        download(Region::Cms, target, false, None, allow_insecure, proxy, None, false, true, false, None)?;
+        create_shortcut(Region::Cms, target, lrhook, no_gui, close_after_finishing)?;
+        if launch_after {
+            crate::patch::launch_client(target, lrhook)?;
+        }
+        return Ok(());
+    }
+
+    let use_gui = cfg!(windows) && !no_gui;
+    if use_gui {
+        return crate::gui_patch::run_gui_patch(
+            target, version, launch_after, allow_insecure, proxy, purge_wz_files, lrhook,
+            close_after_finishing, keep_old_wz_files, region,
+        );
+    }
+
+    println!(
+        "cmsdl {VERSION}: patching region '{region}' client at '{}' up to '{version}'.",
+        target.display()
+    );
+    crate::patch::apply_patches(target, version, allow_insecure, proxy, purge_wz_files, keep_old_wz_files)?;
+    if launch_after {
+        crate::patch::launch_client(target, lrhook)?;
+    }
+    Ok(())
+}
+
+/// Shared patch-apply logic for the CMS CW region (no `--lrhook` support).
+#[allow(clippy::too_many_arguments)]
+fn patch_apply_cms_cw(
+    target: &Path,
+    version: &str,
+    launch_after: bool,
+    allow_insecure: bool,
+    proxy: Option<&str>,
+    purge_wz_files: bool,
+    no_gui: bool,
+    close_after_finishing: bool,
+    keep_old_wz_files: bool,
+    region: Region,
+) -> Result<()> {
+    if purge_wz_files {
+        bail!("--purge-wz-files is not supported for region 'cms_cw'");
+    }
+    if keep_old_wz_files {
+        bail!("--keep-old-wz-files is not supported for region 'cms_cw'");
+    }
+
+    let sentinel = target.join(format!(".incomplete_{region}"));
+    if sentinel.exists() {
+        println!(
+            "cmsdl {VERSION}: incomplete download marker detected at '{}'; \
+             performing a full client download instead of patching.",
+            sentinel.display()
+        );
+        download(Region::CmsCw, target, false, None, allow_insecure, proxy, None, false, true, false, None)?;
+        create_shortcut(Region::CmsCw, target, false, no_gui, close_after_finishing)?;
+        if launch_after {
+            cms_cw::launch_client(target)?;
+        }
+        return Ok(());
+    }
+
+    let use_gui = cfg!(windows) && !no_gui;
+    if use_gui {
+        return crate::gui_patch::run_gui_patch(
+            target, version, launch_after, allow_insecure, proxy, purge_wz_files, false,
+            close_after_finishing, keep_old_wz_files, region,
+        );
+    }
+
+    println!(
+        "cmsdl {VERSION}: patching region '{region}' client at '{}' up to '{version}'.",
+        target.display()
+    );
+    crate::patch::apply_patches(target, version, allow_insecure, proxy, purge_wz_files, keep_old_wz_files)?;
+    if launch_after {
+        cms_cw::launch_client(target)?;
+    }
     Ok(())
 }
 
@@ -537,7 +614,8 @@ pub fn manual_download(
 /// subsequent patch-and-launch operations also use Locale Remulator.
 pub fn create_shortcut(region: Region, target_path: &Path, lrhook: bool, no_gui: bool, close_after_finishing: bool) -> Result<()> {
     match region {
-        Region::Cms | Region::CmsCw => cms::create_shortcut(target_path, lrhook, no_gui, close_after_finishing)?,
+        Region::Cms => cms::create_shortcut(target_path, lrhook, no_gui, close_after_finishing)?,
+        Region::CmsCw => cms_cw::create_shortcut(target_path, lrhook, no_gui, close_after_finishing)?,
         Region::Tms => bail!("region '{region}' does not support shortcut creation"),
         Region::Manual => bail!("--create-shortcut is not supported for 'manual'"),
     }

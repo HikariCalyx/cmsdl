@@ -14,6 +14,7 @@ use std::time::Instant;
 use anyhow::{bail, Result};
 
 use crate::cli::Region;
+use crate::cms_cw;
 use crate::gui::{self, UiModel};
 use crate::gui_downloader::format_eta;
 use crate::locale::tr;
@@ -285,14 +286,22 @@ pub fn run_gui_patch(
     lrhook: bool,
     close_after_finishing: bool,
     keep_old_wz_files: bool,
+    region: Region,
 ) -> Result<()> {
     // Validate the client directory before showing anything. (Done before
     // hiding the console so an invalid-path error is still visible when run
     // from a terminal.)
-    if !target.join("mxd").is_dir() {
+    let data_dir = match region {
+        Region::Cms => "mxd",
+        Region::CmsCw => "mxdc",
+        _ => "mxd",
+    };
+    if !target.join(data_dir).is_dir() {
         bail!(
-            "no 'mxd' directory found in {}; not a CMS client directory",
-            target.display()
+            "no '{}' directory found in {}; not a {} client directory",
+            data_dir,
+            target.display(),
+            region
         );
     }
 
@@ -316,7 +325,7 @@ pub fn run_gui_patch(
     let ui_maint = Arc::clone(&ui);
     let agent_maint = crate::net::agent(allow_insecure, proxy);
     std::thread::spawn(move || {
-        if let Some((title, body, date)) = maintenance::fetch_for_gui(&agent_maint, Region::Cms, None) {
+        if let Some((title, body, date)) = maintenance::fetch_for_gui(&agent_maint, region, None) {
             if let Ok(mut m) = ui_maint.lock() {
                 m.maintenance_title = format!("{title} ({})", maintenance::fmt_gui_date(&date));
                 m.maintenance_body = body;
@@ -335,7 +344,7 @@ pub fn run_gui_patch(
         let res = run_patch_flow(
             &target_buf, &version_buf, launch_after,
             allow_insecure, proxy, purge_wz_files, lrhook, close_after_finishing,
-            keep_old_wz_files,
+            keep_old_wz_files, region,
         );
         if let Err(e) = &res {
             crate::plog!("error: {e:#}");
@@ -358,6 +367,7 @@ pub fn run_gui_patch(
 }
 
 /// The patch + optional launch flow, reporting through `progress::*`.
+#[allow(clippy::too_many_arguments)]
 fn run_patch_flow(
     target: &Path,
     version: &str,
@@ -368,8 +378,9 @@ fn run_patch_flow(
     lrhook: bool,
     close_after_finishing: bool,
     keep_old_wz_files: bool,
+    region: Region,
 ) -> Result<()> {
-    use crate::patch::{apply_patches, launch_client, PatchOutcome};
+    use crate::patch::{apply_patches, PatchOutcome};
 
     let outcome = apply_patches(target, version, allow_insecure, proxy, purge_wz_files, keep_old_wz_files)?;
 
@@ -387,7 +398,12 @@ fn run_patch_flow(
     if launch_after {
         // Show the "launching" message, then attempt the (UAC-elevated) launch.
         progress::finish(&tr(launch_key, &[]), false);
-        match launch_client(target, lrhook) {
+        let launch_result = match region {
+            Region::Cms => crate::patch::launch_client(target, lrhook),
+            Region::CmsCw => crate::cms_cw::launch_client(target),
+            _ => crate::patch::launch_client(target, lrhook),
+        };
+        match launch_result {
             Ok(()) => {
                 crate::plog!("launch requested; closing patcher.");
                 progress::finish("", true); // close the window

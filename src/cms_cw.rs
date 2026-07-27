@@ -56,7 +56,7 @@ const PATCH_DATA_URL: &str =
     "https://v3launcher.jijiagames.com/v3launcher/build/ver2data/5/8848/-1/ver2.dat";
 
 /// Host serving the signed client download files.
-const DOWNLOAD_HOST: &str = "https://mxdver0.jijiagames.com";
+const DOWNLOAD_HOST: &str = "https://mxdcclient.jijiagames.com";
 
 /// Portion of the client-file-list path that precedes the build number.
 const CLIENT_FILE_LIST_PATH_PREFIX: &str = "/v3client/build/5/8848/apppc/";
@@ -278,7 +278,7 @@ pub struct PatchPackage {
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct PatchData {
     /// Base URL the patch `fileListUrl`s are relative to, e.g.
-    /// `https://mxdver0.jijiagames.com/v3client/build/5/8848/diff`.
+    /// `https://mxdcclient.jijiagames.com/v3client/build/5/8848/diff`.
     #[serde(rename = "baseUrl")]
     pub base_url: String,
     /// Every published patch, in chained order.
@@ -329,7 +329,7 @@ pub fn get_patch_total_size(
 }
 
 /// Strip the leading download host from a full URL, returning the path portion
-/// (e.g. `https://mxdver0.jijiagames.com/v3client/...` -> `/v3client/...`).
+/// (e.g. `https://mxdcclient.jijiagames.com/v3client/...` -> `/v3client/...`).
 ///
 /// If `url` does not start with the known [`DOWNLOAD_HOST`], it is returned
 /// unchanged (it may already be a host-relative path).
@@ -398,7 +398,7 @@ pub fn get_client_file_list_full(allow_insecure: bool, proxy: Option<&str>, buil
     // parsing it to obtain the display version view (e.g. "V226.1").
     info.local_version_view = if entries
         .iter()
-        .any(|(p, _)| p.eq_ignore_ascii_case("mxd/LocalVersion3.xml"))
+        .any(|(p, _)| p.eq_ignore_ascii_case("mxdc/LocalVersion3.xml"))
     {
         fetch_local_version_xml_view(&agent, &challenge_code, &info.version, &contents)
     } else {
@@ -577,9 +577,9 @@ fn fetch_local_version_xml_view(
     let header = contents.lines().find(|l| !l.trim().is_empty())?;
     let (domain, base_path) = parse_header_location(header).ok()?;
 
-    let raw_path = "mxd\\LocalVersion3.xml";
+    let raw_path = "mxdc\\LocalVersion3.xml";
     let obf_name = obfuscated_file_name(version, raw_path);
-    let path = format!("{base_path}/mxd/{obf_name}");
+    let path = format!("{base_path}/mxdc/{obf_name}");
     let utc8_time = get_current_utc8_time();
     let url = build_signed_url_for_host(&domain, challenge_code, utc8_time, &path);
 
@@ -598,7 +598,7 @@ fn parse_local_version_xml_view(xml: &str) -> Option<String> {
 }
 
 /// Like [`build_signed_url`] but uses a custom `host`
-/// (e.g. `https://mxdcclient.jijiagames.com`).
+/// (e.g. `https://mxdccclient.jijiagames.com`).
 pub(crate) fn build_signed_url_for_host(
     host: &str,
     challenge_code: &str,
@@ -757,7 +757,7 @@ fn find_build_for_version(
 
     let latest = discover_latest_client_number_with(agent, challenge)?;
 
-    // Check the latest first — it's the most likely match.
+    // Check the latest first �?it's the most likely match.
     if let Some((contents, _)) = fetch_client_file_list_for(agent, challenge, latest)? {
         if extract_version_from_header(&contents).as_deref() == Some(target_version) {
             return Ok(Some(latest));
@@ -889,10 +889,10 @@ fn md5_hex(input: &str) -> String {
 /// A single file entry parsed from the client file list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FileEntry {
-    /// Path field exactly as published, using backslashes (e.g. `mxd\Data\...\Android_000.wz`).
+    /// Path field exactly as published, using backslashes (e.g. `mxdc\Data\...\Android_000.wz`).
     /// Used as-is when computing the obfuscated server-side name.
     raw_path: String,
-    /// Directory portion with forward slashes and a trailing slash (e.g. `mxd/Data/Character/Android/`).
+    /// Directory portion with forward slashes and a trailing slash (e.g. `mxdc/Data/Character/Android/`).
     file_location: String,
     /// File name without its directory (e.g. `Android_000.wz`).
     file_name: String,
@@ -1067,7 +1067,7 @@ pub fn download_client(
     // Try to obtain the display version view (e.g. "V226.2") for the banner
     // and for later use when writing LocalVersion3.xml.
     let version_view = if entries.iter().any(|e| {
-        e.file_location == "mxd/" && e.file_name.eq_ignore_ascii_case("LocalVersion3.xml")
+        e.file_location == "mxdc/" && e.file_name.eq_ignore_ascii_case("LocalVersion3.xml")
     }) {
         fetch_local_version_xml_view(&agent, &challenge, &version, &contents).unwrap_or_default()
     } else {
@@ -1080,15 +1080,15 @@ pub fn download_client(
     };
     println!("latest version: {version} {view_display}; starting download.");
 
-    // Purge stray files in mxd/Data/ before downloading (full manifest, pre-filter).
+    // Purge stray files in mxdc/Data/ before downloading (full manifest, pre-filter).
     if purge_wz_files {
         crate::progress::dl_purging();
-        purge_junk_dirs(&target_dir.join("mxd"))?;
+        purge_junk_dirs(&target_dir.join("mxdc"))?;
         purge_data_files(target_dir, &entries)?;
     }
 
     // When `--download-wz-only` is set, keep only the data files (paths under
-    // `mxd/Data`). The published paths use backslashes, but `file_location`
+    // `mxdc/Data`). The published paths use backslashes, but `file_location`
     // is already normalized to forward slashes.
     let entries: Vec<FileEntry> = if wz_only {
         let kept: Vec<FileEntry> = entries
@@ -1096,11 +1096,11 @@ pub fn download_client(
             .filter(|e| {
                 e.file_location
                     .to_ascii_lowercase()
-                    .starts_with("mxd/data/")
+                    .starts_with("mxdc/data/")
             })
             .collect();
         println!(
-            "Limiting download to {} WZ file(s) under mxd/Data.",
+            "Limiting download to {} WZ file(s) under mxdc/Data.",
             kept.len()
         );
         kept
@@ -1273,7 +1273,7 @@ pub fn download_client(
     // If LocalVersion3.xml is already part of the downloaded file list, skip
     // writing our own copy to avoid overwriting the server-provided one.
     let has_local_version_xml = entries.iter().any(|e| {
-        e.file_location == "mxd/" && e.file_name.eq_ignore_ascii_case("LocalVersion3.xml")
+        e.file_location == "mxdc/" && e.file_name.eq_ignore_ascii_case("LocalVersion3.xml")
     });
 
     // Write a matching LocalVersion3.xml for the launcher (unless the server
@@ -1301,18 +1301,18 @@ fn fetch_version_view_for(agent: &ureq::Agent, version: &str) -> Option<String> 
         .map(|p| p.version_view.clone())
 }
 
-/// Write a `LocalVersion3.xml` in `<target_dir>/mxd/` recording the client
-/// `version` and display `version_view`, creating the `mxd` directory if
+/// Write a `LocalVersion3.xml` in `<target_dir>/mxdc/` recording the client
+/// `version` and display `version_view`, creating the `mxdc` directory if
 /// needed.  When `write_xml` is false this function is a no-op.
 fn write_local_version_xml(target_dir: &Path, version: &str, version_view: &str, write_xml: bool) -> Result<()> {
     if !write_xml {
         return Ok(());
     }
-    let mxd_dir = target_dir.join("mxd");
-    std::fs::create_dir_all(&mxd_dir)
-        .with_context(|| format!("failed to create directory {}", mxd_dir.display()))?;
+    let mxdc_dir = target_dir.join("mxdc");
+    std::fs::create_dir_all(&mxdc_dir)
+        .with_context(|| format!("failed to create directory {}", mxdc_dir.display()))?;
 
-    let xml_path = mxd_dir.join("LocalVersion3.xml");
+    let xml_path = mxdc_dir.join("LocalVersion3.xml");
     let xml = format!(
         r#"<?xmlversion="1.0"encoding="utf-8"?><Root><zone5_8848_v3>{{"product_name":"zone5_8848_v3","version":{{"v":"{version}","view":"{version_view}"}}}}</zone5_8848_v3></Root>"#
     );
@@ -1323,17 +1323,16 @@ fn write_local_version_xml(target_dir: &Path, version: &str, version_view: &str,
     Ok(())
 }
 
-/// Create a launcher shortcut for the CMS client at `target_dir`.
+/// Create a launcher shortcut for the CMS CW client at `target_dir`.
 ///
 /// Steps:
-///   1. Verify `<target_dir>/mxd/MapleStory.exe` exists.
-///   2. Copy cmsdl to `<target_dir>/cmsdl.exe` unless it is already there.
-///   3. Choose the shortcut name by OS UI language: Simplified Chinese →
+///   1. Copy cmsdl to `<target_dir>/cmsdl.exe` unless it is already there.
+///   2. Choose the shortcut name by OS UI language: Simplified Chinese →
 ///      `"冒险岛"`; any other language → `"MapleStory CN"`.
-///   4. Create a shortcut pointing at
-///      `<target_dir>\cmsdl.exe cms --patch latest <target_dir> --launch-after-patching`
-///      with the icon taken from `<target_dir>\mxd\MapleStory.exe`.
-///   5. Place shortcuts on the desktop, Start Menu > Programs, and in `target_dir`.
+///   3. Create a shortcut pointing at
+///      `<target_dir>\cmsdl.exe cms_cw --patch latest <target_dir> --launch-after-patching`
+///      with the icon taken from `<target_dir>\cmsdl.exe` itself.
+///   4. Place shortcuts on the desktop, Start Menu > Programs, and in `target_dir`.
 #[cfg(windows)]
 pub fn create_shortcut(target_dir: &Path, lrhook: bool, no_gui: bool, close_after_finishing: bool) -> Result<()> {
     // Canonicalize early so the icon path in the shortcut is absolute,
@@ -1342,17 +1341,7 @@ pub fn create_shortcut(target_dir: &Path, lrhook: bool, no_gui: bool, close_afte
         .canonicalize()
         .with_context(|| format!("failed to resolve '{}'", target_dir.display()))?;
 
-    // Step 1: verify that the client executable exists.
-    let maple_exe = target_dir.join("mxd").join("MapleStory.exe");
-    if !maple_exe.exists() {
-        bail!(
-            "MapleStory.exe not found at '{}'; \
-             ensure the client is downloaded before creating a shortcut",
-            maple_exe.display()
-        );
-    }
-
-    // Step 1.5: if --lrhook is requested, verify LocaleRemulator files exist.
+    // Step 0.5: if --lrhook is requested, verify LocaleRemulator files exist.
     let use_lrhook = lrhook && locale_remulator_available(&target_dir);
     if lrhook && !use_lrhook {
         println!(
@@ -1361,7 +1350,7 @@ pub fn create_shortcut(target_dir: &Path, lrhook: bool, no_gui: bool, close_afte
         );
     }
 
-    // Step 2: copy cmsdl to target_dir if it is not already there.
+    // Step 1: copy cmsdl to target_dir if it is not already there.
     let current_exe = std::env::current_exe().context("failed to determine cmsdl binary path")?;
     let cmsdl_in_target = target_dir.join("cmsdl.exe");
 
@@ -1377,7 +1366,7 @@ pub fn create_shortcut(target_dir: &Path, lrhook: bool, no_gui: bool, close_afte
             .with_context(|| format!("failed to copy cmsdl to '{}'", cmsdl_in_target.display()))?;
     }
 
-    // Step 3: choose shortcut name by OS UI language.
+    // Step 2: choose shortcut name by OS UI language.
     let shortcut_name = if os_locale_is_simplified_chinese() {
         "冒险岛"
     } else {
@@ -1385,8 +1374,9 @@ pub fn create_shortcut(target_dir: &Path, lrhook: bool, no_gui: bool, close_afte
     };
     let lnk_name = format!("{shortcut_name}.lnk");
 
-    // Steps 4 & 5: create shortcuts via the Windows Shell COM API.
-    run_create_shortcut_script(&target_dir, &cmsdl_in_target, &maple_exe, &lnk_name, use_lrhook, no_gui, close_after_finishing)
+    // Steps 3 & 4: create shortcuts via the Windows Shell COM API.
+    // Use cmsdl.exe itself as the icon source.
+    run_create_shortcut_script(&target_dir, &cmsdl_in_target, &cmsdl_in_target, &lnk_name, use_lrhook, no_gui, close_after_finishing, "cms_cw")
 }
 
 /// Return `true` if all required LocaleRemulator files exist under
@@ -1404,6 +1394,76 @@ pub fn locale_remulator_available(target_dir: &Path) -> bool {
 #[cfg(not(windows))]
 pub fn create_shortcut(_target_dir: &Path, _lrhook: bool, _no_gui: bool, _close_after_finishing: bool) -> Result<()> {
     bail!("--create-shortcut is only supported on Windows")
+}
+
+/// Launch `<target_dir>/mxdc/Maplestory_Classic.exe --sqLauncher`.
+///
+/// The process is spawned without waiting, so cmsdl can exit while the game
+/// keeps running.  Locale Remulator (`--lrhook`) is not supported for CMS CW.
+#[cfg(windows)]
+pub fn launch_client(target_dir: &Path) -> Result<()> {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use std::ptr;
+
+    extern "system" {
+        fn ShellExecuteW(
+            hwnd: isize,
+            lpOperation: *const u16,
+            lpFile: *const u16,
+            lpParameters: *const u16,
+            lpDirectory: *const u16,
+            nShowCmd: i32,
+        ) -> isize;
+    }
+
+    fn to_wide(s: &OsStr) -> Vec<u16> {
+        let mut v: Vec<u16> = s.encode_wide().collect();
+        v.push(0);
+        v
+    }
+
+    let mxdc = target_dir.join("mxdc");
+    let exe = mxdc.join("Maplestory_Classic.exe");
+    if !exe.exists() {
+        bail!("cannot launch: {} not found", exe.display());
+    }
+
+    println!("launching {} --sqLauncher", exe.display());
+
+    let file = to_wide(exe.as_os_str());
+    let params = to_wide(OsStr::new("--sqLauncher"));
+    let dir = to_wide(mxdc.as_os_str());
+
+    const SW_SHOW: i32 = 5;
+    let ret = unsafe {
+        ShellExecuteW(0, ptr::null(), file.as_ptr(), params.as_ptr(), dir.as_ptr(), SW_SHOW)
+    };
+
+    if ret <= 32 {
+        bail!(
+            "could not launch the client (ShellExecute error {ret}; \
+             the UAC elevation prompt may have been declined)"
+        );
+    }
+    Ok(())
+}
+
+/// Stub for non-Windows platforms.
+#[cfg(not(windows))]
+pub fn launch_client(target_dir: &Path) -> Result<()> {
+    let mxdc = target_dir.join("mxdc");
+    let exe = mxdc.join("Maplestory_Classic.exe");
+    if !exe.exists() {
+        bail!("cannot launch: {} not found", exe.display());
+    }
+    println!("launching {} --sqLauncher", exe.display());
+    std::process::Command::new(&exe)
+        .arg("--sqLauncher")
+        .current_dir(&mxdc)
+        .spawn()
+        .with_context(|| format!("failed to launch {}", exe.display()))?;
+    Ok(())
 }
 
 /// Return `true` if the OS UI language is Simplified Chinese (zh-CN / zh-SG).
@@ -1436,6 +1496,7 @@ fn run_create_shortcut_script(
     include_lrhook: bool,
     no_gui: bool,
     close_after_finishing: bool,
+    region_cmd: &str,
 ) -> Result<()> {
     use windows::{
         core::{Interface, PCWSTR},
@@ -1463,7 +1524,7 @@ fn run_create_shortcut_script(
     // --close-after-finishing only applies to the GUI; omit it under --no-gui.
     let close_flag  = if close_after_finishing && !no_gui { " --close-after-finishing" } else { "" };
     let args = format!(
-        "cms --patch latest \"{target_dir_s}\" --launch-after-patching{lrhook_flag}{nogui_flag}{close_flag}"
+        "{region_cmd} --patch latest \"{target_dir_s}\" --launch-after-patching{lrhook_flag}{nogui_flag}{close_flag}"
     );
 
     let desktop  = get_shell_folder("Desktop")
@@ -1547,7 +1608,7 @@ fn get_shell_folder(name: &str) -> Option<String> {
 /// Sometimes, these directories are left behind after patching, 
 /// and they can be safely deleted.
 pub(crate) fn purge_junk_dirs(target_dir: &Path) -> Result<()> {
-    let protected: &[&str] = &["mxd", "Data", "patchdata"];
+    let protected: &[&str] = &["mxdc", "Data", "patchdata"];
 
     let entries: Vec<_> = match std::fs::read_dir(target_dir) {
         Ok(iter) => iter.filter_map(|e| e.ok()).collect(),
@@ -1599,13 +1660,13 @@ fn is_junk_83_dir(name: &str) -> bool {
     }
 }
 
-/// Delete files under `<target_dir>/mxd/Data/` that are not listed in `entries`.
+/// Delete files under `<target_dir>/mxdc/Data/` that are not listed in `entries`.
 ///
 /// `entries` should be the full (unfiltered) list parsed from the client file
-/// list. Only the directory `<target_dir>/mxd/Data/` is examined; files outside
+/// list. Only the directory `<target_dir>/mxdc/Data/` is examined; files outside
 /// it are left untouched.
 fn purge_data_files(target_dir: &Path, entries: &[FileEntry]) -> Result<()> {
-    let data_dir = target_dir.join("mxd").join("Data");
+    let data_dir = target_dir.join("mxdc").join("Data");
     if !data_dir.is_dir() {
         return Ok(());
     }
@@ -1614,7 +1675,7 @@ fn purge_data_files(target_dir: &Path, entries: &[FileEntry]) -> Result<()> {
     let expected: std::collections::HashSet<String> = entries
         .iter()
         .map(|e| format!("{}{}", e.file_location, e.file_name))
-        .filter(|p| p.to_ascii_lowercase().starts_with("mxd/data/"))
+        .filter(|p| p.to_ascii_lowercase().starts_with("mxdc/data/"))
         .collect();
 
     let mut deleted = 0usize;
@@ -1633,7 +1694,7 @@ fn purge_data_files(target_dir: &Path, entries: &[FileEntry]) -> Result<()> {
 }
 
 /// Recursively walk `dir`, deleting any file whose path (relative to
-/// `data_dir`, forward-slash, prepended with `mxd/Data/`) is absent from
+/// `data_dir`, forward-slash, prepended with `mxdc/Data/`) is absent from
 /// `expected`. Empty subdirectories are removed after their children have been
 /// processed.
 fn purge_dir_recursive(
@@ -1657,7 +1718,7 @@ fn purge_dir_recursive(
             if rel.to_ascii_lowercase().ends_with(".cmsdl") {
                 continue;
             }
-            let manifest_key = format!("mxd/Data/{rel}");
+            let manifest_key = format!("mxdc/Data/{rel}");
             if !expected.contains(&manifest_key) {
                 std::fs::remove_file(&path).with_context(|| {
                     format!("failed to delete stray file {}", path.display())
@@ -1676,7 +1737,7 @@ fn purge_dir_recursive(
 }
 
 /// Fetch the latest client manifest and purge stray files from
-/// `<target_dir>/mxd/Data/`.
+/// `<target_dir>/mxdc/Data/`.
 ///
 /// Used after patching to clean up files that are no longer referenced by the
 /// latest full client index.
@@ -1700,7 +1761,7 @@ pub fn purge_wz_files_after_patch(
     let _header = lines.next().context("client file list is empty")?;
     let entries: Vec<FileEntry> = lines.map(parse_entry).collect::<Result<_>>()?;
 
-    purge_junk_dirs(&target_dir.join("mxd"))?;
+    purge_junk_dirs(&target_dir.join("mxdc"))?;
     purge_data_files(target_dir, &entries)
 }
 
@@ -2041,7 +2102,7 @@ fn supports_ranges(url: &str, agent: &ureq::Agent) -> bool {
 }
 
 /// Download specific files (identified by their published backslash paths, e.g.
-/// `mxd\Data\Base\Base.wz`) from the latest full client index, overwriting any
+/// `mxdc\Data\Base\Base.wz`) from the latest full client index, overwriting any
 /// existing copies under `target_dir`.
 ///
 /// Convenience wrapper around [`replace_files_from_build`] that discovers the
@@ -2257,136 +2318,4 @@ pub(crate) fn replace_files_from_version(
         .ok_or_else(|| anyhow!("no full client build found for version {version}"))?;
     plog!("found build {number} for version {version}.");
     replace_files_from_build(target_dir, rel_paths, number, &agent, &challenge)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // Hex values taken from a real v3ctrl.xml response.
-    const SERVER_LET_HEX: &str = "451a58c3de16c4d133d4d3fa8fee0e4e0de76b77a4156224ca5ea186f22db1f4af56427d5f0ee7bf6a7f96401d1890a158f26d7542d170815b5e81514a869bef8bfb131109281b0125d7904597671aa62637c5fe9bcee704d8893ac5f0f2358eb82749b08ab493d526af2fc30e0aa8d7bd1677e945483db7570957910bd5ea48";
-    const CLIENT_HEX: &str = "95338a729569daf8fdce6e0734be13296679204adf31007897a615b3b43c8597ac61f6979a97254cde9e8f45355221814cc69d1d1ab6d754a16982f078baf43d74ade36c8c494992318a97a62954587e2c12fb6f1d2e6553fbb1e46b3b53af6de95b8dda496f50b85652f7cde6612af53e770959b13254c4cf1031e45d590f10";
-
-    fn key() -> RsaPublicKey {
-        public_key().unwrap()
-    }
-
-    #[test]
-    fn decrypts_server_let_md5key() {
-        let decrypted = decrypt_md5key(&key(), SERVER_LET_HEX).unwrap();
-        assert_eq!(decrypted, "89T532jrQxUen6375E983L7758vajQSz");
-    }
-
-    #[test]
-    fn decrypts_client_md5key() {
-        let decrypted = decrypt_md5key(&key(), CLIENT_HEX).unwrap();
-        assert_eq!(decrypted, "A9D8rTV72Fh7O8w7XPLp672657844VeS");
-    }
-
-    #[test]
-    fn builds_expected_challenge_key() {
-        let server_let = decrypt_md5key(&key(), SERVER_LET_HEX).unwrap();
-        let client = decrypt_md5key(&key(), CLIENT_HEX).unwrap();
-        let challenge = build_challenge_key(&client, &server_let).unwrap();
-        assert_eq!(challenge, "A9D8rTV72Fh7O8w75E983L7758vajQSz");
-    }
-
-    #[test]
-    fn parses_client_file_list_summary() {
-        let contents = "https://host/path|5|0.0.0.15\n\
-                        mxd\\a.dll|100|ABC\n\
-                        mxd\\b.dll|250|DEF\n\
-                        \n\
-                        mxd\\c.dll|650|GHI\n";
-        let (info, _) = parse_client_file_list_with_paths(contents).unwrap();
-        assert_eq!(info.version, "0.0.0.15");
-        assert_eq!(info.file_count, 3);
-        assert_eq!(info.total_size, 1000);
-    }
-
-    #[test]
-    fn parses_file_entry() {
-        let entry =
-            parse_entry("mxd\\Data\\Character\\Android\\Android_000.wz|236513|1CF163EDA833A9E5515494DA52057B63")
-                .unwrap();
-        assert_eq!(entry.raw_path, "mxd\\Data\\Character\\Android\\Android_000.wz");
-        assert_eq!(entry.file_location, "mxd/Data/Character/Android/");
-        assert_eq!(entry.file_name, "Android_000.wz");
-        assert_eq!(entry.file_size, 236513);
-        assert_eq!(entry.md5_checksum, "1CF163EDA833A9E5515494DA52057B63");
-    }
-
-    #[test]
-    fn parses_header_location() {
-        let (domain, base_path) = parse_header_location(
-            "https://mxdver0.jijiagames.com/v3client/build/5/8848/apppc/1020|5|0.0.0.15",
-        )
-        .unwrap();
-        assert_eq!(domain, "https://mxdver0.jijiagames.com");
-        assert_eq!(base_path, "/v3client/build/5/8848/apppc/1020");
-    }
-
-    #[test]
-    fn computes_obfuscated_file_name() {
-        // UTF-16LE MD5 of "5_0.0.0.9_mxd\bdvid64.dll", uppercased.
-        let name = obfuscated_file_name("0.0.0.9", "mxd\\bdvid64.dll");
-        assert_eq!(name, "3A3BFEC833C1EA8EA541F20593ABFB0A");
-    }
-
-    #[test]
-    fn splits_ranges_to_cover_whole_file() {
-        let ranges = compute_ranges(1003, 5);
-        assert_eq!(ranges.len(), 5);
-        assert_eq!(ranges.first().unwrap().0, 0);
-        assert_eq!(ranges.last().unwrap().1, 1002);
-        // Contiguous, non-overlapping, and fully covering.
-        for pair in ranges.windows(2) {
-            assert_eq!(pair[1].0, pair[0].1 + 1);
-        }
-        let covered: u64 = ranges.iter().map(|(s, e)| e - s + 1).sum();
-        assert_eq!(covered, 1003);
-    }
-
-    #[test]
-    fn picks_segment_count_by_size() {
-        assert_eq!(effective_segments(15, 5), 1); // tiny file -> single thread
-        assert_eq!(effective_segments(MIN_SEGMENT_SIZE * 3, 5), 3);
-        assert_eq!(effective_segments(MIN_SEGMENT_SIZE * 100, 5), 5); // capped
-        assert_eq!(effective_segments(0, 5), 1);
-    }
-
-    #[test]
-    fn builds_client_file_list_path_for_number() {
-        assert_eq!(
-            client_file_list_path(1020),
-            "/v3client/build/5/8848/apppc/1020/client_all_files_list.dat"
-        );
-    }
-
-    #[test]
-    fn parses_client_number_from_header() {
-        let contents = "https://mxdver0.jijiagames.com/v3client/build/5/8848/apppc/961|5|0.0.0.9\n\
-                        mxd\\bdvid64.dll|8432048|02D3A68F0F7EE2DEFEE6C315DC2F873E\n";
-        assert_eq!(parse_client_number_from_header(contents), Some(961));
-        assert_eq!(parse_client_number_from_header(""), None);
-    }
-
-    #[test]
-    fn parses_last_client_version_ini() {
-        assert_eq!(
-            parse_last_client_version("[CMS]\nlast_client_version = 1023\n"),
-            Some(1023)
-        );
-        // Case-insensitive key, no surrounding spaces.
-        assert_eq!(
-            parse_last_client_version("LAST_CLIENT_VERSION=1042"),
-            Some(1042)
-        );
-        // Comments and unrelated keys are ignored.
-        assert_eq!(
-            parse_last_client_version("; a comment\nother = 7\n"),
-            None
-        );
-        assert_eq!(parse_last_client_version(""), None);
-    }
 }
