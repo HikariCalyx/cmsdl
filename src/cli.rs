@@ -231,6 +231,7 @@ pub enum Region {
     /// Mainland region, officially known as 冒险岛Online in Chinese.
     Cms,
     /// Mainland region (alternative), behaves identically to Cms for now.
+    #[value(name = "cms_cw")]
     CmsCw,
     /// Taiwan and SARs region, officially known as 新楓之谷 in Chinese.
     Tms,

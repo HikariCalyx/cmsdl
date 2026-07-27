@@ -799,8 +799,8 @@ fn apply_bold_close(output: &mut String, mode: RenderMode) {
 }
 
 fn apply_open(output: &mut String, color: AnsiColor, mode: RenderMode) {
-    // Skip grayscale — invisible on most terminals.
-    if color.r == color.g && color.g == color.b {
+    // Skip near-black colours — invisible on dark terminal backgrounds.
+    if color.is_too_dark() {
         return;
     }
     match mode {
@@ -888,13 +888,13 @@ fn extract_color(tag: &str) -> Option<AnsiColor> {
     let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
     let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
 
-    // Skip grayscale colours (black, white, grey) — they carry no useful
-    // formatting information and can render text invisible on some terminals.
-    if r == g && g == b {
+    let color = AnsiColor { r, g, b };
+    // Skip near-black colours — invisible on dark terminal backgrounds.
+    if color.is_too_dark() {
         return None;
     }
 
-    Some(AnsiColor { r, g, b })
+    Some(color)
 }
 
 // ── HTML parsing helpers ────────────────────────────────────────────────────
@@ -961,5 +961,16 @@ impl AnsiColor {
     fn to_ansi_fg(self) -> String {
         // Use 24-bit true color: \x1b[38;2;R;G;Bm
         format!("\x1b[38;2;{};{};{}m", self.r, self.g, self.b)
+    }
+
+    /// Perceived luminance (ITU-R BT.709).  Near-black colours are invisible
+    /// on a typical dark terminal; this lets callers skip them.
+    fn luminance(self) -> f64 {
+        0.2126 * (self.r as f64) + 0.7152 * (self.g as f64) + 0.0722 * (self.b as f64)
+    }
+
+    /// Return `true` when the colour is too dark to read on a dark background.
+    fn is_too_dark(self) -> bool {
+        self.luminance() < 40.0
     }
 }
