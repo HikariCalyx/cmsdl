@@ -38,7 +38,11 @@ pub fn check(region: Region, filter: Option<&FileFilter>, verbose: bool, json: b
         if !json {
             println!("scanning builds {since}+...");
         }
-        let builds = cms::list_builds_since(allow_insecure, proxy, since)?;
+        let builds = if region == Region::CmsCw {
+            cms_cw::list_builds_since(allow_insecure, proxy, since)?
+        } else {
+            cms::list_builds_since(allow_insecure, proxy, since)?
+        };
         if builds.is_empty() {
             if json {
                 println!("[]");
@@ -83,7 +87,7 @@ pub fn check(region: Region, filter: Option<&FileFilter>, verbose: bool, json: b
     }
 
     match region {
-        Region::Cms | Region::CmsCw => {
+        Region::Cms => {
             if json {
                 match cms::get_client_file_list_info(allow_insecure, proxy, build) {
                     Ok(info) => {
@@ -125,6 +129,61 @@ pub fn check(region: Region, filter: Option<&FileFilter>, verbose: bool, json: b
                     println!("scanning for the latest build version...");
                 }
                 let info = cms::get_client_file_list_info(allow_insecure, proxy, build)?;
+                println!("  build:      {}", info.build_number);
+                println!("  version:    {}", info.version);
+                if let Some(ref view) = info.local_version_view {
+                    println!("  view:       {view}");
+                }
+                println!("  files:      {}", info.file_count);
+                println!(
+                    "  total size: {:.2} GB ({} bytes)",
+                    info.total_size as f64 / 1_073_741_824.0,
+                    with_thousands_separator(info.total_size)
+                );
+            }
+        }
+        Region::CmsCw => {
+            if json {
+                match cms_cw::get_client_file_list_info(allow_insecure, proxy, build) {
+                    Ok(info) => {
+                        let output = serde_json::json!({
+                            "region": "cms_cw",
+                            "build": info.build_number,
+                            "version": info.version,
+                            "version_view": info.local_version_view,
+                            "files": info.file_count,
+                            "total_size": info.total_size,
+                        });
+                        println!("{output}");
+                    }
+                    Err(_) => println!("{{}}"),
+                }
+            } else if verbose || filter.is_some() {
+                if build.is_none() {
+                    println!("scanning for the latest build version...");
+                }
+                let (info, entries) = cms_cw::get_client_file_list_full(allow_insecure, proxy, build)?;
+                let (show_count, show_size) = filtered_totals(&entries, filter, info.file_count, info.total_size);
+                println!("  build:      {}", info.build_number);
+                println!("  version:    {}", info.version);
+                if let Some(ref view) = info.local_version_view {
+                    println!("  view:       {view}");
+                }
+                println!("  files:      {show_count}");
+                println!(
+                    "  total size: {:.2} GB ({} bytes)",
+                    show_size as f64 / 1_073_741_824.0,
+                    with_thousands_separator(show_size)
+                );
+                if verbose {
+                    println!();
+                    print_matching_files(&entries, filter);
+                }
+            } else {
+                if build.is_none() {
+                    println!("scanning for the latest build version...");
+                }
+                let info = cms_cw::get_client_file_list_info(allow_insecure, proxy, build)?;
                 println!("  build:      {}", info.build_number);
                 println!("  version:    {}", info.version);
                 if let Some(ref view) = info.local_version_view {
@@ -320,7 +379,8 @@ pub(crate) fn run_download_core(
         .with_context(|| format!("failed to create sentinel file {}", sentinel.display()))?;
 
     match region {
-        Region::Cms | Region::CmsCw => cms::download_client(path, wz_only, filter, allow_insecure, proxy, build, purge_wz_files)?,
+        Region::Cms => cms::download_client(path, wz_only, filter, allow_insecure, proxy, build, purge_wz_files)?,
+        Region::CmsCw => cms_cw::download_client(path, wz_only, filter, allow_insecure, proxy, build, purge_wz_files)?,
         Region::Tms => tms::download_client(path, wz_only, filter, allow_insecure, proxy, purge_wz_files)?,
         Region::Manual => {
             bail!("--download with 'manual' requires a URL; use `cmsdl manual --download <url> <dir>`")

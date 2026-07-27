@@ -14,7 +14,6 @@ use std::time::Instant;
 use anyhow::{bail, Result};
 
 use crate::cli::Region;
-use crate::cms_cw;
 use crate::gui::{self, UiModel};
 use crate::gui_downloader::format_eta;
 use crate::locale::tr;

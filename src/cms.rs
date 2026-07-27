@@ -89,7 +89,70 @@ const LAST_CLIENT_VERSION_FILE: &str = "last_client_version.ini";
 /// Build the client-file-list path (relative to the download host) for a given
 /// build number, e.g. `/v3client/build/5/8848/apppc/1020/client_all_files_list.dat`.
 fn client_file_list_path(number: u32) -> String {
-    format!("{CLIENT_FILE_LIST_PATH_PREFIX}{number}{CLIENT_FILE_LIST_PATH_SUFFIX}")
+    let cfg = config();
+    format!("{}{number}{}", cfg.client_file_list_path_prefix, cfg.client_file_list_path_suffix)
+}
+
+// ── Per-region configuration ────────────────────────────────────────────────
+
+/// Region-specific URLs and parameters for the CMS/CDN API.
+///
+/// Two instances are defined: [`CMS_CONFIG`] (mainland) and
+/// [`crate::cms_cw::CW_CONFIG`] (classic/alternative).
+#[derive(Clone, Debug)]
+pub(crate) struct CmsConfig {
+    pub ctrl_xml_url: &'static str,
+    pub patch_data_url: &'static str,
+    pub download_host: &'static str,
+    pub client_file_list_path_prefix: &'static str,
+    pub client_file_list_path_suffix: &'static str,
+    pub default_client_number: u32,
+    pub initial_client_list_url: &'static str,
+    pub last_client_version_file: &'static str,
+    /// INI section name for the persisted build number (e.g. `"CMS"`, `"CMS_CW"`).
+    pub last_client_version_section: &'static str,
+}
+
+/// Shared CMS configuration (mainland region).
+pub(crate) const CMS_CONFIG: CmsConfig = CmsConfig {
+    ctrl_xml_url: CTRL_XML_URL,
+    patch_data_url: PATCH_DATA_URL,
+    download_host: DOWNLOAD_HOST,
+    client_file_list_path_prefix: CLIENT_FILE_LIST_PATH_PREFIX,
+    client_file_list_path_suffix: CLIENT_FILE_LIST_PATH_SUFFIX,
+    default_client_number: DEFAULT_CLIENT_NUMBER,
+    initial_client_list_url: INITIAL_CLIENT_LIST_URL,
+    last_client_version_file: LAST_CLIENT_VERSION_FILE,
+    last_client_version_section: "CMS",
+};
+
+// ── Thread-local config override ────────────────────────────────────────────
+
+use std::cell::RefCell;
+
+thread_local! {
+    static CONFIG_OVERRIDE: RefCell<Option<CmsConfig>> = const { RefCell::new(None) };
+}
+
+/// Return the currently active [`CmsConfig`], falling back to [`CMS_CONFIG`].
+fn config() -> CmsConfig {
+    CONFIG_OVERRIDE.with(|c| c.borrow().clone()).unwrap_or(CMS_CONFIG)
+}
+
+/// Temporarily override the active config for the duration of `f`.
+///
+/// Used by [`crate::cms_cw`] to switch all URL-dependent functions to
+/// CW endpoints without duplicating their implementations.
+pub(crate) fn with_config<T>(cfg: CmsConfig, f: impl FnOnce() -> T) -> T {
+    struct Guard;
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            CONFIG_OVERRIDE.with(|c| *c.borrow_mut() = None);
+        }
+    }
+    CONFIG_OVERRIDE.with(|c| *c.borrow_mut() = Some(cfg));
+    let _guard = Guard;
+    f()
 }
 
 /// Base64-encoded DER (SubjectPublicKeyInfo) of the RSA public key used to
@@ -128,7 +191,7 @@ pub fn get_challenge_key(agent: &ureq::Agent) -> Result<String> {
 fn fetch_ctrl_xml(agent: &ureq::Agent) -> Result<String> {
     // The document declares `encoding="gbk"`, but every value we care about is
     // ASCII hex, so a lossy UTF-8 decode is sufficient.
-    http_get_text(agent, CTRL_XML_URL).context("HTTP request failed")
+    http_get_text(agent, &config().ctrl_xml_url).context("HTTP request failed")
 }
 
 /// Perform a GET request and return the response body as (lossy) UTF-8 text.
@@ -296,7 +359,7 @@ pub struct PatchData {
 /// The metadata is a JSON document served without any signing/challenge.
 pub fn get_patch_data(allow_insecure: bool, proxy: Option<&str>) -> Result<PatchData> {
     let agent = crate::net::agent(allow_insecure, proxy);
-    let body = http_get_text(&agent, PATCH_DATA_URL).context("failed to fetch patch metadata")?;
+    let body = http_get_text(&agent, config().patch_data_url).context("failed to fetch patch metadata")?;
     serde_json::from_str(&body).context("failed to parse patch metadata JSON")
 }
 
@@ -334,7 +397,7 @@ pub fn get_patch_total_size(
 /// If `url` does not start with the known [`DOWNLOAD_HOST`], it is returned
 /// unchanged (it may already be a host-relative path).
 pub(crate) fn strip_download_host(url: &str) -> &str {
-    url.strip_prefix(DOWNLOAD_HOST).unwrap_or(url)
+    url.strip_prefix(config().download_host).unwrap_or(url)
 }
 
 /// Summary information parsed from a client file list.
@@ -561,7 +624,7 @@ fn parse_client_file_list_with_paths(contents: &str) -> Result<(ClientFileList, 
 /// The path is signed with an MD5 of `<challengeCode><utc8Time><path>`, and the
 /// resulting URL is `<host>/<utc8Time>/<md5><path>`.
 pub(crate) fn build_signed_url(challenge_code: &str, utc8_time: u64, path: &str) -> String {
-    build_signed_url_for_host(DOWNLOAD_HOST, challenge_code, utc8_time, path)
+    build_signed_url_for_host(config().download_host, challenge_code, utc8_time, path)
 }
 
 /// Try fetching `LocalVersion3.xml` for the current build and parse its
@@ -663,18 +726,19 @@ fn fetch_client_file_list_for(
 fn discover_latest_client_number_with(agent: &ureq::Agent, challenge: &str) -> Result<u32> {
     // Prefer the persisted value; otherwise seed from the launcher's published
     // number; fall back to the hardcoded default only if both are unavailable.
+    let default_num = config().default_client_number;
     let start = load_last_client_version()
         .or_else(|| fetch_initial_client_number(agent))
-        .unwrap_or(DEFAULT_CLIENT_NUMBER);
+        .unwrap_or(default_num);
 
     // Confirm the starting point is valid. If a stale starting value is no
     // longer available, fall back to the known-good default and search again.
     let mut current = if fetch_client_file_list_for(agent, challenge, start)?.is_some() {
         start
-    } else if start != DEFAULT_CLIENT_NUMBER
-        && fetch_client_file_list_for(agent, challenge, DEFAULT_CLIENT_NUMBER)?.is_some()
+    } else if start != default_num
+        && fetch_client_file_list_for(agent, challenge, default_num)?.is_some()
     {
-        DEFAULT_CLIENT_NUMBER
+        default_num
     } else {
         bail!("no client file list found to start the exhaustive search from");
     };
@@ -830,8 +894,9 @@ fn find_build_for_version(
 ///
 /// Returns `None` when the file is absent or contains no parseable value.
 fn load_last_client_version() -> Option<u32> {
-    let contents = std::fs::read_to_string(LAST_CLIENT_VERSION_FILE).ok()?;
-    parse_last_client_version(&contents)
+    let cfg = config();
+    let contents = std::fs::read_to_string(cfg.last_client_version_file).ok()?;
+    parse_last_client_version(&contents, cfg.last_client_version_section)
 }
 
 /// Read the initial build number from the public launcher file list.
@@ -840,7 +905,7 @@ fn load_last_client_version() -> Option<u32> {
 /// which is returned. Any failure yields `None` so callers can fall back to
 /// [`DEFAULT_CLIENT_NUMBER`].
 fn fetch_initial_client_number(agent: &ureq::Agent) -> Option<u32> {
-    let contents = http_get_text(agent, INITIAL_CLIENT_LIST_URL).ok()?;
+    let contents = http_get_text(agent, config().initial_client_list_url).ok()?;
     parse_client_number_from_header(&contents)
 }
 
@@ -855,9 +920,17 @@ fn parse_client_number_from_header(contents: &str) -> Option<u32> {
 }
 
 /// Parse the `last_client_version` value out of the INI contents.
-fn parse_last_client_version(contents: &str) -> Option<u32> {
+fn parse_last_client_version(contents: &str, section: &str) -> Option<u32> {
+    let mut in_section = false;
     for line in contents.lines() {
         let line = line.trim();
+        if line.starts_with('[') && line.ends_with(']') {
+            in_section = line[1..line.len()-1].trim().eq_ignore_ascii_case(section);
+            continue;
+        }
+        if !in_section {
+            continue;
+        }
         if line.starts_with('#') || line.starts_with(';') {
             continue;
         }
@@ -874,9 +947,44 @@ fn parse_last_client_version(contents: &str) -> Option<u32> {
 
 /// Persist the highest build number to [`LAST_CLIENT_VERSION_FILE`] as INI.
 fn save_last_client_version(number: u32) -> Result<()> {
-    let contents = format!("[CMS]\nlast_client_version = {number}\n");
-    std::fs::write(LAST_CLIENT_VERSION_FILE, contents)
-        .with_context(|| format!("failed to write {LAST_CLIENT_VERSION_FILE}"))
+    let cfg = config();
+    let file = cfg.last_client_version_file;
+    let section = cfg.last_client_version_section;
+    // Read existing file, replace or append the section, then write back.
+    let mut contents = std::fs::read_to_string(file).unwrap_or_default();
+    let new_entry = format!("last_client_version = {number}\n");
+
+    // Try to replace within the existing section.
+    let section_header = format!("[{section}]");
+    if let Some(sect_start) = contents.find(&section_header) {
+        let sect_body_start = sect_start + section_header.len();
+        // Find the next section header or end of file.
+        let sect_end = contents[sect_body_start..]
+            .find("\n[")
+            .map(|p| sect_body_start + p + 1)
+            .unwrap_or(contents.len());
+        let old_body = &contents[sect_body_start..sect_end];
+        let new_body = if let Some(line_start) = old_body.find("last_client_version") {
+            // Replace the existing line.
+            let line_end = old_body[line_start..].find('\n').map(|p| line_start + p + 1).unwrap_or(old_body.len());
+            let mut s = old_body.to_string();
+            s.replace_range(line_start..line_end, &new_entry);
+            s
+        } else {
+            // Append to the section.
+            format!("{old_body}{new_entry}")
+        };
+        contents.replace_range(sect_body_start..sect_end, &new_body);
+    } else {
+        // Append a new section at the end.
+        if !contents.is_empty() && !contents.ends_with('\n') {
+            contents.push('\n');
+        }
+        contents.push_str(&format!("\n{section_header}\n{new_entry}"));
+    }
+
+    std::fs::write(file, &contents)
+        .with_context(|| format!("failed to write {file}"))
 }
 
 /// Compute the lowercase hex MD5 digest of `input`.
@@ -1293,7 +1401,7 @@ pub fn download_client(
 /// Returns `None` when the patch data cannot be fetched or the version is not
 /// listed.
 fn fetch_version_view_for(agent: &ureq::Agent, version: &str) -> Option<String> {
-    let body = http_get_text(agent, PATCH_DATA_URL).ok()?;
+    let body = http_get_text(agent, config().patch_data_url).ok()?;
     let data: PatchData = serde_json::from_str(&body).ok()?;
     data.packages
         .iter()
@@ -2374,19 +2482,24 @@ mod tests {
     #[test]
     fn parses_last_client_version_ini() {
         assert_eq!(
-            parse_last_client_version("[CMS]\nlast_client_version = 1023\n"),
+            parse_last_client_version("[CMS]\nlast_client_version = 1023\n", "CMS"),
             Some(1023)
         );
-        // Case-insensitive key, no surrounding spaces.
+        // Case-insensitive key within the section.
         assert_eq!(
-            parse_last_client_version("LAST_CLIENT_VERSION=1042"),
+            parse_last_client_version("[CMS]\nLAST_CLIENT_VERSION=1042", "CMS"),
             Some(1042)
+        );
+        // Ignores keys in other sections.
+        assert_eq!(
+            parse_last_client_version("[CMS]\nlast_client_version = 1023\n[CMS_CW]\nlast_client_version = 5\n", "CMS_CW"),
+            Some(5)
         );
         // Comments and unrelated keys are ignored.
         assert_eq!(
-            parse_last_client_version("; a comment\nother = 7\n"),
+            parse_last_client_version("; a comment\nother = 7\n", "CMS"),
             None
         );
-        assert_eq!(parse_last_client_version(""), None);
+        assert_eq!(parse_last_client_version("", "CMS"), None);
     }
 }
