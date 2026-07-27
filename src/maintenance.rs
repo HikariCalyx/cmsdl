@@ -25,6 +25,15 @@ const CMS_NEWS_LIST_URL: &str =
 /// URL template for fetching a single CMS news article's content.
 const CMS_NEWS_CONTENT_URL: &str = "https://mxd.web.sdo.com/web8/Handler/NewsContent.ashx?id=";
 
+// ── CMS CW API ─────────────────────────────────────────────────────────────────
+
+/// URL of the CMS CW in-game news list API.
+const CMS_CW_NEWS_LIST_URL: &str =
+    "https://news-my.web.sdo.com/UniInterface/data/mxdc_news_list_ingame.ashx";
+
+/// URL template for fetching a single CMS news article's content.
+const CMS_CW_NEWS_CONTENT_URL: &str = "https://mxdc.web.sdo.com/web2/Handler/NewsContent.ashx?id=";
+
 // ── TMS API ─────────────────────────────────────────────────────────────────
 
 /// TMS main page (used to obtain the CSRF token/cookie pair).
@@ -162,6 +171,7 @@ pub fn show_maintenance(
 ) -> Result<()> {
     match region {
         Region::Cms => show_cms_maintenance(agent, json, discord),
+        Region::CmsCw => show_cms_cw_maintenance(agent, json, discord),
         Region::Tms => show_tms_maintenance(agent, json, discord),
         Region::Manual => bail!("--maintenance is not supported for region 'manual'"),
     }
@@ -175,6 +185,7 @@ pub fn show_maintenance(
 pub fn fetch_for_gui(agent: &ureq::Agent, region: Region, maint_id: Option<u64>) -> Option<(String, String, String)> {
     let result = match region {
         Region::Cms => fetch_cms_for_gui(agent, maint_id),
+        Region::CmsCw => fetch_cms_cw_for_gui(agent, maint_id),
         Region::Tms => fetch_tms_for_gui(agent, maint_id),
         Region::Manual => return None,
     };
@@ -182,14 +193,28 @@ pub fn fetch_for_gui(agent: &ureq::Agent, region: Region, maint_id: Option<u64>)
 }
 
 fn fetch_cms_for_gui(agent: &ureq::Agent, maint_id: Option<u64>) -> Result<(String, String, String)> {
+    fetch_for_gui_inner(agent, maint_id, fetch_cms_news_list, fetch_cms_news_content)
+}
+
+fn fetch_cms_cw_for_gui(agent: &ureq::Agent, maint_id: Option<u64>) -> Result<(String, String, String)> {
+    fetch_for_gui_inner(agent, maint_id, fetch_cms_cw_news_list, fetch_cms_cw_news_content)
+}
+
+/// Common helper: fetch maintenance for GUI display using the given list/content fetchers.
+fn fetch_for_gui_inner(
+    agent: &ureq::Agent,
+    maint_id: Option<u64>,
+    fetch_list: fn(&ureq::Agent) -> Result<Vec<NewsCategory>>,
+    fetch_content: fn(&ureq::Agent, u64) -> Result<NewsContentData>,
+) -> Result<(String, String, String)> {
     let id = if let Some(mid) = maint_id {
         mid
     } else {
-        let news_list = fetch_cms_news_list(agent)?;
+        let news_list = fetch_list(agent)?;
         let item = find_cms_maintenance(&news_list)?;
         item.id
     };
-    let content = fetch_cms_news_content(agent, id)?;
+    let content = fetch_content(agent, id)?;
     let body = render_html(&content.content, RenderMode::Gui);
     let body = collapse_blank_lines(&body);
     let body = localize_stroke_out(&body);
@@ -270,6 +295,23 @@ fn show_cms_maintenance(agent: &ureq::Agent, json: bool, discord: bool) -> Resul
     let item = find_cms_maintenance(&news_list)?;
 
     let content = fetch_cms_news_content(agent, item.id)?;
+    print_maintenance(item, &content, json, discord)
+}
+
+fn show_cms_cw_maintenance(agent: &ureq::Agent, json: bool, discord: bool) -> Result<()> {
+    if !json {
+        println!("cmsdl {VERSION}: checking recent maintenance notice from region 'cms_cw'.");
+    }
+
+    let news_list = fetch_cms_cw_news_list(agent)?;
+    let item = find_cms_maintenance(&news_list)?;
+
+    let content = fetch_cms_cw_news_content(agent, item.id)?;
+    print_maintenance(item, &content, json, discord)
+}
+
+/// Common output logic shared by CMS and CMS CW maintenance display.
+fn print_maintenance(item: &NewsItem, content: &NewsContentData, json: bool, discord: bool) -> Result<()> {
     let mode = render_mode(json, discord);
 
     if json {
@@ -279,7 +321,7 @@ fn show_cms_maintenance(agent: &ureq::Agent, json: bool, discord: bool) -> Resul
             parse_cst_to_unix(&content.publish_date).context("failed to parse publish date")?;
         let output = MaintenanceOutput {
             id: item.id,
-            title: content.title,
+            title: content.title.clone(),
             publish_date: ts,
             body,
         };
@@ -306,8 +348,17 @@ fn show_cms_maintenance(agent: &ureq::Agent, json: bool, discord: bool) -> Resul
 }
 
 fn fetch_cms_news_list(agent: &ureq::Agent) -> Result<Vec<NewsCategory>> {
+    fetch_news_list(agent, CMS_NEWS_LIST_URL)
+}
+
+fn fetch_cms_cw_news_list(agent: &ureq::Agent) -> Result<Vec<NewsCategory>> {
+    fetch_news_list(agent, CMS_CW_NEWS_LIST_URL)
+}
+
+/// Common helper: fetch and parse the news list from a given URL.
+fn fetch_news_list(agent: &ureq::Agent, url: &str) -> Result<Vec<NewsCategory>> {
     let resp = agent
-        .get(CMS_NEWS_LIST_URL)
+        .get(url)
         .call()
         .context("failed to fetch news list")?;
     let body = resp
@@ -335,7 +386,16 @@ fn find_cms_maintenance(news_list: &[NewsCategory]) -> Result<&NewsItem> {
 }
 
 fn fetch_cms_news_content(agent: &ureq::Agent, id: u64) -> Result<NewsContentData> {
-    let url = format!("{CMS_NEWS_CONTENT_URL}{id}");
+    fetch_news_content(agent, CMS_NEWS_CONTENT_URL, id)
+}
+
+fn fetch_cms_cw_news_content(agent: &ureq::Agent, id: u64) -> Result<NewsContentData> {
+    fetch_news_content(agent, CMS_CW_NEWS_CONTENT_URL, id)
+}
+
+/// Common helper: fetch and parse a single news article from a given base URL.
+fn fetch_news_content(agent: &ureq::Agent, base_url: &str, id: u64) -> Result<NewsContentData> {
+    let url = format!("{base_url}{id}");
     let resp = agent
         .get(&url)
         .call()

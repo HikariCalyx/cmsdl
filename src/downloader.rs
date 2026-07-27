@@ -4,6 +4,7 @@ use anyhow::{bail, Context, Result};
 
 use crate::cli::Region;
 use crate::cms;
+use crate::cms_cw;
 use crate::filter::FileFilter;
 use crate::manual;
 use crate::tms;
@@ -21,8 +22,8 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// informational messages are suppressed.  On failure `{}` is printed and the
 /// function returns `Ok(())`.
 pub fn check(region: Region, filter: Option<&FileFilter>, verbose: bool, json: bool, allow_insecure: bool, proxy: Option<&str>, build: Option<u32>, build_since: Option<u32>) -> Result<()> {
-    if build.is_some() && region != Region::Cms {
-        bail!("--build is only supported for region 'cms'");
+    if build.is_some() && region != Region::Cms && region != Region::CmsCw {
+        bail!("--build is only supported for region 'cms' (or 'cms_cw')");
     }
 
     if !json {
@@ -31,8 +32,8 @@ pub fn check(region: Region, filter: Option<&FileFilter>, verbose: bool, json: b
 
     // --build-since: list all builds from the given number to latest.
     if let Some(since) = build_since {
-        if region != Region::Cms {
-            bail!("--build-since is only supported for region 'cms'");
+        if region != Region::Cms && region != Region::CmsCw {
+            bail!("--build-since is only supported for region 'cms' (or 'cms_cw')");
         }
         if !json {
             println!("scanning builds {since}+...");
@@ -82,7 +83,7 @@ pub fn check(region: Region, filter: Option<&FileFilter>, verbose: bool, json: b
     }
 
     match region {
-        Region::Cms => {
+        Region::Cms | Region::CmsCw => {
             if json {
                 match cms::get_client_file_list_info(allow_insecure, proxy, build) {
                     Ok(info) => {
@@ -248,14 +249,14 @@ pub fn download(
     close_after_finishing: bool,
     maint_id: Option<u64>,
 ) -> Result<()> {
-    if build.is_some() && region != Region::Cms {
-        bail!("--build is only supported for region 'cms'");
+    if build.is_some() && region != Region::Cms && region != Region::CmsCw {
+        bail!("--build is only supported for region 'cms' (or 'cms_cw')");
     }
 
     // Use the graphical downloader on Windows unless suppressed. The GUI shows
     // a progress window and downloads on a background thread; on non-Windows
     // platforms (or with --no-gui) the console downloader is used instead.
-    let use_gui = cfg!(windows) && !no_gui && matches!(region, Region::Cms | Region::Tms);
+    let use_gui = cfg!(windows) && !no_gui && matches!(region, Region::Cms | Region::CmsCw | Region::Tms);
     if use_gui {
         return crate::gui_downloader::run_gui_download(
             region,
@@ -313,7 +314,7 @@ pub(crate) fn run_download_core(
         .with_context(|| format!("failed to create sentinel file {}", sentinel.display()))?;
 
     match region {
-        Region::Cms => cms::download_client(path, wz_only, filter, allow_insecure, proxy, build, purge_wz_files)?,
+        Region::Cms | Region::CmsCw => cms::download_client(path, wz_only, filter, allow_insecure, proxy, build, purge_wz_files)?,
         Region::Tms => tms::download_client(path, wz_only, filter, allow_insecure, proxy, purge_wz_files)?,
         Region::Manual => {
             bail!("--download with 'manual' requires a URL; use `cmsdl manual --download <url> <dir>`")
@@ -340,7 +341,7 @@ pub fn get_bit_torrent(
             println!("cmsdl {VERSION}: fetching torrent file for region '{region}'.");
             tms::download_torrent(output, allow_insecure, proxy)?;
         }
-        Region::Cms => {
+        Region::Cms | Region::CmsCw => {
             bail!("region '{region}' does not publish a BitTorrent file");
         }
         Region::Manual => {
@@ -364,7 +365,7 @@ pub fn patch_list(
     json: bool,
 ) -> Result<()> {
     match region {
-        Region::Cms => {
+        Region::Cms | Region::CmsCw => {
             if !json {
                 println!("cmsdl {VERSION}: listing patches for region '{region}'.");
             }
@@ -466,7 +467,7 @@ pub fn patch_apply(
     keep_old_wz_files: bool,
 ) -> Result<()> {
     match region {
-        Region::Cms => {
+        Region::Cms | Region::CmsCw => {
             // If a sentinel file from a previous incomplete download exists,
             // the client directory may be in an inconsistent state. Fall back
             // to a full download rather than attempting to patch.
@@ -536,7 +537,7 @@ pub fn manual_download(
 /// subsequent patch-and-launch operations also use Locale Remulator.
 pub fn create_shortcut(region: Region, target_path: &Path, lrhook: bool, no_gui: bool, close_after_finishing: bool) -> Result<()> {
     match region {
-        Region::Cms => cms::create_shortcut(target_path, lrhook, no_gui, close_after_finishing)?,
+        Region::Cms | Region::CmsCw => cms::create_shortcut(target_path, lrhook, no_gui, close_after_finishing)?,
         Region::Tms => bail!("region '{region}' does not support shortcut creation"),
         Region::Manual => bail!("--create-shortcut is not supported for 'manual'"),
     }

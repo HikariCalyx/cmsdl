@@ -230,6 +230,8 @@ pub struct Cli {
 pub enum Region {
     /// Mainland region, officially known as 冒险岛Online in Chinese.
     Cms,
+    /// Mainland region (alternative), behaves identically to Cms for now.
+    CmsCw,
     /// Taiwan and SARs region, officially known as 新楓之谷 in Chinese.
     Tms,
     /// Manual single-file download from a signed CMS CDN URL.
@@ -240,6 +242,7 @@ impl std::fmt::Display for Region {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let code = match self {
             Region::Cms => "CMS",
+            Region::CmsCw => "CMS_CW",
             Region::Tms => "TMS",
             Region::Manual => "manual",
         };
@@ -314,7 +317,7 @@ impl Cli {
             if self.region == Region::Tms {
                 anyhow::bail!(
                     "--create-shortcut is not supported for region 'tms'; \
-                     shortcut creation is only available for 'cms'"
+                     shortcut creation is only available for 'cms' (or 'cms_cw')"
                 );
             }
             Action::CreateShortcut(sanitize_path(path))
@@ -322,7 +325,7 @@ impl Cli {
             if self.region == Region::Tms {
                 anyhow::bail!(
                     "--patch is not supported for region 'tms'; \
-                     incremental patching is only available for 'cms'"
+                     incremental patching is only available for 'cms' (or 'cms_cw')"
                 );
             }
             if patch.eq_ignore_ascii_case("list") {
@@ -364,7 +367,7 @@ impl Cli {
             if self.region == Region::Manual {
                 anyhow::bail!(
                     "--maintenance is not supported for region 'manual'; \
-                     use `cmsdl cms --maintenance` or `cmsdl tms --maintenance`"
+                     use `cmsdl cms --maintenance`, `cmsdl cms_cw --maintenance`, or `cmsdl tms --maintenance`"
                 );
             }
             Action::Maintenance
