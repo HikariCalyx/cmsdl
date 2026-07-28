@@ -16,7 +16,7 @@ Unicode true
 !include "FileFunc.nsh"
 
 ; Version
-!define VERSION "4.226.5.1"
+!define VERSION "4.227.1.0"
 
 ; Product Info (English)
 !define PRODUCT_NAME "MapleStory CN"
@@ -56,6 +56,16 @@ Var LrHookFlag
 Var NoGuiFlag
 Var CloseFlag
 Var BuildFlag
+; Game variant selection
+Var CheckCMS
+Var CheckCMSCW
+Var InstallCMS
+Var InstallCMSCW
+; Finish page launch selection
+Var RadioNoLaunch
+Var RadioLaunchCMS
+Var RadioLaunchCMSCW
+Var LaunchVariant
 
 ; ============================================================================
 ; MUI2 Settings
@@ -64,9 +74,12 @@ Var BuildFlag
 ; Installer pages
 !insertmacro MUI_PAGE_WELCOME
 Page custom ModeSelectPage ModeSelectPageLeave
+Page custom VariantSelectPage VariantSelectPageLeave VariantPagePre
 !define MUI_PAGE_CUSTOMFUNCTION_PRE DirectoryPagePre
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
+!define MUI_PAGE_CUSTOMFUNCTION_SHOW FinishPageShow
+!define MUI_PAGE_CUSTOMFUNCTION_LEAVE FinishPageLeave
 !insertmacro MUI_PAGE_FINISH
 
 ; Uninstaller pages
@@ -113,6 +126,17 @@ LangString STR_REMOVE_OFFICIAL_LAUNCHER ${LANG_ENGLISH} "Would you like to remov
 LangString STR_REMOVE_OFFICIAL_LAUNCHER_UAC ${LANG_ENGLISH} "You're currently running official launcher, but you didn't close it. Once you finish closing, please click Retry."
 LangString STR_METERED_WARNING ${LANG_ENGLISH} "Your network connection is metered.$\nDownloading the game may incur additional costs.$\n$\nDo you want to continue?"
 LangString STR_IS_HDD_WARNING ${LANG_ENGLISH} "You are using a mechanical hard drive, and updating game files may be very slow.$\n$\nDo you want to continue?"
+LangString STR_VARIANT_TITLE ${LANG_ENGLISH} "Choose Game Variant"
+LangString STR_VARIANT_SUBTITLE ${LANG_ENGLISH} "Select which game variants to install."
+LangString STR_VARIANT_CMS ${LANG_ENGLISH} "MapleStory CN (CMS)"
+LangString STR_VARIANT_CMS_CW ${LANG_ENGLISH} "MapleStory Classic World CN (cms_cw)"
+LangString STR_VARIANT_ERROR ${LANG_ENGLISH} "You must select at least one game variant to install."
+LangString STR_DOWNLOADING_CMS_CW ${LANG_ENGLISH} "Downloading MapleStory Classic World CN game files..."
+LangString STR_DOWNLOAD_CMS_CW_FAILED ${LANG_ENGLISH} "MapleStory Classic World CN download failed with error code $0."
+LangString STR_FINISH_NO_LAUNCH ${LANG_ENGLISH} "Do not launch"
+LangString STR_FINISH_LAUNCH_CMS ${LANG_ENGLISH} "Launch MapleStory CN"
+LangString STR_FINISH_LAUNCH_CMS_CW ${LANG_ENGLISH} "Launch MapleStory Classic World CN"
+LangString STR_LAUNCH_PROMPT_CMS_CW ${LANG_ENGLISH} "Installation completed. Would you like to launch MapleStory Classic World CN now?"
 
 ; ============================================================================
 ; Language Strings - Simplified Chinese
@@ -148,6 +172,17 @@ LangString STR_REMOVE_OFFICIAL_LAUNCHER ${LANG_SIMPCHINESE} "您想要移除官�
 LangString STR_REMOVE_OFFICIAL_LAUNCHER_UAC ${LANG_SIMPCHINESE} "您当前正在运行官方启动器，但尚未关闭它。关闭后，请点击重试。"
 LangString STR_METERED_WARNING ${LANG_SIMPCHINESE} "您的网络连接为按流量计费的连接。$\n下载游戏可能会产生额外费用。$\n$\n您是否要继续？"
 LangString STR_IS_HDD_WARNING ${LANG_SIMPCHINESE} "您正在使用机械硬盘，游戏文件的更新可能会非常缓慢。$\n$\n您是否要继续？"
+LangString STR_VARIANT_TITLE ${LANG_SIMPCHINESE} "选择游戏版本"
+LangString STR_VARIANT_SUBTITLE ${LANG_SIMPCHINESE} "选择要安装的游戏版本。"
+LangString STR_VARIANT_CMS ${LANG_SIMPCHINESE} "冒险岛正式服"
+LangString STR_VARIANT_CMS_CW ${LANG_SIMPCHINESE} "冒险岛怀旧服"
+LangString STR_VARIANT_ERROR ${LANG_SIMPCHINESE} "您必须至少选择一个游戏版本。"
+LangString STR_DOWNLOADING_CMS_CW ${LANG_SIMPCHINESE} "正在下载冒险岛怀旧服游戏文件..."
+LangString STR_DOWNLOAD_CMS_CW_FAILED ${LANG_SIMPCHINESE} "冒险岛怀旧服下载失败，错误代码：$0。"
+LangString STR_FINISH_NO_LAUNCH ${LANG_SIMPCHINESE} "不启动"
+LangString STR_FINISH_LAUNCH_CMS ${LANG_SIMPCHINESE} "启动冒险岛正式服"
+LangString STR_FINISH_LAUNCH_CMS_CW ${LANG_SIMPCHINESE} "启动冒险岛怀旧服"
+LangString STR_LAUNCH_PROMPT_CMS_CW ${LANG_SIMPCHINESE} "安装完成。您要立即启动冒险岛怀旧服吗？"
 
 ; ============================================================================
 ; Installer Attributes
@@ -217,19 +252,24 @@ Function .onInit
     Quit
   ${EndIf}
 
-  ; If the current date is on or before July 28, 2026, add --build 1055 to
+  ; If the current date is on or before September 8, 2026, add --build 1056 to
   ; the download command (required for a specific game build rollout).
   ${GetTime} "" "L" $0 $1 $2 $3 $4 $5 $6
   ; $2 = year (4 digits), $1 = month, $0 = day of month
   StrCpy $BuildFlag ""
   IntCmp $2 2026 yearEq beforeCutoff afterCutoff
   yearEq:
-    IntCmp $1 7 monthEq beforeCutoff afterCutoff
+    IntCmp $1 9 monthEq beforeCutoff afterCutoff
   monthEq:
-    IntCmp $0 28 beforeCutoff beforeCutoff afterCutoff
+    IntCmp $0 8 beforeCutoff beforeCutoff afterCutoff
   beforeCutoff:
-    StrCpy $BuildFlag "--build 1055"
+    StrCpy $BuildFlag "--build 1056"
   afterCutoff:
+
+  ; Default game variants: install both.
+  StrCpy $InstallCMS "1"
+  StrCpy $InstallCMSCW "0"
+  StrCpy $LaunchVariant "1"
 FunctionEnd
 
 ; ============================================================================
@@ -347,6 +387,50 @@ Function ModeSelectPageLeave
       StrCpy $CloseFlag " --close-after-finishing"
     ${EndIf}
 
+FunctionEnd
+
+; ============================================================================
+; Variant Selection Page (only shown for MODE_INSTALL)
+; ============================================================================
+
+Function VariantPagePre
+  StrCmp $InstallMode "1" show
+    Abort
+  show:
+FunctionEnd
+
+Function VariantSelectPage
+  !insertmacro MUI_HEADER_TEXT "$(STR_VARIANT_TITLE)" "$(STR_VARIANT_SUBTITLE)"
+
+  nsDialogs::Create 1018
+  Pop $Dialog
+  StrCmp $Dialog "error" variantDone
+
+  ${NSD_CreateCheckbox} 10u 6u 95% 12u "$(STR_VARIANT_CMS)"
+  Pop $CheckCMS
+  ${NSD_CreateCheckbox} 10u 24u 95% 12u "$(STR_VARIANT_CMS_CW)"
+  Pop $CheckCMSCW
+
+  ; Restore previous state if the user went back.
+  StrCmp $InstallCMS "1" 0 +2
+    ${NSD_Check} $CheckCMS
+  StrCmp $InstallCMSCW "1" 0 +2
+    ${NSD_Check} $CheckCMSCW
+
+  nsDialogs::Show
+  variantDone:
+FunctionEnd
+
+Function VariantSelectPageLeave
+  ${NSD_GetState} $CheckCMS $0
+  ${NSD_GetState} $CheckCMSCW $1
+  ${If} $0 == 0
+  ${AndIf} $1 == 0
+    MessageBox MB_ICONEXCLAMATION "$(STR_VARIANT_ERROR)"
+    Abort
+  ${EndIf}
+  StrCpy $InstallCMS $0
+  StrCpy $InstallCMSCW $1
 FunctionEnd
 
 Function OpenTroubleshootingLink
@@ -514,8 +598,10 @@ Section "Install"
     ; Extract cmsdl.exe
     File "..\target\release\cmsdl.exe"
 
-    ; Registry + uninstaller.
-    Call WriteRegInfo
+    ; Registry + uninstaller — only when cms is selected.
+    StrCmp $InstallCMS "1" 0 skipRegInfoInstall
+      Call WriteRegInfo
+    skipRegInfoInstall:
 
     ; Warn if the connection is metered before starting the download.
     ExecWait '"$INSTDIR\cmsdl.exe" is_metered' $0
@@ -529,13 +615,27 @@ Section "Install"
       MessageBox MB_YESNO|MB_ICONEXCLAMATION "$(STR_IS_HDD_WARNING)" IDYES +2
       Abort
 
-    ; Execute download command. ExecWait gives cmsdl.exe a real console
-    ; window where its indicatif progress bars can render.
-    DetailPrint "$(STR_DOWNLOADING)"
-    ExecWait '"$INSTDIR\cmsdl.exe" cms --download "$INSTDIR" --purge-wz-files $BuildFlag$NoGuiFlag$CloseFlag' $0
-    StrCmp $0 "0" makeShortcuts
-      MessageBox MB_ICONSTOP "$(STR_DOWNLOAD_FAILED)"
-      Abort
+    ; Download CMS if selected.
+    StrCmp $InstallCMS "1" 0 skipCMSDownload
+      DetailPrint "$(STR_DOWNLOADING)"
+      ExecWait '"$INSTDIR\cmsdl.exe" cms --download "$INSTDIR" --purge-wz-files $BuildFlag$NoGuiFlag$CloseFlag' $0
+      StrCmp $0 "0" skipCMSDownload
+        MessageBox MB_ICONSTOP "$(STR_DOWNLOAD_FAILED)"
+        Abort
+    skipCMSDownload:
+
+    ; Download CMS_CW if selected.
+    StrCmp $InstallCMSCW "1" 0 skipCMSCWDownload
+      DetailPrint "$(STR_DOWNLOADING_CMS_CW)"
+      ExecWait '"$INSTDIR\cmsdl.exe" cms_cw --download "$INSTDIR" --purge-wz-files$NoGuiFlag$CloseFlag' $0
+      StrCmp $0 "0" skipCMSCWDownload
+        MessageBox MB_ICONSTOP "$(STR_DOWNLOAD_CMS_CW_FAILED)"
+        Abort
+    skipCMSCWDownload:
+
+    ; Only create shortcuts and offer launcher removal when cms is installed.
+    StrCmp $InstallCMS "1" 0 sectionDone
+    Goto makeShortcuts
 
   ; ----------------------------------------------------------------------
   ; UPDATE CMSDL MODE
@@ -653,15 +753,101 @@ Section "Install"
 SectionEnd
 
 ; ============================================================================
+; Finish Page Customization
+; ============================================================================
+
+Function FinishPageShow
+  ; Only customize the finish page when both cms and cms_cw are being installed.
+  StrCmp $InstallMode "1" 0 done
+  StrCmp $InstallCMS "1" 0 done
+  StrCmp $InstallCMSCW "1" 0 done
+
+  ; Set parent for NSD macros to the MUI inner dialog.
+  StrCpy $HWNDPARENT $MUI_HWND
+
+  ${NSD_CreateRadioButton} 10u 60u 95% 12u "$(STR_FINISH_NO_LAUNCH)"
+  Pop $RadioNoLaunch
+  ${NSD_AddStyle} $RadioNoLaunch ${WS_GROUP}
+
+  ${NSD_CreateRadioButton} 10u 76u 95% 12u "$(STR_FINISH_LAUNCH_CMS)"
+  Pop $RadioLaunchCMS
+
+  ${NSD_CreateRadioButton} 10u 92u 95% 12u "$(STR_FINISH_LAUNCH_CMS_CW)"
+  Pop $RadioLaunchCMSCW
+
+  ; Default: launch CMS.
+  ${NSD_Check} $RadioLaunchCMS
+  StrCpy $LaunchVariant "1"
+done:
+FunctionEnd
+
+Function FinishPageLeave
+  StrCmp $InstallMode "1" 0 done
+  StrCmp $InstallCMS "1" 0 done
+  StrCmp $InstallCMSCW "1" 0 done
+
+  ${NSD_GetState} $RadioNoLaunch $0
+  ${If} $0 == 1
+    StrCpy $LaunchVariant "0"
+    Goto done
+  ${EndIf}
+
+  ${NSD_GetState} $RadioLaunchCMS $0
+  ${If} $0 == 1
+    StrCpy $LaunchVariant "1"
+    Goto done
+  ${EndIf}
+
+  ${NSD_GetState} $RadioLaunchCMSCW $0
+  ${If} $0 == 1
+    StrCpy $LaunchVariant "2"
+  ${EndIf}
+done:
+FunctionEnd
+
+; ============================================================================
 ; Launch Game Prompt
 ; ============================================================================
 
 Function .onInstSuccess
   StrCmp $InstallMode "3" done
   StrCmp $InstallMode "4" done
+
+  ; Dual-variant install: use the radio button choice from the finish page.
+  StrCmp $InstallMode "1" 0 singleVariant
+  StrCmp $InstallCMS "1" 0 singleVariant
+  StrCmp $InstallCMSCW "1" 0 singleVariant
+
+  ; Both variants were installed — honour the radio selection.
+  StrCmp $LaunchVariant "0" done
+  StrCmp $LaunchVariant "2" launchCMS_CW
+  ; Launch CMS (default).
+  ExecShell "open" "$INSTDIR\cmsdl.exe" "cms --patch latest $\"$INSTDIR$\" --launch-after-patching$LrHookFlag$NoGuiFlag"
+  Goto done
+
+launchCMS_CW:
+  ExecShell "open" "$INSTDIR\cmsdl.exe" "cms_cw --patch latest $\"$INSTDIR$\" --launch-after-patching$LrHookFlag$NoGuiFlag"
+  Goto done
+
+singleVariant:
+  ; Update and Fix SDOLogin modes — always launch CMS.
+  StrCmp $InstallMode "2" launchOriginalCms
+  StrCmp $InstallMode "5" launchOriginalCms
+  ; Install mode with a single variant.
+  StrCmp $InstallCMS "1" launchOriginalCms
+  StrCmp $InstallCMSCW "1" launchOnlyCMSCW
+  Goto done
+
+launchOriginalCms:
   MessageBox MB_YESNO|MB_ICONQUESTION "$(STR_LAUNCH_PROMPT)" /SD IDYES IDNO done
   ExecShell "open" "$INSTDIR\cmsdl.exe" "cms --patch latest $\"$INSTDIR$\" --launch-after-patching$LrHookFlag$NoGuiFlag"
-  done:
+  Goto done
+
+launchOnlyCMSCW:
+  MessageBox MB_YESNO|MB_ICONQUESTION "$(STR_LAUNCH_PROMPT_CMS_CW)" /SD IDYES IDNO done
+  ExecShell "open" "$INSTDIR\cmsdl.exe" "cms_cw --patch latest $\"$INSTDIR$\" --launch-after-patching$LrHookFlag$NoGuiFlag"
+
+done:
 FunctionEnd
 
 ; ============================================================================

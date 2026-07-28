@@ -15,7 +15,7 @@ Unicode true
 !include "nsDialogs.nsh"
 
 ; Version
-!define VERSION "6.280.1.1"
+!define VERSION "6.281.1.1"
 
 ; Product Info (English)
 !define PRODUCT_NAME "MapleStory TW"
