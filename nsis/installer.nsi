@@ -74,9 +74,12 @@ Var LaunchVariant
 ; Installer pages
 !insertmacro MUI_PAGE_WELCOME
 Page custom ModeSelectPage ModeSelectPageLeave
-Page custom VariantSelectPage VariantSelectPageLeave VariantPagePre
+!define MUI_PAGE_CUSTOMFUNCTION_PRE VariantPagePre
+Page custom VariantSelectPage VariantSelectPageLeave
+!undef MUI_PAGE_CUSTOMFUNCTION_PRE
 !define MUI_PAGE_CUSTOMFUNCTION_PRE DirectoryPagePre
 !insertmacro MUI_PAGE_DIRECTORY
+!undef MUI_PAGE_CUSTOMFUNCTION_PRE
 !insertmacro MUI_PAGE_INSTFILES
 !define MUI_PAGE_CUSTOMFUNCTION_SHOW FinishPageShow
 !define MUI_PAGE_CUSTOMFUNCTION_LEAVE FinishPageLeave
@@ -761,9 +764,6 @@ Function FinishPageShow
   StrCmp $InstallMode "1" 0 done
   StrCmp $InstallCMS "1" 0 done
   StrCmp $InstallCMSCW "1" 0 done
-
-  ; Set parent for NSD macros to the MUI inner dialog.
-  StrCpy $HWNDPARENT $MUI_HWND
 
   ${NSD_CreateRadioButton} 10u 60u 95% 12u "$(STR_FINISH_NO_LAUNCH)"
   Pop $RadioNoLaunch
