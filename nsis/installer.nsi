@@ -74,9 +74,7 @@ Var LaunchVariant
 ; Installer pages
 !insertmacro MUI_PAGE_WELCOME
 Page custom ModeSelectPage ModeSelectPageLeave
-!define MUI_PAGE_CUSTOMFUNCTION_PRE VariantPagePre
 Page custom VariantSelectPage VariantSelectPageLeave
-!undef MUI_PAGE_CUSTOMFUNCTION_PRE
 !define MUI_PAGE_CUSTOMFUNCTION_PRE DirectoryPagePre
 !insertmacro MUI_PAGE_DIRECTORY
 !undef MUI_PAGE_CUSTOMFUNCTION_PRE
@@ -255,7 +253,7 @@ Function .onInit
     Quit
   ${EndIf}
 
-  ; If the current date is on or before September 8, 2026, add --build 1056 to
+  ; If the current date is on or before September 8, 2026, add --build 1063 to
   ; the download command (required for a specific game build rollout).
   ${GetTime} "" "L" $0 $1 $2 $3 $4 $5 $6
   ; $2 = year (4 digits), $1 = month, $0 = day of month
@@ -266,7 +264,7 @@ Function .onInit
   monthEq:
     IntCmp $0 8 beforeCutoff beforeCutoff afterCutoff
   beforeCutoff:
-    StrCpy $BuildFlag "--build 1056"
+    StrCpy $BuildFlag "--build 1063"
   afterCutoff:
 
   ; Default game variants: install both.
@@ -396,13 +394,10 @@ FunctionEnd
 ; Variant Selection Page (only shown for MODE_INSTALL)
 ; ============================================================================
 
-Function VariantPagePre
-  StrCmp $InstallMode "1" show
-    Abort
-  show:
-FunctionEnd
-
 Function VariantSelectPage
+  ; Only show this page in install mode; skip otherwise.
+  StrCmp $InstallMode "1" 0 variantSkip
+
   !insertmacro MUI_HEADER_TEXT "$(STR_VARIANT_TITLE)" "$(STR_VARIANT_SUBTITLE)"
 
   nsDialogs::Create 1018
@@ -422,6 +417,10 @@ Function VariantSelectPage
 
   nsDialogs::Show
   variantDone:
+  Goto variantEnd
+variantSkip:
+  Abort
+variantEnd:
 FunctionEnd
 
 Function VariantSelectPageLeave
