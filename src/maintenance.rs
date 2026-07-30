@@ -10,6 +10,8 @@
 //!   for use inside Discord ```ansi … ``` code blocks.
 
 use anyhow::{bail, Context, Result};
+use chrono::Datelike;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 use crate::cli::Region;
@@ -157,8 +159,16 @@ struct TmsBulletinDetail {
 struct MaintenanceOutput {
     id: u64,
     title: String,
-    /// Unix timestamp (seconds since epoch) of the publish date (UTC+8 → UTC).
+    /// Unix timestamp (seconds since epoch) of the publish date.
     publish_date: i64,
+    /// Maintenance classification.
+    maintenance_type: String,
+    /// Estimated start time (UTC+8 → Unix), if parseable from the body.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    estimated_start: Option<i64>,
+    /// Estimated end time (UTC+8 → Unix), if parseable from the body.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    estimated_end: Option<i64>,
     body: String,
 }
 
@@ -284,6 +294,131 @@ fn localize_stroke_out(body: &str) -> String {
     body.replace("(stroke out)", &label)
 }
 
+/// Classification of a maintenance notice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MaintenanceType {
+    /// Full server shutdown (停机维护 / 停機維護).
+    Shutdown,
+    /// Per-channel maintenance (分频道维护 / 分流維護).
+    PerChannel,
+}
+
+impl std::fmt::Display for MaintenanceType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MaintenanceType::Shutdown => write!(f, "ShutdownMaintenance"),
+            MaintenanceType::PerChannel => write!(f, "PerChannelMaintenance"),
+        }
+    }
+}
+
+/// Detect the maintenance type by scanning the title and body for keywords.
+fn detect_maintenance_type(title: &str, body: &str) -> MaintenanceType {
+    let combined = format!("{title} {body}");
+    // Per-channel indicators (check first — more specific).
+    if combined.contains("分频道维护")
+        || combined.contains("分頻道維護")
+        || combined.contains("分流維護")
+        || combined.contains("分流維修")
+        || combined.contains("分段分流")
+    {
+        return MaintenanceType::PerChannel;
+    }
+    // Shutdown indicators.
+    if combined.contains("停机维护")
+        || combined.contains("停機維護")
+        || combined.contains("全服停机")
+        || combined.contains("全服停機")
+    {
+        return MaintenanceType::Shutdown;
+    }
+    // Default: assume shutdown (most common).
+    MaintenanceType::Shutdown
+}
+
+/// A parsed maintenance time window (UTC+8 → Unix timestamps).
+struct MaintenanceTime {
+    start: i64,
+    end: i64,
+}
+
+/// Try to extract estimated start/end times from the title and HTML body.
+fn extract_maintenance_times(title: &str, html_body: &str) -> Option<MaintenanceTime> {
+    // Remove struck-out content first, then strip remaining HTML tags.
+    let cleaned = strip_strike_tags(html_body);
+    let plain = strip_html(&cleaned);
+    let combined = format!("{title} {plain}");
+
+    // Find a time range.  Separators: ~ ～ - – — 至
+    let time_re =
+        Regex::new(r"(\d{1,2}):(\d{2})\s*[~～\-–—]+\s*(\d{1,2}):(\d{2})").ok()?;
+    let caps = time_re.captures(&combined)?;
+    let start_h: u32 = caps.get(1)?.as_str().parse().ok()?;
+    let start_m: u32 = caps.get(2)?.as_str().parse().ok()?;
+    let end_h: u32 = caps.get(3)?.as_str().parse().ok()?;
+    let end_m: u32 = caps.get(4)?.as_str().parse().ok()?;
+
+    // Find a date: CMS "2026年7月29日" or "7月29日", or TMS "MM/DD"
+    let date_re = Regex::new(r"(?:(\d{4})年)?(\d{1,2})月(\d{1,2})日").ok()?;
+    let (year_opt, month, day) = if let Some(dc) = date_re.captures(&combined) {
+        let y = dc.get(1).and_then(|m| m.as_str().parse::<i32>().ok());
+        let m: u32 = dc[2].parse().ok()?;
+        let d: u32 = dc[3].parse().ok()?;
+        (y, m, d)
+    } else {
+        let tms_re = Regex::new(r"(\d{2})/(\d{2})").ok()?;
+        let dc = tms_re.captures(&combined)?;
+        let m: u32 = dc[1].parse().ok()?;
+        let d: u32 = dc[2].parse().ok()?;
+        (None, m, d)
+    };
+
+    let year = year_opt.unwrap_or_else(|| {
+        let now_cst = chrono::Utc::now() + chrono::Duration::hours(8);
+        let mut y = now_cst.date_naive().year();
+        if month == 12 && now_cst.date_naive().month() == 1 {
+            y -= 1;
+        }
+        y
+    });
+
+    let make_ts = |h: u32, m: u32| -> Option<i64> {
+        let dt = chrono::NaiveDate::from_ymd_opt(year, month, day)?
+            .and_hms_opt(h, m, 0)?;
+        let cst = chrono::FixedOffset::east_opt(8 * 3600)?;
+        dt.and_local_timezone(cst).single().map(|d| d.timestamp())
+    };
+
+    Some(MaintenanceTime {
+        start: make_ts(start_h, start_m)?,
+        end: make_ts(end_h, end_m)?,
+    })
+}
+
+/// Remove `<s>`, `<strike>`, `<del>` tag pairs and their content from HTML.
+fn strip_strike_tags(html: &str) -> String {
+    let re = Regex::new(r"<(s|strike|del)\b[^>]*>.*?</\1>").ok();
+    match re {
+        Some(r) => r.replace_all(html, "").into_owned(),
+        None => html.to_string(),
+    }
+}
+
+/// Strip HTML tags, returning plain text.
+fn strip_html(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut in_tag = false;
+    for c in html.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => out.push(c),
+            _ => {}
+        }
+    }
+    out
+}
+
 // ── CMS implementation ──────────────────────────────────────────────────────
 
 fn show_cms_maintenance(agent: &ureq::Agent, json: bool, discord: bool) -> Result<()> {
@@ -313,6 +448,8 @@ fn show_cms_cw_maintenance(agent: &ureq::Agent, json: bool, discord: bool) -> Re
 /// Common output logic shared by CMS and CMS CW maintenance display.
 fn print_maintenance(item: &NewsItem, content: &NewsContentData, json: bool, discord: bool) -> Result<()> {
     let mode = render_mode(json, discord);
+    let mtype = detect_maintenance_type(&content.title, &content.content);
+    let times = extract_maintenance_times(&content.title, &content.content);
 
     if json {
         let body = render_html(&content.content, mode);
@@ -323,6 +460,9 @@ fn print_maintenance(item: &NewsItem, content: &NewsContentData, json: bool, dis
             id: item.id,
             title: content.title.clone(),
             publish_date: ts,
+            maintenance_type: mtype.to_string(),
+            estimated_start: times.as_ref().map(|t| t.start),
+            estimated_end: times.as_ref().map(|t| t.end),
             body,
         };
         println!(
@@ -331,11 +471,20 @@ fn print_maintenance(item: &NewsItem, content: &NewsContentData, json: bool, dis
         );
     } else {
         eprintln!(
-            "Found maintenance notice: #{} — {}",
-            item.id, item.title
+            "Found maintenance notice: #{} — {} [{}]",
+            item.id, item.title, mtype
         );
         println!("=== {} ===", content.title);
         println!("Published: {}", content.publish_date);
+        if let Some(ref t) = times {
+            let fmt = |ts: i64| -> String {
+                let cst = chrono::FixedOffset::east_opt(8 * 3600).unwrap();
+                chrono::DateTime::from_timestamp(ts, 0)
+                    .map(|dt| dt.with_timezone(&cst).format("%Y-%m-%d %H:%M").to_string())
+                    .unwrap_or_else(|| ts.to_string())
+            };
+            println!("Estimated: {} ~ {}", fmt(t.start), fmt(t.end));
+        }
         println!();
         let body = render_html(&content.content, mode);
         let compact = collapse_blank_lines(&body);
@@ -472,11 +621,17 @@ fn show_tms_maintenance(agent: &ureq::Agent, json: bool, discord: bool) -> Resul
     let ts = parse_tms_date_to_unix(&detail.start_date)
         .context("failed to parse TMS start date")?;
 
+    let mtype = detect_maintenance_type(&detail.title, &detail.content);
+    let times = extract_maintenance_times(&detail.title, &detail.content);
+
     if json {
         let output = MaintenanceOutput {
             id: detail.bulletin_id.parse().unwrap_or(0),
             title: combined_title,
             publish_date: ts,
+            maintenance_type: mtype.to_string(),
+            estimated_start: times.as_ref().map(|t| t.start),
+            estimated_end: times.as_ref().map(|t| t.end),
             body,
         };
         println!(
@@ -485,11 +640,20 @@ fn show_tms_maintenance(agent: &ureq::Agent, json: bool, discord: bool) -> Resul
         );
     } else {
         eprintln!(
-            "Found maintenance notice: #{} — {}",
-            main_item.bulletin_id, main_item.title
+            "Found maintenance notice: #{} — {} [{}]",
+            main_item.bulletin_id, main_item.title, mtype
         );
         println!("=== {} ===", detail.title);
         println!("Published: {}", detail.start_date);
+        if let Some(ref t) = times {
+            let fmt = |ts: i64| -> String {
+                let cst = chrono::FixedOffset::east_opt(8 * 3600).unwrap();
+                chrono::DateTime::from_timestamp(ts, 0)
+                    .map(|dt| dt.with_timezone(&cst).format("%Y-%m-%d %H:%M").to_string())
+                    .unwrap_or_else(|| ts.to_string())
+            };
+            println!("Estimated: {} ~ {}", fmt(t.start), fmt(t.end));
+        }
         println!();
         if !body.is_empty() {
             println!("{body}");
