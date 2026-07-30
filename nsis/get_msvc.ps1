@@ -133,10 +133,15 @@ function Main {
         $downloads += @{ Name = "vcredist_v14_arm64.exe"; Url = "https://aka.ms/vc14/vc_redist.arm64.exe"; Year = "v14" }
     }
 
+    $downloads += @{ Name = "directx_redist.exe"; Url = "https://download.microsoft.com/download/8/4/a/84a35bf1-dafe-4ae8-82af-ad2ae20b6b14/directx_jun2010_redist.exe" }
+
     $ariaListPath = Join-Path $tempDir "fileList.txt"
 
     # --- Download everything up front ---
     foreach ($item in $downloads) {
+        if ($item.Name -Match "x64" -and $procArch -ne "AMD64" -and $buildVersion -lt 21390) {
+            continue
+        }
         $line = "$($item.Url)`n  out=$($item.Name)"
         Add-Content -Path $ariaListPath -Value $line
     }
@@ -197,8 +202,16 @@ function Main {
         }
     }
 
+    # --- Install DirectX ---
+    Write-Host "Installing DirectX..."
+    Start-Process -FilePath "$tempDir\directx_redist.exe" -ArgumentList "/Q /T:`"$tempDir`"" -Wait
+    Start-Process -FilePath "$tempDir\DXSETUP.exe" -ArgumentList "/silent" -Wait
+
     # --- Install VC++ Redistributables ---
     foreach ($item in $downloads | Where-Object { $_.Name -like "vcredist*" }) {
+        if ($item.Name -Match "x64" -and $procArch -ne "AMD64" -and $buildVersion -lt 21390) {
+            continue
+        }
         $exePath = Join-Path $tempDir $item.Name
         if (-not (Test-Path -Path $exePath)) {
             continue
