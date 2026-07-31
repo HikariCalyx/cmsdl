@@ -111,6 +111,8 @@ pub(crate) struct CmsConfig {
     pub last_client_version_file: &'static str,
     /// INI section name for the persisted build number (e.g. `"CMS"`, `"CMS_CW"`).
     pub last_client_version_section: &'static str,
+    /// Client data directory name (e.g. `"mxd"`, `"mxdclassic"`).
+    pub data_dir: &'static str,
 }
 
 /// Shared CMS configuration (mainland region).
@@ -124,35 +126,36 @@ pub(crate) const CMS_CONFIG: CmsConfig = CmsConfig {
     initial_client_list_url: INITIAL_CLIENT_LIST_URL,
     last_client_version_file: LAST_CLIENT_VERSION_FILE,
     last_client_version_section: "CMS",
+    data_dir: "mxd",
 };
 
 // ── Thread-local config override ────────────────────────────────────────────
 
-use std::cell::RefCell;
+use std::sync::RwLock;
 
-thread_local! {
-    static CONFIG_OVERRIDE: RefCell<Option<CmsConfig>> = const { RefCell::new(None) };
-}
+static CONFIG_OVERRIDE: RwLock<Option<CmsConfig>> = RwLock::new(None);
 
 /// Return the currently active [`CmsConfig`], falling back to [`CMS_CONFIG`].
 fn config() -> CmsConfig {
-    CONFIG_OVERRIDE.with(|c| c.borrow().clone()).unwrap_or(CMS_CONFIG)
+    CONFIG_OVERRIDE
+        .read()
+        .unwrap()
+        .clone()
+        .unwrap_or(CMS_CONFIG)
 }
 
 /// Temporarily override the active config for the duration of `f`.
 ///
+/// Uses a global [`RwLock`] so spawned worker threads also see the override.
 /// Used by [`crate::cms_cw`] to switch all URL-dependent functions to
 /// CW endpoints without duplicating their implementations.
 pub(crate) fn with_config<T>(cfg: CmsConfig, f: impl FnOnce() -> T) -> T {
-    struct Guard;
-    impl Drop for Guard {
-        fn drop(&mut self) {
-            CONFIG_OVERRIDE.with(|c| *c.borrow_mut() = None);
-        }
-    }
-    CONFIG_OVERRIDE.with(|c| *c.borrow_mut() = Some(cfg));
-    let _guard = Guard;
-    f()
+    *CONFIG_OVERRIDE.write().unwrap() = Some(cfg);
+    // No guard needed — `f()` runs synchronously and any scoped threads it
+    // spawns will join before `f()` returns.  Clear on return.
+    let result = f();
+    *CONFIG_OVERRIDE.write().unwrap() = None;
+    result
 }
 
 /// Base64-encoded DER (SubjectPublicKeyInfo) of the RSA public key used to
@@ -461,7 +464,7 @@ pub fn get_client_file_list_full(allow_insecure: bool, proxy: Option<&str>, buil
     // parsing it to obtain the display version view (e.g. "V226.1").
     info.local_version_view = if entries
         .iter()
-        .any(|(p, _)| p.eq_ignore_ascii_case("mxd/LocalVersion3.xml"))
+        .any(|(p, _)| p.eq_ignore_ascii_case(&format!("{}/LocalVersion3.xml", config().data_dir)))
     {
         fetch_local_version_xml_view(&agent, &challenge_code, &info.version, &contents)
     } else {
@@ -1191,25 +1194,27 @@ pub fn download_client(
     // Purge stray files in mxd/Data/ before downloading (full manifest, pre-filter).
     if purge_wz_files {
         crate::progress::dl_purging();
-        purge_junk_dirs(&target_dir.join("mxd"))?;
+        purge_junk_dirs(&target_dir.join(config().data_dir))?;
         purge_data_files(target_dir, &entries)?;
     }
 
     // When `--download-wz-only` is set, keep only the data files (paths under
-    // `mxd/Data`). The published paths use backslashes, but `file_location`
+    // `<data_dir>/Data`). The published paths use backslashes, but `file_location`
     // is already normalized to forward slashes.
     let entries: Vec<FileEntry> = if wz_only {
+        let dd = config().data_dir;
         let kept: Vec<FileEntry> = entries
             .into_iter()
             .filter(|e| {
                 e.file_location
                     .to_ascii_lowercase()
-                    .starts_with("mxd/data/")
+                    .starts_with(&format!("{}/data/", dd.to_ascii_lowercase()))
             })
             .collect();
         println!(
-            "Limiting download to {} WZ file(s) under mxd/Data.",
-            kept.len()
+            "Limiting download to {} WZ file(s) under {}/Data.",
+            kept.len(),
+            dd
         );
         kept
     } else {
@@ -1381,7 +1386,7 @@ pub fn download_client(
     // If LocalVersion3.xml is already part of the downloaded file list, skip
     // writing our own copy to avoid overwriting the server-provided one.
     let has_local_version_xml = entries.iter().any(|e| {
-        e.file_location == "mxd/" && e.file_name.eq_ignore_ascii_case("LocalVersion3.xml")
+        e.file_location == format!("{}/", config().data_dir) && e.file_name.eq_ignore_ascii_case("LocalVersion3.xml")
     });
 
     // Write a matching LocalVersion3.xml for the launcher (unless the server
@@ -1416,7 +1421,8 @@ fn write_local_version_xml(target_dir: &Path, version: &str, version_view: &str,
     if !write_xml {
         return Ok(());
     }
-    let mxd_dir = target_dir.join("mxd");
+    let dd = config().data_dir;
+    let mxd_dir = target_dir.join(dd);
     std::fs::create_dir_all(&mxd_dir)
         .with_context(|| format!("failed to create directory {}", mxd_dir.display()))?;
 
@@ -1655,7 +1661,8 @@ fn get_shell_folder(name: &str) -> Option<String> {
 /// Sometimes, these directories are left behind after patching, 
 /// and they can be safely deleted.
 pub(crate) fn purge_junk_dirs(target_dir: &Path) -> Result<()> {
-    let protected: &[&str] = &["mxd", "Data", "patchdata"];
+    let dd = config().data_dir;
+    let protected: &[&str] = &[dd, "Data", "patchdata"];
 
     let entries: Vec<_> = match std::fs::read_dir(target_dir) {
         Ok(iter) => iter.filter_map(|e| e.ok()).collect(),
@@ -1713,16 +1720,18 @@ fn is_junk_83_dir(name: &str) -> bool {
 /// list. Only the directory `<target_dir>/mxd/Data/` is examined; files outside
 /// it are left untouched.
 fn purge_data_files(target_dir: &Path, entries: &[FileEntry]) -> Result<()> {
-    let data_dir = target_dir.join("mxd").join("Data");
+    let dd = config().data_dir;
+    let data_dir = target_dir.join(dd).join("Data");
     if !data_dir.is_dir() {
         return Ok(());
     }
 
     // Build the set of expected paths (forward slashes, relative to target_dir).
+    let prefix = format!("{}/data/", dd.to_ascii_lowercase());
     let expected: std::collections::HashSet<String> = entries
         .iter()
         .map(|e| format!("{}{}", e.file_location, e.file_name))
-        .filter(|p| p.to_ascii_lowercase().starts_with("mxd/data/"))
+        .filter(|p| p.to_ascii_lowercase().starts_with(&prefix))
         .collect();
 
     let mut deleted = 0usize;
@@ -1750,6 +1759,7 @@ fn purge_dir_recursive(
     data_dir: &Path,
     deleted: &mut usize,
 ) -> Result<()> {
+    let dd = config().data_dir;
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
@@ -1765,7 +1775,7 @@ fn purge_dir_recursive(
             if rel.to_ascii_lowercase().ends_with(".cmsdl") {
                 continue;
             }
-            let manifest_key = format!("mxd/Data/{rel}");
+            let manifest_key = format!("{}/Data/{rel}", dd);
             if !expected.contains(&manifest_key) {
                 std::fs::remove_file(&path).with_context(|| {
                     format!("failed to delete stray file {}", path.display())
@@ -1808,7 +1818,7 @@ pub fn purge_wz_files_after_patch(
     let _header = lines.next().context("client file list is empty")?;
     let entries: Vec<FileEntry> = lines.map(parse_entry).collect::<Result<_>>()?;
 
-    purge_junk_dirs(&target_dir.join("mxd"))?;
+    purge_junk_dirs(&target_dir.join(config().data_dir))?;
     purge_data_files(target_dir, &entries)
 }
 

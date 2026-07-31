@@ -432,10 +432,15 @@ pub fn patch_list(
 ) -> Result<()> {
     match region {
         Region::Cms | Region::CmsCw => {
+            let is_cw = region == Region::CmsCw;
             if !json {
                 println!("cmsdl {VERSION}: listing patches for region '{region}'.");
             }
-            let data = cms::get_patch_data(allow_insecure, proxy)?;
+            let data = if is_cw {
+                cms_cw::get_patch_data(allow_insecure, proxy)?
+            } else {
+                cms::get_patch_data(allow_insecure, proxy)?
+            };
             let patches = &data.packages;
 
             if patches.is_empty() {
@@ -448,25 +453,29 @@ pub fn patch_list(
             }
 
             let agent = crate::net::agent(allow_insecure, proxy);
-            let challenge =
-                cms::get_challenge_key(&agent).context("failed to obtain challenge code")?;
+            let challenge = if is_cw {
+                cms_cw::get_challenge_key(&agent).context("failed to obtain challenge code")?
+            } else {
+                cms::get_challenge_key(&agent).context("failed to obtain challenge code")?
+            };
+
+            let get_size = |p: &cms::PatchPackage| -> Option<u64> {
+                if is_cw {
+                    cms_cw::get_patch_total_size(&agent, &challenge, &data.base_url, &p.file_list_url).ok()
+                } else {
+                    cms::get_patch_total_size(&agent, &challenge, &data.base_url, &p.file_list_url).ok()
+                }
+            };
 
             if json {
                 let list: Vec<serde_json::Value> = patches
                     .iter()
                     .map(|p| {
-                        let size = cms::get_patch_total_size(
-                            &agent,
-                            &challenge,
-                            &data.base_url,
-                            &p.file_list_url,
-                        )
-                        .ok();
                         serde_json::json!({
                             "from": p.from,
                             "to": p.to,
                             "version_view": p.version_view,
-                            "size": size,
+                            "size": get_size(p),
                         })
                     })
                     .collect();
@@ -485,14 +494,9 @@ pub fn patch_list(
                     "----", "--", "----------", "------------"
                 );
                 for p in patches {
-                    let size_str = cms::get_patch_total_size(
-                        &agent,
-                        &challenge,
-                        &data.base_url,
-                        &p.file_list_url,
-                    )
-                    .map(|s| crate::progress::format_size(s))
-                    .unwrap_or_else(|_| "?".to_string());
+                    let size_str = get_size(p)
+                        .map(|s| crate::progress::format_size(s))
+                        .unwrap_or_else(|| "?".to_string());
                     println!(
                         "{:<12}  {:<12}  {:<12}  {}",
                         p.from, p.to, size_str, p.version_view
@@ -503,9 +507,7 @@ pub fn patch_list(
             }
         }
         Region::Tms => {
-            println!("TMS patches are discovered dynamically by probing the CDN.");
-            println!("Use `cmsdl tms --check` to see the latest published version,");
-            println!("then `cmsdl tms --patch latest <dir>` to update a client.");
+            bail!("region '{region}' does not publish patch metadata");
         }
         Region::Manual => {
             bail!("--patch is not supported for 'manual'");
@@ -519,7 +521,8 @@ pub fn patch_list(
 ///
 /// When `launch_after` is set, the client is launched once patching completes
 /// successfully. When `lrhook` is also set, the client is launched through
-/// Locale Remulator if its files are present.
+/// Locale Remulator if its files are present. Only the CMS region supports
+/// patching.
 pub fn patch_apply(
     region: Region,
     version: &str,
@@ -541,7 +544,7 @@ pub fn patch_apply(
             patch_apply_cms_cw(target, version, launch_after, allow_insecure, proxy, purge_wz_files, no_gui, close_after_finishing, keep_old_wz_files, region)?;
         }
         Region::Tms => {
-            patch_apply_tms(target, version, allow_insecure, proxy, purge_wz_files, region)?;
+            bail!("region '{region}' does not support patching");
         }
         Region::Manual => {
             bail!("--patch is not supported for 'manual'");
@@ -648,54 +651,11 @@ fn patch_apply_cms_cw(
         "cmsdl {VERSION}: patching region '{region}' client at '{}' up to '{version}'.",
         target.display()
     );
-    crate::cms_patch::apply_patches(target, version, allow_insecure, proxy, purge_wz_files, keep_old_wz_files)?;
+    crate::cms::with_config(cms_cw::CW_CONFIG, || {
+        crate::cms_patch::apply_patches(target, version, allow_insecure, proxy, purge_wz_files, keep_old_wz_files)
+    })?;
     if launch_after {
         cms_cw::launch_client(target)?;
-    }
-    Ok(())
-}
-
-/// Shared patch-apply logic for the TMS region.
-fn patch_apply_tms(
-    target: &Path,
-    version: &str,
-    allow_insecure: bool,
-    proxy: Option<&str>,
-    purge_wz_files: bool,
-    region: Region,
-) -> Result<()> {
-    let sentinel = target.join(format!(".incomplete_{region}"));
-    let repair_sentinel = target.join("Data/.incomplete");
-    if sentinel.exists() || repair_sentinel.exists() {
-        let which = if repair_sentinel.exists() { &repair_sentinel } else { &sentinel };
-        println!(
-            "cmsdl {VERSION}: incomplete marker detected at '{}'; \
-             performing a full client download instead of patching.",
-            which.display()
-        );
-        download(Region::Tms, target, false, None, allow_insecure, proxy, None, false, true, false, None)?;
-        return Ok(());
-    }
-
-    // If the version string looks like a file path (contains '.', '/', or '\'),
-    // treat it as a pre-downloaded .patch file.
-    if version.contains('.') || version.contains('/') || version.contains('\\') {
-        let patch_path = Path::new(version);
-        if !patch_path.exists() {
-            bail!("patch file '{}' not found", patch_path.display());
-        }
-        println!(
-            "cmsdl {VERSION}: applying local patch '{}' to region '{region}' client at '{}'.",
-            patch_path.display(),
-            target.display()
-        );
-        crate::tms_patch::apply_patch_file(target, patch_path, purge_wz_files)?;
-    } else {
-        println!(
-            "cmsdl {VERSION}: patching region '{region}' client at '{}' to '{version}'.",
-            target.display()
-        );
-        crate::tms_patch::apply_patches(target, version, allow_insecure, proxy, purge_wz_files)?;
     }
     Ok(())
 }

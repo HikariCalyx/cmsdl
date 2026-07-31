@@ -15,14 +15,14 @@ pub(crate) const CTRL_XML_URL: &str = "https://downloader.dorado.sdo.com/v3launc
 /// URL of the CMS CW patch metadata file (`ver2.dat`).
 // TODO: update with the actual CMS CW ver2.dat URL.
 pub(crate) const PATCH_DATA_URL: &str =
-    "https://v3launcher.jijiagames.com/v3launcher/build/ver2data/5/8848/-1/ver2.dat";
+    "https://v3launcher.jijiagames.com/v3launcher/build/ver2data/791001093/8859/-1/ver2.dat";
 
 /// Host serving the signed CMS CW client download files.
 pub(crate) const DOWNLOAD_HOST: &str = "https://mxdcclient.jijiagames.com";
 
 /// Portion of the client-file-list path that precedes the build number.
 // TODO: update with the actual CMS CW path prefix.
-pub(crate) const CLIENT_FILE_LIST_PATH_PREFIX: &str = "/v3client/build/5/8848/apppc/";
+pub(crate) const CLIENT_FILE_LIST_PATH_PREFIX: &str = "/v3client/build/791001093/8859/apppc/";
 
 /// Portion of the client-file-list path that follows the build number.
 pub(crate) const CLIENT_FILE_LIST_PATH_SUFFIX: &str = "/client_all_files_list.dat";
@@ -34,7 +34,7 @@ pub(crate) const DEFAULT_CLIENT_NUMBER: u32 = 1;
 /// Unsigned launcher file list whose header records the current build number.
 // TODO: update with the actual CMS CW initial client list URL.
 pub(crate) const INITIAL_CLIENT_LIST_URL: &str =
-    "https://v3launcher.jijiagames.com/v3launcher/build/5/8848/client-all-files-list/client_all_files_list.dat";
+    "https://v3launcher.jijiagames.com/v3launcher/build/791001093/8859/client-all-files-list/client_all_files_list.dat";
 
 // ── Region config ───────────────────────────────────────────────────────────
 
@@ -50,6 +50,7 @@ pub(crate) const CW_CONFIG: crate::cms::CmsConfig = crate::cms::CmsConfig {
     initial_client_list_url: INITIAL_CLIENT_LIST_URL,
     last_client_version_file: "last_client_version.ini",
     last_client_version_section: "CMS_CW",
+    data_dir: "mxdclassic",
 };
 
 // ── Shared-operation wrappers ───────────────────────────────────────────────
@@ -81,6 +82,27 @@ pub fn list_builds_since(allow_insecure: bool, proxy: Option<&str>, since: u32) 
 pub fn download_client(target_dir: &Path, wz_only: bool, filter: Option<&FileFilter>, allow_insecure: bool, proxy: Option<&str>, build: Option<u32>, purge_wz_files: bool) -> anyhow::Result<()> {
     crate::cms::with_config(CW_CONFIG, || {
         crate::cms::download_client(target_dir, wz_only, filter, allow_insecure, proxy, build, purge_wz_files)
+    })
+}
+
+/// Fetch CMS CW patch metadata.
+pub fn get_patch_data(allow_insecure: bool, proxy: Option<&str>) -> anyhow::Result<crate::cms::PatchData> {
+    crate::cms::with_config(CW_CONFIG, || {
+        crate::cms::get_patch_data(allow_insecure, proxy)
+    })
+}
+
+/// Fetch challenge key from CW control file.
+pub fn get_challenge_key(agent: &ureq::Agent) -> anyhow::Result<String> {
+    crate::cms::with_config(CW_CONFIG, || {
+        crate::cms::get_challenge_key(agent)
+    })
+}
+
+/// Fetch a CW patch's total size.
+pub fn get_patch_total_size(agent: &ureq::Agent, challenge_code: &str, base_url: &str, file_list_url: &str) -> anyhow::Result<u64> {
+    crate::cms::with_config(CW_CONFIG, || {
+        crate::cms::get_patch_total_size(agent, challenge_code, base_url, file_list_url)
     })
 }
 
@@ -166,7 +188,7 @@ pub fn locale_remulator_available(target_dir: &Path) -> bool {
 
 // ── Launch ───────────────────────────────────────────────────────────────────
 
-/// Launch `<target_dir>/mxdc/Maplestory_Classic.exe --sqLauncher`.
+/// Launch `<target_dir>/mxdclassic/Maplestory_Classic.exe --sqLauncher`.
 ///
 /// The process is spawned without waiting, so cmsdl can exit while the game
 /// keeps running.  Locale Remulator (`--lrhook`) is not supported for CMS CW.
@@ -193,7 +215,7 @@ pub fn launch_client(target_dir: &Path) -> Result<()> {
         v
     }
 
-    let mxdc = target_dir.join("mxdc");
+    let mxdc = target_dir.join("mxdclassic");
     let exe = mxdc.join("Maplestory_Classic.exe");
     if !exe.exists() {
         bail!("cannot launch: {} not found", exe.display());
@@ -221,7 +243,7 @@ pub fn launch_client(target_dir: &Path) -> Result<()> {
 
 #[cfg(not(windows))]
 pub fn launch_client(target_dir: &Path) -> Result<()> {
-    let mxdc = target_dir.join("mxdc");
+    let mxdc = target_dir.join("mxdclassic");
     let exe = mxdc.join("Maplestory_Classic.exe");
     if !exe.exists() {
         bail!("cannot launch: {} not found", exe.display());

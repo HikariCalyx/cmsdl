@@ -292,7 +292,7 @@ pub fn run_gui_patch(
     // from a terminal.)
     let data_dir = match region {
         Region::Cms => "mxd",
-        Region::CmsCw => "mxdc",
+        Region::CmsCw => "mxdclassic",
         _ => "mxd",
     };
     if !target.join(data_dir).is_dir() {
