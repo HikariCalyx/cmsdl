@@ -1746,19 +1746,10 @@ fn download_and_verify_segmented(
         }
     }
 
-    let pb = if crate::progress::active() {
-        ProgressBar::hidden()
-    } else {
-        ProgressBar::new(expected_size)
-    };
-    pb.set_style(
-        ProgressStyle::with_template(
-            "    [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({binary_bytes_per_sec}, ETA {eta})",
-        )
-        .unwrap()
-        .progress_chars("=>-"),
-    );
-    pb.enable_steady_tick(Duration::from_millis(120));
+    // Use a hidden progress bar — per-file bars in a parallel repair loop
+    // would interleave and garble the console output.  The plog! messages
+    // above already identify each file being repaired.
+    let pb = ProgressBar::hidden();
 
     let segments = effective_segments(expected_size, SEGMENTS_PER_FILE);
 

@@ -15,7 +15,7 @@ Unicode true
 !include "nsDialogs.nsh"
 
 ; Version
-!define VERSION "6.281.1.1"
+!define VERSION "6.281.1.2"
 
 ; Product Info (English)
 !define PRODUCT_NAME "MapleStory TW"
@@ -40,10 +40,11 @@ Unicode true
 ; Variables
 ; ============================================================================
 
-; Operation mode: "1" = Install (full download), "2" = Update CMSDL, "3" = MSVC
+; Operation mode: "1" = Install (full download), "2" = Update (patch), "3" = Update CMSDL, "4" = MSVC
 Var InstallMode
 Var Dialog
 Var RadioInstall
+Var RadioUpdate
 Var RadioUpdateCMSDL
 Var RadioMSVC
 Var CheckConsole
@@ -210,15 +211,17 @@ Function ModeSelectPage
 
   ${NSD_CreateRadioButton} 10u 10u 95% 12u "$(STR_MODE_INSTALL)"
   Pop $RadioInstall
-  ${NSD_CreateRadioButton} 10u 28u 95% 12u "$(STR_MODE_UPDATE_CMSDL)"
+  ${NSD_CreateRadioButton} 10u 28u 95% 12u "$(STR_MODE_UPDATE)"
+  Pop $RadioUpdate
+  ${NSD_CreateRadioButton} 10u 46u 95% 12u "$(STR_MODE_UPDATE_CMSDL)"
   Pop $RadioUpdateCMSDL
-  ${NSD_CreateRadioButton} 10u 46u 95% 12u "$(STR_MODE_MSVC)"
+  ${NSD_CreateRadioButton} 10u 64u 95% 12u "$(STR_MODE_MSVC)"
   Pop $RadioMSVC
 
   ; Console-mode opt-in checkbox (always available). When checked, the created
   ; shortcut and the post-install launch pass --no-gui so the patcher runs in
   ; the console instead of the graphical window.
-  ${NSD_CreateCheckbox} 10u 76u 95% 12u "$(STR_USE_CONSOLE_TYPE)"
+  ${NSD_CreateCheckbox} 10u 94u 95% 12u "$(STR_USE_CONSOLE_TYPE)"
   Pop $CheckConsole
   ; Restore previous state if the user went back.
   StrCmp $NoGuiFlag " --no-gui" 0 +2
@@ -239,9 +242,13 @@ Function ModeSelectPage
     ${NSD_Check} $CheckSystemProxy
 
   ; Restore previous selection
-  StrCmp $InstallMode "2" selUpdateCMSDL
-  StrCmp $InstallMode "3" selMSVC
+  StrCmp $InstallMode "2" selUpdate
+  StrCmp $InstallMode "3" selUpdateCMSDL
+  StrCmp $InstallMode "4" selMSVC
     ${NSD_Check} $RadioInstall
+    Goto modeShow
+  selUpdate:
+    ${NSD_Check} $RadioUpdate
     Goto modeShow
   selUpdateCMSDL:
     ${NSD_Check} $RadioUpdateCMSDL
@@ -255,17 +262,22 @@ Function ModeSelectPage
 FunctionEnd
 
 Function ModeSelectPageLeave
+  ${NSD_GetState} $RadioUpdate $0
+  StrCmp $0 "1" setUpdate
   ${NSD_GetState} $RadioUpdateCMSDL $0
   StrCmp $0 "1" setUpdateCMSDL
   ${NSD_GetState} $RadioMSVC $0
   StrCmp $0 "1" setMSVC
     StrCpy $InstallMode "1"
     Goto leaveDone
-  setUpdateCMSDL:
+  setUpdate:
     StrCpy $InstallMode "2"
     Goto leaveDone
-  setMSVC:
+  setUpdateCMSDL:
     StrCpy $InstallMode "3"
+    Goto leaveDone
+  setMSVC:
+    StrCpy $InstallMode "4"
   leaveDone:
     ; Console-mode checkbox: set the --no-gui flag when checked. In GUI mode
     ; also request auto-close after patching; omit it when --no-gui is set.
@@ -299,6 +311,10 @@ FunctionEnd
 Function DirectoryPagePre
   StrCmp $InstallMode "4" 0 +2
     Abort
+  StrCmp $InstallMode "3" 0 +2
+    Abort
+  StrCmp $InstallMode "2" 0 +2
+    Abort
 FunctionEnd
 
 ; ============================================================================
@@ -331,8 +347,9 @@ Section "Install"
   SetOutPath "$INSTDIR"
 
   ; Branch on operation mode
-  StrCmp $InstallMode "2" modeUpdateCMSDL
-  StrCmp $InstallMode "3" modeMSVC
+  StrCmp $InstallMode "2" modeUpdate
+  StrCmp $InstallMode "3" modeUpdateCMSDL
+  StrCmp $InstallMode "4" modeMSVC
   Goto modeInstall
 
   ; ----------------------------------------------------------------------
@@ -371,6 +388,27 @@ Section "Install"
     checkDownloadResult:
     StrCmp $0 "0" makeShortcuts
       MessageBox MB_ICONSTOP "$(STR_DOWNLOAD_FAILED)"
+      Abort
+
+  ; ----------------------------------------------------------------------
+  ; UPDATE (PATCH) MODE
+  ; ----------------------------------------------------------------------
+  modeUpdate:
+    ; Extract cmsdl.exe. Do NOT write registry or uninstaller — patching
+    ; only updates the existing game installation.
+    File "..\target\release\cmsdl.exe"
+
+    ; Warn if the connection is metered.
+    ExecWait '"$INSTDIR\cmsdl.exe" is_metered' $0
+    StrCmp $0 "1" 0 +3
+      MessageBox MB_YESNO|MB_ICONEXCLAMATION "$(STR_METERED_WARNING)" IDYES +2
+      Abort
+
+    ; Execute patch command.
+    DetailPrint "$(STR_PATCHING)"
+    ExecWait '"$INSTDIR\cmsdl.exe" tms --patch latest "$INSTDIR" --purge-wz-files$NoGuiFlag$CloseFlag$ProxyFlag' $0
+    StrCmp $0 "0" sectionDone
+      MessageBox MB_ICONSTOP "$(STR_PATCH_FAILED)"
       Abort
 
   ; ----------------------------------------------------------------------
@@ -422,6 +460,7 @@ SectionEnd
 Function .onInstSuccess
   StrCmp $InstallMode "2" done
   StrCmp $InstallMode "3" done
+  StrCmp $InstallMode "4" done
   MessageBox MB_YESNO|MB_ICONQUESTION "$(STR_LAUNCH_PROMPT)" /SD IDYES IDNO done
   ExecShell "open" "$INSTDIR\MapleStory.exe"
   done:
