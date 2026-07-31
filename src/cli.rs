@@ -323,12 +323,6 @@ impl Cli {
             }
             Action::CreateShortcut(sanitize_path(path))
         } else if let Some(patch) = &self.patch {
-            if self.region == Region::Tms {
-                anyhow::bail!(
-                    "--patch is not supported for region 'tms'; \
-                     incremental patching is only available for 'cms' (or 'cms_cw')"
-                );
-            }
             if patch.eq_ignore_ascii_case("list") {
                 Action::Patch(PatchAction::List)
             } else {

@@ -503,7 +503,9 @@ pub fn patch_list(
             }
         }
         Region::Tms => {
-            bail!("region '{region}' does not publish patch metadata");
+            println!("TMS patches are discovered dynamically by probing the CDN.");
+            println!("Use `cmsdl tms --check` to see the latest published version,");
+            println!("then `cmsdl tms --patch latest <dir>` to update a client.");
         }
         Region::Manual => {
             bail!("--patch is not supported for 'manual'");
