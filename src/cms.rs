@@ -113,6 +113,8 @@ pub(crate) struct CmsConfig {
     pub last_client_version_section: &'static str,
     /// Client data directory name (e.g. `"mxd"`, `"mxdclassic"`).
     pub data_dir: &'static str,
+    /// Product ID used in the obfuscated file name (e.g. `"5"`, `"791001093"`).
+    pub product_id: &'static str,
 }
 
 /// Shared CMS configuration (mainland region).
@@ -127,6 +129,7 @@ pub(crate) const CMS_CONFIG: CmsConfig = CmsConfig {
     last_client_version_file: LAST_CLIENT_VERSION_FILE,
     last_client_version_section: "CMS",
     data_dir: "mxd",
+    product_id: "5",
 };
 
 // ── Thread-local config override ────────────────────────────────────────────
@@ -1066,9 +1069,9 @@ fn parse_header_location(header: &str) -> Result<(String, String)> {
 
 /// Compute the obfuscated, server-side file name for an entry.
 ///
-/// It is the uppercase MD5 of `5_<version>_<raw_path>` encoded as UTF-16LE.
+/// It is the uppercase MD5 of `<product_id>_<version>_<raw_path>` encoded as UTF-16LE.
 fn obfuscated_file_name(version: &str, raw_path: &str) -> String {
-    md5_utf16le_upper(&format!("5_{version}_{raw_path}"))
+    md5_utf16le_upper(&format!("{}_{version}_{raw_path}", config().product_id))
 }
 
 /// Compute the uppercase hex MD5 of `input` encoded as UTF-16LE (no BOM).

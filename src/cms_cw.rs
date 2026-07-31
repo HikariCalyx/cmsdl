@@ -51,6 +51,7 @@ pub(crate) const CW_CONFIG: crate::cms::CmsConfig = crate::cms::CmsConfig {
     last_client_version_file: "last_client_version.ini",
     last_client_version_section: "CMS_CW",
     data_dir: "mxdclassic",
+    product_id: "791001093",
 };
 
 // ── Shared-operation wrappers ───────────────────────────────────────────────
