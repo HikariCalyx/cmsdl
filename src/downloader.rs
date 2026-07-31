@@ -675,11 +675,26 @@ fn patch_apply_tms(
         return Ok(());
     }
 
-    println!(
-        "cmsdl {VERSION}: patching region '{region}' client at '{}' to '{version}'.",
-        target.display()
-    );
-    crate::tms_patch::apply_patches(target, version, allow_insecure, proxy, purge_wz_files)?;
+    // If the version string looks like a file path (contains '.', '/', or '\'),
+    // treat it as a pre-downloaded .patch file.
+    if version.contains('.') || version.contains('/') || version.contains('\\') {
+        let patch_path = Path::new(version);
+        if !patch_path.exists() {
+            bail!("patch file '{}' not found", patch_path.display());
+        }
+        println!(
+            "cmsdl {VERSION}: applying local patch '{}' to region '{region}' client at '{}'.",
+            patch_path.display(),
+            target.display()
+        );
+        crate::tms_patch::apply_patch_file(target, patch_path, purge_wz_files)?;
+    } else {
+        println!(
+            "cmsdl {VERSION}: patching region '{region}' client at '{}' to '{version}'.",
+            target.display()
+        );
+        crate::tms_patch::apply_patches(target, version, allow_insecure, proxy, purge_wz_files)?;
+    }
     Ok(())
 }
 
