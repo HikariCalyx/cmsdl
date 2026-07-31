@@ -167,14 +167,17 @@ impl Reporter for GuiReporter {
         self.log(&format!("[gui-debug] Reporter::installing({}, {})", current, target));
         // An update was found: create/append the log file now.
         self.open_log();
-        self.set_label2(tr("gui-patcher-installing-update-from", &[current, target, "0 B/s"]));
+        // TMS versions are bare numbers (e.g. "280") — prepend "V".
+        let cur_display = if self.is_tms { format!("V{current}") } else { current.to_string() };
+        let tgt_display = if self.is_tms { format!("V{target}") } else { target.to_string() };
+        self.set_label2(tr("gui-patcher-installing-update-from", &[&cur_display, &tgt_display, "0 B/s"]));
         self.set_label3(String::new());
         self.set_progress(0.0);
-        // Store version info for TMS download label and for label2 updates.
+        // Store display versions for the download label and label2 updates.
         {
             let mut dl = self.dl.lock().unwrap();
-            dl.cur_ver = current.to_string();
-            dl.tgt_ver = target.to_string();
+            dl.cur_ver = cur_display;
+            dl.tgt_ver = tgt_display;
         }
     }
 

@@ -696,6 +696,7 @@ fn patch_apply_tms(
     region: Region,
     maint_id: Option<u64>,
 ) -> Result<()> {
+    // Check for an interrupted full-client download first.
     let sentinel = target.join(format!(".incomplete_{region}"));
     if sentinel.exists() {
         println!(
@@ -703,6 +704,24 @@ fn patch_apply_tms(
              performing a full client download instead of patching.",
             sentinel.display()
         );
+        // Clean up any leftover repair sentinel too.
+        let _ = std::fs::remove_file(target.join("Data/.incomplete"));
+        download(Region::Tms, target, false, None, allow_insecure, proxy, None, false, true, false, None)?;
+        return Ok(());
+    }
+
+    // Check for an interrupted repair (patch was applied but repair didn't
+    // finish).  A leftover Data/.incomplete means the Data directory is in an
+    // inconsistent state — download the full client from scratch.
+    let repair_sentinel = target.join("Data/.incomplete");
+    if repair_sentinel.exists() {
+        println!(
+            "cmsdl {VERSION}: incomplete repair marker detected at '{}'; \
+             performing a full client download instead of patching.",
+            repair_sentinel.display()
+        );
+        // Remove the sentinel now so the full download won't trip over it.
+        let _ = std::fs::remove_file(&repair_sentinel);
         download(Region::Tms, target, false, None, allow_insecure, proxy, None, false, true, false, None)?;
         return Ok(());
     }
