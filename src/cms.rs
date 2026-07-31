@@ -115,6 +115,8 @@ pub(crate) struct CmsConfig {
     pub data_dir: &'static str,
     /// Product ID used in the obfuscated file name (e.g. `"5"`, `"791001093"`).
     pub product_id: &'static str,
+    /// Zone tag used in `LocalVersion3.xml` (e.g. `"zone5_8848_v3"`, `"zone791001093_8859_v3"`).
+    pub zone_tag: &'static str,
 }
 
 /// Shared CMS configuration (mainland region).
@@ -130,6 +132,7 @@ pub(crate) const CMS_CONFIG: CmsConfig = CmsConfig {
     last_client_version_section: "CMS",
     data_dir: "mxd",
     product_id: "5",
+    zone_tag: "zone5_8848_v3",
 };
 
 // ── Thread-local config override ────────────────────────────────────────────
@@ -646,9 +649,10 @@ fn fetch_local_version_xml_view(
     let header = contents.lines().find(|l| !l.trim().is_empty())?;
     let (domain, base_path) = parse_header_location(header).ok()?;
 
-    let raw_path = "mxd\\LocalVersion3.xml";
-    let obf_name = obfuscated_file_name(version, raw_path);
-    let path = format!("{base_path}/mxd/{obf_name}");
+    let dd = config().data_dir;
+    let raw_path = format!("{dd}\\LocalVersion3.xml");
+    let obf_name = obfuscated_file_name(version, &raw_path);
+    let path = format!("{base_path}/{dd}/{obf_name}");
     let utc8_time = get_current_utc8_time();
     let url = build_signed_url_for_host(&domain, challenge_code, utc8_time, &path);
 
@@ -658,9 +662,10 @@ fn fetch_local_version_xml_view(
 
 /// Extract the `view` field from a `LocalVersion3.xml` body.
 fn parse_local_version_xml_view(xml: &str) -> Option<String> {
-    let tag = "<zone5_8848_v3>";
-    let start = xml.find(tag)? + tag.len();
-    let end = xml.find("</zone5_8848_v3>")?;
+    let zone = config().zone_tag;
+    let tag = format!("<{zone}>");
+    let start = xml.find(&tag)? + tag.len();
+    let end = xml.find(&format!("</{zone}>"))?;
     let json: serde_json::Value = serde_json::from_str(&xml[start..end]).ok()?;
     let view = json.get("version")?.get("view")?.as_str()?.to_owned();
     if view.is_empty() { None } else { Some(view) }

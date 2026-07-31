@@ -52,6 +52,7 @@ pub(crate) const CW_CONFIG: crate::cms::CmsConfig = crate::cms::CmsConfig {
     last_client_version_section: "CMS_CW",
     data_dir: "mxdclassic",
     product_id: "791001093",
+    zone_tag: "zone791001093_8859_v3",
 };
 
 // ── Shared-operation wrappers ───────────────────────────────────────────────
@@ -87,6 +88,7 @@ pub fn download_client(target_dir: &Path, wz_only: bool, filter: Option<&FileFil
 }
 
 /// Fetch CMS CW patch metadata.
+#[allow(dead_code)]
 pub fn get_patch_data(allow_insecure: bool, proxy: Option<&str>) -> anyhow::Result<crate::cms::PatchData> {
     crate::cms::with_config(CW_CONFIG, || {
         crate::cms::get_patch_data(allow_insecure, proxy)
@@ -94,6 +96,7 @@ pub fn get_patch_data(allow_insecure: bool, proxy: Option<&str>) -> anyhow::Resu
 }
 
 /// Fetch challenge key from CW control file.
+#[allow(dead_code)]
 pub fn get_challenge_key(agent: &ureq::Agent) -> anyhow::Result<String> {
     crate::cms::with_config(CW_CONFIG, || {
         crate::cms::get_challenge_key(agent)
@@ -101,6 +104,7 @@ pub fn get_challenge_key(agent: &ureq::Agent) -> anyhow::Result<String> {
 }
 
 /// Fetch a CW patch's total size.
+#[allow(dead_code)]
 pub fn get_patch_total_size(agent: &ureq::Agent, challenge_code: &str, base_url: &str, file_list_url: &str) -> anyhow::Result<u64> {
     crate::cms::with_config(CW_CONFIG, || {
         crate::cms::get_patch_total_size(agent, challenge_code, base_url, file_list_url)
