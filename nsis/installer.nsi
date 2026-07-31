@@ -647,9 +647,10 @@ Section "Install"
         Abort
     skipCMSCWDownload:
 
-    ; Only create shortcuts and offer launcher removal when cms is installed.
-    StrCmp $InstallCMS "1" 0 sectionDone
-    Goto makeShortcuts
+    ; Skip shortcuts only if neither variant was installed.
+    StrCmp $InstallCMS "1" makeShortcuts
+    StrCmp $InstallCMSCW "1" makeShortcuts
+    Goto sectionDone
 
   ; ----------------------------------------------------------------------
   ; UPDATE CMSDL MODE
@@ -721,6 +722,15 @@ Section "Install"
   ; ----------------------------------------------------------------------
   makeShortcuts:
     nsExec::ExecToLog '"$INSTDIR\cmsdl.exe" cms --create-shortcut "$INSTDIR"$LrHookFlag$NoGuiFlag'
+    Pop $0
+    StrCmp $0 "0" checkCMSCWShortcut
+      MessageBox MB_ICONSTOP "$(STR_SHORTCUT_FAILED)"
+      Abort
+
+  checkCMSCWShortcut:
+    ; Create shortcuts for the CMS CW (classic) variant as well.
+    StrCmp $InstallCMSCW "1" 0 checkOfficialLauncher
+    nsExec::ExecToLog '"$INSTDIR\cmsdl.exe" cms_cw --create-shortcut "$INSTDIR"$NoGuiFlag'
     Pop $0
     StrCmp $0 "0" checkOfficialLauncher
       MessageBox MB_ICONSTOP "$(STR_SHORTCUT_FAILED)"
