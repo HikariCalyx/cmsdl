@@ -721,6 +721,8 @@ Section "Install"
   ; SHARED: shortcuts
   ; ----------------------------------------------------------------------
   makeShortcuts:
+    ; Create CMS shortcut only when the regular CMS variant was installed.
+    StrCmp $InstallCMS "1" 0 checkCMSCWShortcut
     nsExec::ExecToLog '"$INSTDIR\cmsdl.exe" cms --create-shortcut "$INSTDIR"$LrHookFlag$NoGuiFlag'
     Pop $0
     StrCmp $0 "0" checkCMSCWShortcut
