@@ -395,8 +395,11 @@ FunctionEnd
 ; ============================================================================
 
 Function VariantSelectPage
-  ; Only show this page in install mode; skip otherwise.
-  StrCmp $InstallMode "1" 0 variantSkip
+  ; Show for install and update modes; skip otherwise.
+  StrCmp $InstallMode "1" variantShow
+  StrCmp $InstallMode "2" variantShow
+  Goto variantSkip
+variantShow:
 
   !insertmacro MUI_HEADER_TEXT "$(STR_VARIANT_TITLE)" "$(STR_VARIANT_SUBTITLE)"
 
@@ -499,14 +502,19 @@ Section "Install"
   ; UPDATE MODE
   ; ----------------------------------------------------------------------
   modeUpdate:
-    ; If an mxd directory already exists, migration was already done before.
-    IfFileExists "$INSTDIR\mxd\Data\Base\Base.wz" mxdReady checkBase
-
+    ; Validate: at least one selected variant must have its data directory.
+    StrCmp $InstallCMS "1" 0 updCheckCW
+      IfFileExists "$INSTDIR\mxd\Data\Base\Base.wz" mxdReady checkBase
+      Goto updCheckCW
     checkBase:
-      ; mxd does not exist; require an existing Base.wz directory.
-      IfFileExists "$INSTDIR\Data\Base\Base.wz" doMigrate abortUpdate
+      IfFileExists "$INSTDIR\Data\Base\Base.wz" doMigrate updCheckCW
+    Goto updCheckCW
 
-    abortUpdate:
+    updCheckCW:
+      StrCmp $InstallCMSCW "1" 0 updNeither
+        IfFileExists "$INSTDIR\mxdclassic\*.*" mxdReady updNeither
+
+    updNeither:
       MessageBox MB_ICONSTOP "$(STR_UPDATE_ABORT)"
       Abort
 
@@ -582,15 +590,19 @@ Section "Install"
         MessageBox MB_YESNO|MB_ICONEXCLAMATION "$(STR_IS_HDD_WARNING)" IDYES +2
         Abort
 
-      ; Run the patch. ExecWait gives cmsdl.exe a real console for its
-      ; indicatif progress bars.
+      ; Run the patch for each selected variant.
       DetailPrint "$(STR_PATCHING)"
-      ; Always run the installer's own patch step in the console: it relies on
-      ; the exit code and shows its own progress. In GUI mode a successful patch
-      ; leaves the window open, which would block ExecWait until closed.
+      StrCmp $InstallCMS "1" 0 patchCMS_CW
       ExecWait '"$INSTDIR\cmsdl.exe" cms --patch latest "$INSTDIR" --purge-wz-files$NoGuiFlag$CloseFlag' $0
-      StrCmp $0 "0" makeShortcuts
+      StrCmp $0 "0" patchCMS_CW
         MessageBox MB_ICONSTOP "$(STR_PATCH_FAILED)"
+        Abort
+
+    patchCMS_CW:
+      StrCmp $InstallCMSCW "1" 0 makeShortcuts
+      ExecWait '"$INSTDIR\cmsdl.exe" cms_cw --patch latest "$INSTDIR"$NoGuiFlag$CloseFlag' $0
+      StrCmp $0 "0" makeShortcuts
+        MessageBox MB_ICONSTOP "$(STR_DOWNLOAD_CMS_CW_FAILED)"
         Abort
 
   ; ----------------------------------------------------------------------
