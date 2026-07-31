@@ -421,3 +421,84 @@ fn run_patch_flow(
 
     Ok(())
 }
+
+/// Run the TMS patch procedure with the GUI.  Validates the client directory,
+/// then shows the window and patches on a background thread.
+pub fn run_gui_tms_patch(
+    target: &Path,
+    version: &str,
+    allow_insecure: bool,
+    proxy: Option<&str>,
+    purge_wz_files: bool,
+    close_after_finishing: bool,
+) -> Result<()> {
+    // Validate the client directory before showing anything.
+    if !target.join("Data").join("Base").join("Base.wz").exists() {
+        bail!(
+            "Base.wz not found in '{}'; not a TMS client directory",
+            target.display()
+        );
+    }
+
+    crate::gui::hide_own_console();
+
+    let ui = UiModel::new();
+    let reporter = Arc::new(GuiReporter::new(Arc::clone(&ui), target.join("cmsdl_patcher.log")));
+    progress::set_reporter(reporter.clone() as Arc<dyn Reporter>);
+
+    if crate::is_hdd::is_hdd(target) {
+        reporter.log("warning: target drive is a mechanical hard disk (HDD); patching may be slower than on an SSD.");
+        if let Ok(mut m) = ui.lock() {
+            m.hdd_notice = tr("gui-is-hdd", &[]);
+        }
+    }
+
+    // Fetch the most recent maintenance notice in the background.
+    let ui_maint = Arc::clone(&ui);
+    let agent_maint = crate::net::agent(allow_insecure, proxy);
+    std::thread::spawn(move || {
+        if let Some((title, body, date)) = maintenance::fetch_for_gui(&agent_maint, Region::Tms, None) {
+            if let Ok(mut m) = ui_maint.lock() {
+                m.maintenance_title = format!("{title} ({})", maintenance::fmt_gui_date(&date));
+                m.maintenance_body = body;
+                m.maintenance_folded = false;
+            }
+        }
+    });
+
+    // Run the patch on a background thread.
+    let target_buf = target.to_path_buf();
+    let version_buf = version.to_string();
+    let proxy_buf = proxy.map(|s| s.to_string());
+    let ui_for_result = Arc::clone(&ui);
+    std::thread::spawn(move || {
+        let proxy = proxy_buf.as_deref();
+        let res = crate::tms_patch::apply_patches(&target_buf, &version_buf, allow_insecure, proxy, purge_wz_files);
+        match res {
+            Ok(outcome) => {
+                use crate::tms_patch::PatchOutcome;
+                let done_key = match outcome {
+                    PatchOutcome::Updated => "gui-patcher-patch-successful",
+                    PatchOutcome::AlreadyUpToDate => "gui-patcher-nopatch-successful",
+                };
+                progress::finish(&tr(done_key, &[]), close_after_finishing);
+                if let Ok(mut m) = ui_for_result.lock() {
+                    m.exit_code = 0;
+                }
+            }
+            Err(e) => {
+                crate::plog!("error: {e:#}");
+                progress::finish(&format!("{e}"), false);
+            }
+        }
+    });
+
+    let ui_hold = Arc::clone(&ui);
+    gui::run_window(ui)?;
+
+    let exit_code = ui_hold.lock().unwrap().exit_code;
+    if exit_code != 0 {
+        anyhow::bail!("patch failed (exit code {exit_code})");
+    }
+    Ok(())
+}
