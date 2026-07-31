@@ -323,6 +323,7 @@ pub fn run_gui_patch(
     close_after_finishing: bool,
     keep_old_wz_files: bool,
     region: Region,
+    maint_id: Option<u64>,
 ) -> Result<()> {
     // Validate the client directory before showing anything. (Done before
     // hiding the console so an invalid-path error is still visible when run
@@ -378,7 +379,7 @@ pub fn run_gui_patch(
     let ui_maint = Arc::clone(&ui);
     let agent_maint = crate::net::agent(allow_insecure, proxy);
     std::thread::spawn(move || {
-        if let Some((title, body, date)) = maintenance::fetch_for_gui(&agent_maint, region, None) {
+        if let Some((title, body, date)) = maintenance::fetch_for_gui(&agent_maint, region, maint_id) {
             if let Ok(mut m) = ui_maint.lock() {
                 m.maintenance_title = format!("{title} ({})", maintenance::fmt_gui_date(&date));
                 m.maintenance_body = body;

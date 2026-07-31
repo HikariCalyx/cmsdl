@@ -219,6 +219,7 @@ fn main() -> Result<()> {
             cli.no_gui,
             cli.close_after_finishing,
             cli.keep_old_wz_files,
+            cli.maintid,
         )?,
         Action::CreateShortcut(path) => downloader::create_shortcut(cli.region, &path, cli.lrhook, cli.no_gui, cli.close_after_finishing)?,
         Action::CreatePatch { old_dir, new_dir, out_file } => {

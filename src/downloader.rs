@@ -535,16 +535,17 @@ pub fn patch_apply(
     no_gui: bool,
     close_after_finishing: bool,
     keep_old_wz_files: bool,
+    maint_id: Option<u64>,
 ) -> Result<()> {
     match region {
         Region::Cms => {
-            patch_apply_cms(target, version, launch_after, allow_insecure, proxy, purge_wz_files, lrhook, no_gui, close_after_finishing, keep_old_wz_files, region)?;
+            patch_apply_cms(target, version, launch_after, allow_insecure, proxy, purge_wz_files, lrhook, no_gui, close_after_finishing, keep_old_wz_files, region, maint_id)?;
         }
         Region::CmsCw => {
-            patch_apply_cms_cw(target, version, launch_after, allow_insecure, proxy, purge_wz_files, no_gui, close_after_finishing, keep_old_wz_files, region)?;
+            patch_apply_cms_cw(target, version, launch_after, allow_insecure, proxy, purge_wz_files, no_gui, close_after_finishing, keep_old_wz_files, region, maint_id)?;
         }
         Region::Tms => {
-            patch_apply_tms(target, version, launch_after, allow_insecure, proxy, purge_wz_files, no_gui, close_after_finishing, region)?;
+            patch_apply_tms(target, version, launch_after, allow_insecure, proxy, purge_wz_files, no_gui, close_after_finishing, region, maint_id)?;
         }
         Region::Manual => {
             bail!("--patch is not supported for 'manual'");
@@ -587,6 +588,7 @@ fn patch_apply_cms(
     close_after_finishing: bool,
     keep_old_wz_files: bool,
     region: Region,
+    maint_id: Option<u64>,
 ) -> Result<()> {
     let sentinel = target.join(format!(".incomplete_{region}"));
     if sentinel.exists() {
@@ -607,7 +609,7 @@ fn patch_apply_cms(
     if use_gui {
         return crate::gui_patch::run_gui_patch(
             target, version, launch_after, allow_insecure, proxy, purge_wz_files, lrhook,
-            close_after_finishing, keep_old_wz_files, region,
+            close_after_finishing, keep_old_wz_files, region, maint_id,
         );
     }
 
@@ -635,6 +637,7 @@ fn patch_apply_cms_cw(
     close_after_finishing: bool,
     keep_old_wz_files: bool,
     region: Region,
+    maint_id: Option<u64>,
 ) -> Result<()> {
     if purge_wz_files {
         bail!("--purge-wz-files is not supported for region 'cms_cw'");
@@ -662,7 +665,7 @@ fn patch_apply_cms_cw(
     if use_gui {
         return crate::gui_patch::run_gui_patch(
             target, version, launch_after, allow_insecure, proxy, purge_wz_files, false,
-            close_after_finishing, keep_old_wz_files, region,
+            close_after_finishing, keep_old_wz_files, region, maint_id,
         );
     }
 
@@ -691,6 +694,7 @@ fn patch_apply_tms(
     no_gui: bool,
     close_after_finishing: bool,
     region: Region,
+    maint_id: Option<u64>,
 ) -> Result<()> {
     let sentinel = target.join(format!(".incomplete_{region}"));
     if sentinel.exists() {
@@ -708,7 +712,7 @@ fn patch_apply_tms(
         // TMS: no lrhook, no keep_old_wz_files support.
         return crate::gui_patch::run_gui_patch(
             target, version, launch_after, allow_insecure, proxy, purge_wz_files, false,
-            close_after_finishing, false, region,
+            close_after_finishing, false, region, maint_id,
         );
     }
 
