@@ -113,6 +113,8 @@ pub(crate) struct CmsConfig {
     pub last_client_version_section: &'static str,
     /// Client data directory name (e.g. `"mxd"`, `"mxdclassic"`).
     pub data_dir: &'static str,
+    /// Human-readable region label for GUI display (e.g. `"CMS"`, `"CMS CW"`).
+    pub region_label: &'static str,
     /// Product ID used in the obfuscated file name (e.g. `"5"`, `"791001093"`).
     pub product_id: &'static str,
     /// Zone tag used in `LocalVersion3.xml` (e.g. `"zone5_8848_v3"`, `"zone791001093_8859_v3"`).
@@ -131,6 +133,7 @@ pub(crate) const CMS_CONFIG: CmsConfig = CmsConfig {
     last_client_version_file: LAST_CLIENT_VERSION_FILE,
     last_client_version_section: "CMS",
     data_dir: "mxd",
+    region_label: "CMS",
     product_id: "5",
     zone_tag: "zone5_8848_v3",
 };
@@ -1259,7 +1262,7 @@ pub fn download_client(
     } else {
         version_view.clone()
     };
-    crate::progress::dl_begin("CMS", &version_display, total_files, total_bytes);
+    crate::progress::dl_begin(config().region_label, &version_display, total_files, total_bytes);
 
     // Progress bars: one overall bar plus one reusable bar per worker. In GUI
     // download mode the console bars are hidden (the window shows progress).

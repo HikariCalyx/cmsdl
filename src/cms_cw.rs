@@ -51,6 +51,7 @@ pub(crate) const CW_CONFIG: crate::cms::CmsConfig = crate::cms::CmsConfig {
     last_client_version_file: "last_client_version.ini",
     last_client_version_section: "CMS_CW",
     data_dir: "mxdclassic",
+    region_label: "CMS CW",
     product_id: "791001093",
     zone_tag: "zone791001093_8859_v3",
 };
