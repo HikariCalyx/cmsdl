@@ -154,6 +154,17 @@ struct TmsBulletinDetail {
     start_date: String,
 }
 
+/// A per-channel maintenance time window.
+#[derive(Serialize, Clone)]
+struct ChannelGroup {
+    /// Human-readable label (e.g. "前半组频道", "后半组频道").
+    label: String,
+    /// Start timestamp (UTC+8 → Unix).
+    start: i64,
+    /// End timestamp (UTC+8 → Unix), shared with the overall maintenance end.
+    end: i64,
+}
+
 /// JSON output structure for `--json` mode.
 #[derive(Serialize)]
 struct MaintenanceOutput {
@@ -169,20 +180,27 @@ struct MaintenanceOutput {
     /// Estimated end time (UTC+8 → Unix), if parseable from the body.
     #[serde(skip_serializing_if = "Option::is_none")]
     estimated_end: Option<i64>,
+    /// Per-channel group time windows (only for PerChannelMaintenance).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    channel_groups: Option<Vec<ChannelGroup>>,
     body: String,
 }
 
 /// Fetch and display the most recent maintenance notice for the given region.
+///
+/// If `maint_id` is set, that specific bulletin is fetched instead of
+/// searching for the latest maintenance notice.
 pub fn show_maintenance(
     agent: &ureq::Agent,
     region: Region,
     json: bool,
     discord: bool,
+    maint_id: Option<u64>,
 ) -> Result<()> {
     match region {
-        Region::Cms => show_cms_maintenance(agent, json, discord),
-        Region::CmsCw => show_cms_cw_maintenance(agent, json, discord),
-        Region::Tms => show_tms_maintenance(agent, json, discord),
+        Region::Cms => show_cms_maintenance(agent, json, discord, maint_id),
+        Region::CmsCw => show_cms_cw_maintenance(agent, json, discord, maint_id),
+        Region::Tms => show_tms_maintenance(agent, json, discord, maint_id),
         Region::Manual => bail!("--maintenance is not supported for region 'manual'"),
     }
 }
@@ -395,6 +413,155 @@ fn extract_maintenance_times(title: &str, html_body: &str) -> Option<Maintenance
     })
 }
 
+/// Try to extract per-channel group times from the HTML body.
+///
+/// Two formats are supported:
+/// - **TMS**: batch sections like "第一批 … 20:30~21:30" with explicit time
+///   ranges per batch.
+/// - **CMS**: "9:45起对各服务器前半组频道开始进行维护" — each group only
+///   gives a start time; the group ends when the next group starts (or at the
+///   overall end for the last group).
+///
+/// The date is derived from `overall_times`.
+fn extract_channel_groups(
+    title: &str,
+    html_body: &str,
+    overall_times: &MaintenanceTime,
+) -> Vec<ChannelGroup> {
+    let cleaned = strip_strike_tags(html_body);
+    let plain = strip_html(&cleaned);
+    let combined = format!("{title} {plain}");
+
+    // Derive date from the overall end timestamp.
+    let cst = match chrono::FixedOffset::east_opt(8 * 3600) {
+        Some(o) => o,
+        None => return Vec::new(),
+    };
+    let end_dt = match chrono::DateTime::from_timestamp(overall_times.end, 0) {
+        Some(dt) => dt.with_timezone(&cst),
+        None => return Vec::new(),
+    };
+    let date = end_dt.date_naive();
+
+    let make_ts = |h: u32, m: u32| -> Option<i64> {
+        let dt = chrono::NaiveDate::from_ymd_opt(date.year(), date.month(), date.day())?
+            .and_hms_opt(h, m, 0)?;
+        dt.and_local_timezone(cst).single().map(|d| d.timestamp())
+    };
+
+    // ── TMS-style: "第N批" sections with explicit "HH:MM~HH:MM" ranges ──
+    if let Some(groups) = try_extract_tms_batch_groups(&plain, &make_ts) {
+        return groups;
+    }
+
+    // ── CMS-style: "HH:MM起对各服务器{desc}频道" (start-only) ──
+    let re = match Regex::new(r"(\d{1,2}):(\d{2})起对各服务器(.+?)频道") {
+        Ok(r) => r,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut groups: Vec<ChannelGroup> = re
+        .captures_iter(&combined)
+        .filter_map(|caps| {
+            let h: u32 = caps.get(1)?.as_str().parse().ok()?;
+            let m: u32 = caps.get(2)?.as_str().parse().ok()?;
+            let desc = caps.get(3)?.as_str().to_string();
+            let label = format!("{desc}频道");
+            let start = make_ts(h, m)?;
+            Some(ChannelGroup { label, start, end: 0 }) // end filled below
+        })
+        .collect();
+
+    if groups.is_empty() {
+        return Vec::new();
+    }
+
+    // Sort by start time and chain the end times: each group ends when the
+    // next group starts; the last group ends at the overall end time.
+    groups.sort_by_key(|g| g.start);
+    for i in 0..groups.len() {
+        groups[i].end = if i + 1 < groups.len() {
+            groups[i + 1].start
+        } else {
+            overall_times.end
+        };
+    }
+    groups
+}
+
+/// Try to extract TMS-style per-channel batch groups.
+///
+/// TMS notices split maintenance into numbered batches ("第一批", "第二批",
+/// …) and give an explicit time range for each batch, e.g.:
+///
+/// ```text
+/// 第一批的伺服器及分流關閉時間如下 :
+/// 將於 **07/23(四) 20:30~21:30**關閉下列伺服器的部份分流，
+/// …
+/// 第二批的伺服器及分流關閉時間如下 :
+/// 將於 **07/23(四) 21:31~22:30**關閉下列伺服器的部份分流，
+/// ```
+///
+/// Returns `None` when no batch markers are found (caller should fall back
+/// to CMS-style parsing).
+fn try_extract_tms_batch_groups(
+    plain: &str,
+    make_ts: &dyn Fn(u32, u32) -> Option<i64>,
+) -> Option<Vec<ChannelGroup>> {
+    // Find batch markers: "第一批", "第二批", …, "第N批"
+    let batch_re = Regex::new(r"第([一二三四五六七八九十\d]+)批").ok()?;
+    let batches: Vec<(usize, String)> = batch_re
+        .captures_iter(plain)
+        .map(|caps| {
+            let num = caps.get(1)?.as_str();
+            let label = format!("第{num}批");
+            let pos = caps.get(0)?.start();
+            Some((pos, label))
+        })
+        .collect::<Option<Vec<_>>>()?;
+
+    if batches.is_empty() {
+        return None;
+    }
+
+    // Time range: "HH:MM~HH:MM" (with various separators)
+    let time_re = Regex::new(r"(\d{2}):(\d{2})\s*[~～\-–—]+\s*(\d{2}):(\d{2})").ok()?;
+
+    let mut groups = Vec::new();
+
+    for i in 0..batches.len() {
+        let (start_pos, ref label) = batches[i];
+        let end_pos = if i + 1 < batches.len() {
+            batches[i + 1].0
+        } else {
+            plain.len()
+        };
+        let section = &plain[start_pos..end_pos];
+
+        // Pick the first time range within this batch section.
+        if let Some(caps) = time_re.captures(section) {
+            let start_h: u32 = caps[1].parse().ok()?;
+            let start_m: u32 = caps[2].parse().ok()?;
+            let end_h: u32 = caps[3].parse().ok()?;
+            let end_m: u32 = caps[4].parse().ok()?;
+
+            let start = make_ts(start_h, start_m)?;
+            let end = make_ts(end_h, end_m)?;
+            groups.push(ChannelGroup {
+                label: label.clone(),
+                start,
+                end,
+            });
+        }
+    }
+
+    if groups.is_empty() {
+        None
+    } else {
+        Some(groups)
+    }
+}
+
 /// Remove `<s>`, `<strike>`, `<del>` tag pairs and their content from HTML.
 fn strip_strike_tags(html: &str) -> String {
     let re = Regex::new(r"<(s|strike|del)\b[^>]*>.*?</\1>").ok();
@@ -421,28 +588,58 @@ fn strip_html(html: &str) -> String {
 
 // ── CMS implementation ──────────────────────────────────────────────────────
 
-fn show_cms_maintenance(agent: &ureq::Agent, json: bool, discord: bool) -> Result<()> {
+fn show_cms_maintenance(agent: &ureq::Agent, json: bool, discord: bool, maint_id: Option<u64>) -> Result<()> {
     if !json {
-        println!("cmsdl {VERSION}: checking recent maintenance notice from region 'cms'.");
+        if let Some(mid) = maint_id {
+            println!("cmsdl {VERSION}: fetching maintenance notice #{mid} from region 'cms'.");
+        } else {
+            println!("cmsdl {VERSION}: checking recent maintenance notice from region 'cms'.");
+        }
     }
 
-    let news_list = fetch_cms_news_list(agent)?;
-    let item = find_cms_maintenance(&news_list)?;
+    let id = if let Some(mid) = maint_id {
+        mid
+    } else {
+        let news_list = fetch_cms_news_list(agent)?;
+        find_cms_maintenance(&news_list)?.id
+    };
 
-    let content = fetch_cms_news_content(agent, item.id)?;
-    print_maintenance(item, &content, json, discord)
+    let content = fetch_cms_news_content(agent, id)?;
+    let item = NewsItem {
+        id,
+        title: content.title.clone(),
+        pubdate: content.publish_date.clone(),
+        url: String::new(),
+        style: String::new(),
+    };
+    print_maintenance(&item, &content, json, discord)
 }
 
-fn show_cms_cw_maintenance(agent: &ureq::Agent, json: bool, discord: bool) -> Result<()> {
+fn show_cms_cw_maintenance(agent: &ureq::Agent, json: bool, discord: bool, maint_id: Option<u64>) -> Result<()> {
     if !json {
-        println!("cmsdl {VERSION}: checking recent maintenance notice from region 'cms_cw'.");
+        if let Some(mid) = maint_id {
+            println!("cmsdl {VERSION}: fetching maintenance notice #{mid} from region 'cms_cw'.");
+        } else {
+            println!("cmsdl {VERSION}: checking recent maintenance notice from region 'cms_cw'.");
+        }
     }
 
-    let news_list = fetch_cms_cw_news_list(agent)?;
-    let item = find_cms_maintenance(&news_list)?;
+    let id = if let Some(mid) = maint_id {
+        mid
+    } else {
+        let news_list = fetch_cms_cw_news_list(agent)?;
+        find_cms_maintenance(&news_list)?.id
+    };
 
-    let content = fetch_cms_cw_news_content(agent, item.id)?;
-    print_maintenance(item, &content, json, discord)
+    let content = fetch_cms_cw_news_content(agent, id)?;
+    let item = NewsItem {
+        id,
+        title: content.title.clone(),
+        pubdate: content.publish_date.clone(),
+        url: String::new(),
+        style: String::new(),
+    };
+    print_maintenance(&item, &content, json, discord)
 }
 
 /// Common output logic shared by CMS and CMS CW maintenance display.
@@ -450,6 +647,15 @@ fn print_maintenance(item: &NewsItem, content: &NewsContentData, json: bool, dis
     let mode = render_mode(json, discord);
     let mtype = detect_maintenance_type(&content.title, &content.content);
     let times = extract_maintenance_times(&content.title, &content.content);
+
+    // Per-channel group times (only meaningful for PerChannel maintenance).
+    let channel_groups: Option<Vec<ChannelGroup>> = match (&times, mtype) {
+        (Some(t), MaintenanceType::PerChannel) => {
+            let groups = extract_channel_groups(&content.title, &content.content, t);
+            if groups.is_empty() { None } else { Some(groups) }
+        }
+        _ => None,
+    };
 
     if json {
         let body = render_html(&content.content, mode);
@@ -463,6 +669,7 @@ fn print_maintenance(item: &NewsItem, content: &NewsContentData, json: bool, dis
             maintenance_type: mtype.to_string(),
             estimated_start: times.as_ref().map(|t| t.start),
             estimated_end: times.as_ref().map(|t| t.end),
+            channel_groups,
             body,
         };
         println!(
@@ -484,6 +691,11 @@ fn print_maintenance(item: &NewsItem, content: &NewsContentData, json: bool, dis
                     .unwrap_or_else(|| ts.to_string())
             };
             println!("Estimated: {} ~ {}", fmt(t.start), fmt(t.end));
+            if let Some(ref groups) = channel_groups {
+                for g in groups {
+                    println!("  {}: {} ~ {}", g.label, fmt(g.start), fmt(g.end));
+                }
+            }
         }
         println!();
         let body = render_html(&content.content, mode);
@@ -568,53 +780,77 @@ fn fetch_news_content(agent: &ureq::Agent, base_url: &str, id: u64) -> Result<Ne
 
 // ── TMS implementation ──────────────────────────────────────────────────────
 
-fn show_tms_maintenance(agent: &ureq::Agent, json: bool, discord: bool) -> Result<()> {
+fn show_tms_maintenance(agent: &ureq::Agent, json: bool, discord: bool, maint_id: Option<u64>) -> Result<()> {
     if !json {
-        println!("cmsdl {VERSION}: checking recent maintenance notice from region 'tms'.");
+        if let Some(mid) = maint_id {
+            println!("cmsdl {VERSION}: fetching maintenance notice #{mid} from region 'tms'.");
+        } else {
+            println!("cmsdl {VERSION}: checking recent maintenance notice from region 'tms'.");
+        }
     }
 
     // 1. Obtain CSRF token from the TMS main page; ureq stores the
     //    accompanying antiforgery cookie automatically.
     let csrf_token = acquire_tms_csrf(agent)?;
 
-    // 2. Fetch the first few pages of bulletins to find maintenance.
-    let items = fetch_tms_bulletins(agent, &csrf_token, 5)?;
+    // 2. Resolve the bulletin to display: either by explicit --maintid or by
+    //    searching the bulletin list.  When --maintid is used we skip the
+    //    delayed-opening check.
+    let (main_item, detail, delayed_items) = if let Some(mid) = maint_id {
+        let bid = mid.to_string();
+        let detail = fetch_tms_bulletin_detail(agent, &csrf_token, &bid)?;
+        let main_item = TmsBulletinItem {
+            bulletin_id: bid,
+            title: detail.title.clone(),
+            start_date: detail.start_date.clone(),
+            end_date: None,
+        };
+        // No search results → no delayed-opening check.
+        (main_item, detail, Vec::new())
+    } else {
+        let items = fetch_tms_bulletins(agent, &csrf_token, 5)?;
 
-    // 3. Find the most recent 維護公告.
-    let main_item = items
-        .iter()
-        .filter(|i| i.title.contains("維護公告"))
-        .max_by_key(|i| &i.start_date)
-        .ok_or_else(|| anyhow::anyhow!("no maintenance announcement (維護公告) found"))?;
+        // 3. Find the most recent 維護公告.
+        let main_item = items
+            .iter()
+            .filter(|i| i.title.contains("維護公告"))
+            .max_by_key(|i| &i.start_date)
+            .ok_or_else(|| anyhow::anyhow!("no maintenance announcement (維護公告) found"))?
+            .clone();
 
-    // 4. Fetch the full content of the main notice.
-    let detail = fetch_tms_bulletin_detail(agent, &csrf_token, &main_item.bulletin_id)?;
+        // 4. Fetch the full content of the main notice.
+        let detail = fetch_tms_bulletin_detail(agent, &csrf_token, &main_item.bulletin_id)?;
+
+        // 5. Check for a later 延後開機公告.
+        let delayed_items: Vec<TmsBulletinDetail> = items
+            .iter()
+            .filter(|i| {
+                i.title.contains("延後開機公告") && i.start_date >= main_item.start_date
+            })
+            .filter_map(|d| fetch_tms_bulletin_detail(agent, &csrf_token, &d.bulletin_id).ok())
+            .collect();
+
+        (main_item, detail, delayed_items)
+    };
 
     let mode = render_mode(json, discord);
     let mut body = render_html(&detail.content, mode);
 
-    // 5. Check for a later 延後開機公告.
-    let delayed = items.iter().find(|i| {
-        i.title.contains("延後開機公告") && i.start_date >= main_item.start_date
-    });
-
-    let combined_title = detail.title.clone();
-    if let Some(d) = delayed {
+    // Append any delayed-opening notices.
+    for dd in &delayed_items {
         if !json {
             eprintln!(
                 "Also found delayed-opening notice: #{} — {}",
-                d.bulletin_id, d.title
+                dd.bulletin_id, dd.title
             );
         }
-        if let Ok(dd) = fetch_tms_bulletin_detail(agent, &csrf_token, &d.bulletin_id) {
-            body.push_str("\n\n---\n\n");
-            if mode != RenderMode::Markdown {
-                body.push_str(&format!("=== {} ===\n\n", dd.title));
-            } else {
-                body.push_str(&format!("### {}\n\n", dd.title));
-            }
-            body.push_str(&render_html(&dd.content, mode));
+        body.push_str("\n\n---\n\n");
+        if mode != RenderMode::Markdown {
+            body.push_str(&format!("=== {} ===\n\n", dd.title));
+        } else {
+            body.push_str(&format!("### {}\n\n", dd.title));
         }
+        body.push_str(&render_html(&dd.content, mode));
     }
 
     let body = collapse_blank_lines(&body);
@@ -624,14 +860,24 @@ fn show_tms_maintenance(agent: &ureq::Agent, json: bool, discord: bool) -> Resul
     let mtype = detect_maintenance_type(&detail.title, &detail.content);
     let times = extract_maintenance_times(&detail.title, &detail.content);
 
+    // Per-channel group times (only meaningful for PerChannel maintenance).
+    let channel_groups: Option<Vec<ChannelGroup>> = match (&times, mtype) {
+        (Some(t), MaintenanceType::PerChannel) => {
+            let groups = extract_channel_groups(&detail.title, &detail.content, t);
+            if groups.is_empty() { None } else { Some(groups) }
+        }
+        _ => None,
+    };
+
     if json {
         let output = MaintenanceOutput {
             id: detail.bulletin_id.parse().unwrap_or(0),
-            title: combined_title,
+            title: detail.title.clone(),
             publish_date: ts,
             maintenance_type: mtype.to_string(),
             estimated_start: times.as_ref().map(|t| t.start),
             estimated_end: times.as_ref().map(|t| t.end),
+            channel_groups,
             body,
         };
         println!(
@@ -653,6 +899,11 @@ fn show_tms_maintenance(agent: &ureq::Agent, json: bool, discord: bool) -> Resul
                     .unwrap_or_else(|| ts.to_string())
             };
             println!("Estimated: {} ~ {}", fmt(t.start), fmt(t.end));
+            if let Some(ref groups) = channel_groups {
+                for g in groups {
+                    println!("  {}: {} ~ {}", g.label, fmt(g.start), fmt(g.end));
+                }
+            }
         }
         println!();
         if !body.is_empty() {

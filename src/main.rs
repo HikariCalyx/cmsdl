@@ -223,9 +223,9 @@ fn main() -> Result<()> {
         Action::CreatePatch { old_dir, new_dir, out_file } => {
             patch_builder::create_patch(&old_dir, &new_dir, &out_file)?
         }
-        Action::Maintenance => {
+        Action::Maintenance { maint_id } => {
             let agent = net::agent(cli.allow_insecure, proxy);
-            maintenance::show_maintenance(&agent, cli.region, cli.json, cli.discord)?
+            maintenance::show_maintenance(&agent, cli.region, cli.json, cli.discord, maint_id)?
         }
         Action::ManualDownload { url, target_dir, output } => downloader::manual_download(
             &url,

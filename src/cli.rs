@@ -125,8 +125,8 @@ pub struct Cli {
     #[arg(long)]
     pub maintenance: bool,
 
-    /// Use a specific maintenance notice ID for GUI preview (only with
-    /// `--download`).  Bypasses the normal latest-maintenance search.
+    /// Use a specific maintenance notice ID (with `--download` or
+    /// `--maintenance`).  Bypasses the normal latest-maintenance search.
     #[arg(long, value_name = "ID")]
     pub maintid: Option<u64>,
 
@@ -279,8 +279,8 @@ pub enum Action {
         new_dir: PathBuf,
         out_file: PathBuf,
     },
-    /// Fetch and display the most recent CMS maintenance notice.
-    Maintenance,
+    /// Fetch and display the most recent maintenance notice.
+    Maintenance { maint_id: Option<u64> },
 }
 
 impl Cli {
@@ -371,7 +371,9 @@ impl Cli {
                      use `cmsdl cms --maintenance`, `cmsdl cms_cw --maintenance`, or `cmsdl tms --maintenance`"
                 );
             }
-            Action::Maintenance
+            Action::Maintenance {
+                maint_id: self.maintid,
+            }
         } else {
             unreachable!("clap ArgGroup guarantees exactly one action is set")
         };
