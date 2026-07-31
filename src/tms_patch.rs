@@ -1161,6 +1161,50 @@ fn validate_old_file(
     Ok(PreValidate::Ok)
 }
 
+/// Scan rebuild instructions to find which source files this part depends on
+/// (only meaningful for KMST1125 format).  Returns an empty set on error or
+/// for non-KMST1125 parts.
+fn collect_source_deps(
+    decompressed: &[u8],
+    inst_offset: u64,
+    is_kmst1125: bool,
+) -> Result<HashSet<String>> {
+    let mut deps = HashSet::new();
+    if !is_kmst1125 {
+        return Ok(deps);
+    }
+    let mut cursor = Cursor::new(&decompressed[inst_offset as usize..]);
+    loop {
+        let cmd = read_u32(&mut cursor)?;
+        if cmd == 0 {
+            break;
+        }
+        match cmd >> 28 {
+            0x08 => {
+                let len = (cmd & 0x0FFF_FFFF) as i64;
+                cursor.seek(SeekFrom::Current(len))?;
+            }
+            0x0C => { /* FillBytes – no source dependency */ }
+            _ => {
+                // FromOldFile – read old_offset, then source file name.
+                let _old_offset = read_i32(&mut cursor)?;
+                let name_len = read_i32(&mut cursor)?;
+                if name_len > 0 && name_len <= 260 {
+                    let pos = inst_offset as usize + cursor.position() as usize;
+                    if pos + name_len as usize <= decompressed.len() {
+                        let name_bytes = &decompressed[pos..pos + name_len as usize];
+                        let name = String::from_utf8_lossy(name_bytes)
+                            .replace('\\', "/");
+                        deps.insert(name);
+                    }
+                    cursor.seek(SeekFrom::Current(name_len as i64))?;
+                }
+            }
+        }
+    }
+    Ok(deps)
+}
+
 /// Apply patch data (the raw bytes of a `.patch` file) to `target_dir`.
 /// Returns the list of corrupted file paths.
 ///
@@ -1202,8 +1246,82 @@ fn apply_patch_data(patch_data: &[u8], target_dir: &Path) -> Result<Vec<String>>
     let mut corrupted: Vec<String> = Vec::new();
     let temp_dir = create_temp_dir(target_dir)?;
 
-    // Phase 1: Process each part (create / rebuild).
-    for part in &patch.parts {
+    // ── Collect source dependencies for each Rebuild part ───────────────
+    // For KMST1125 patches, FromOldFile instructions can reference different
+    // source files.  We scan instructions upfront (without building) so we
+    // know which parts depend on which source files.
+    let deps: Vec<HashSet<String>> = patch.parts.iter().map(|part| {
+        match part {
+            PatchPart::Rebuild { inst_offset, .. } => {
+                collect_source_deps(&patch.decompressed, *inst_offset, patch.is_kmst1125)
+                    .unwrap_or_default()
+            }
+            _ => HashSet::new(),
+        }
+    }).collect();
+
+    // Build reverse index: source file → indices of parts that need it.
+    let mut needed_by: HashMap<String, Vec<usize>> = HashMap::new();
+    for (i, part) in patch.parts.iter().enumerate() {
+        let file_name = match part {
+            PatchPart::Create { file_name, .. } | PatchPart::Rebuild { file_name, .. } => file_name,
+            PatchPart::Delete { .. } => continue,
+        };
+        // Normalise to forward slashes for matching.
+        let key = file_name.replace('\\', "/");
+        for dep in &deps[i] {
+            needed_by.entry(dep.clone()).or_default().push(i);
+        }
+        // Also register the part itself so we can track remaining dependents.
+        needed_by.entry(key).or_default();
+    }
+
+    // Track which part indices are still "in-flight" (built to temp but not
+    // yet applied because later parts may reference their file as a source).
+    let mut pending: Vec<usize> = Vec::new();
+    // Remaining dependent count for each part (how many later parts still
+    // reference this part's file as a source).
+    let remaining_deps: Mutex<HashMap<String, usize>> = Mutex::new(HashMap::new());
+
+    // Helper: check if a file is a Base file (should be applied last).
+    let is_base_file = |name: &str| -> bool {
+        let n = name.replace('\\', "/").to_ascii_lowercase();
+        n.starts_with("data/base/")
+    };
+
+    // Helper: apply a pending part's temp file to the target if the temp
+    // file exists and the part is not corrupted.  Returns true on success.
+    let apply_pending = |idx: usize,
+                         parts: &[PatchPart],
+                         corrupted: &mut Vec<String>,
+                         temp_dir: &Path,
+                         target_dir: &Path| {
+        let part = &parts[idx];
+        let file_name = match part {
+            PatchPart::Create { file_name, .. } | PatchPart::Rebuild { file_name, .. } => file_name,
+            PatchPart::Delete { .. } => return,
+        };
+        if corrupted.contains(file_name) {
+            return;
+        }
+        let temp_path = temp_dir.join(sanitize_path(file_name));
+        let target_path = target_dir.join(sanitize_path(file_name));
+        if temp_path.exists() {
+            if let Err(e) = replace_file(&temp_path, &target_path) {
+                plog!("  warning: failed to apply {}: {}", file_name, e);
+                corrupted.push(file_name.clone());
+            }
+        }
+    };
+
+    // Phase 1: Build each part to temp, applying completed parts immediately
+    // when no remaining dependents need their source file.
+    for (i, part) in patch.parts.iter().enumerate() {
+        let file_name = match part {
+            PatchPart::Create { file_name, .. } | PatchPart::Rebuild { file_name, .. } => file_name,
+            PatchPart::Delete { .. } => continue,
+        };
+
         let result = match part {
             PatchPart::Create { file_name, file_length, checksum, data_offset } => {
                 apply_create(&patch.decompressed, file_name, *data_offset, *file_length, *checksum, &temp_dir, target_dir)
@@ -1211,47 +1329,89 @@ fn apply_patch_data(patch_data: &[u8], target_dir: &Path) -> Result<Vec<String>>
             PatchPart::Rebuild { file_name, old_checksum, new_checksum, inst_offset, .. } => {
                 apply_rebuild(&patch.decompressed, file_name, *inst_offset, *old_checksum, *new_checksum, &temp_dir, target_dir, patch.is_kmst1125)
             }
-            PatchPart::Delete { .. } => {
-                // Deletions handled in phase 2.
-                Ok(())
-            }
+            PatchPart::Delete { .. } => unreachable!(),
         };
 
         if let Err(e) = result {
-            if let PatchPart::Create { file_name, .. } | PatchPart::Rebuild { file_name, .. } = part {
-                plog!("    apply fail: {} - {}", file_name, e);
-                corrupted.push(file_name.clone());
+            plog!("    apply fail: {} - {}", file_name, e);
+            corrupted.push(file_name.clone());
+            continue;
+        }
+
+        // This part is now built (temp file exists).  Decrement the
+        // dependent count for each source file it references.
+        let key = file_name.replace('\\', "/");
+        {
+            let mut rd = remaining_deps.lock().unwrap();
+            for dep in &deps[i] {
+                *rd.entry(dep.clone()).or_insert(0) = rd.get(dep).copied().unwrap_or(0).saturating_sub(1);
+            }
+            // Initialise this part's own dependent count.
+            if let Some(needers) = needed_by.get(&key) {
+                rd.entry(key.clone()).or_insert(needers.len());
+            }
+        }
+
+        // Add to pending.
+        pending.push(i);
+
+        // Now flush: apply any pending parts whose source files are no
+        // longer needed by any remaining parts.  Skip Base files — they
+        // are always deferred to the end.
+        let mut flushed = true;
+        while flushed {
+            flushed = false;
+            let mut new_pending = Vec::new();
+            for &idx in &pending {
+                let pname = match &patch.parts[idx] {
+                    PatchPart::Create { file_name, .. } | PatchPart::Rebuild { file_name, .. } => file_name,
+                    PatchPart::Delete { .. } => continue,
+                };
+                let pkey = pname.replace('\\', "/");
+                let remaining = {
+                    remaining_deps.lock().unwrap().get(&pkey).copied().unwrap_or(0)
+                };
+                if remaining == 0 && !is_base_file(pname) {
+                    apply_pending(idx, &patch.parts, &mut corrupted, &temp_dir, target_dir);
+                    flushed = true;
+                } else {
+                    new_pending.push(idx);
+                }
+            }
+            pending = new_pending;
+        }
+    }
+
+    // Phase 2: Apply deletions.
+    for part in &patch.parts {
+        if let PatchPart::Delete { file_name } = part {
+            let target_path = target_dir.join(sanitize_path(file_name));
+            if target_path.exists() {
+                if target_path.is_dir() {
+                    let _ = std::fs::remove_dir_all(&target_path);
+                } else {
+                    let _ = remove_readonly_file(&target_path);
+                }
             }
         }
     }
 
-    // Phase 2: Move temp files to target and apply deletions.
-    for part in &patch.parts {
-        match part {
-            PatchPart::Create { file_name, .. } | PatchPart::Rebuild { file_name, .. } => {
-                if corrupted.contains(file_name) {
-                    continue;
-                }
-                let temp_path = temp_dir.join(sanitize_path(file_name));
-                let target_path = target_dir.join(sanitize_path(file_name));
-                if temp_path.exists() {
-                    if let Err(e) = replace_file(&temp_path, &target_path) {
-                        plog!("  warning: failed to move {}: {:#}", file_name, e);
-                        corrupted.push(file_name.clone());
-                    }
-                }
-            }
-            PatchPart::Delete { file_name } => {
-                let target_path = target_dir.join(sanitize_path(file_name));
-                if target_path.exists() {
-                    if target_path.is_dir() {
-                        let _ = std::fs::remove_dir_all(&target_path);
-                    } else {
-                        let _ = remove_readonly_file(&target_path);
-                    }
-                }
-            }
-        }
+    // Phase 3: Apply remaining pending files (Base files last, then others).
+    pending.sort_by(|a, b| {
+        let a_name = match &patch.parts[*a] {
+            PatchPart::Create { file_name, .. } | PatchPart::Rebuild { file_name, .. } => file_name,
+            PatchPart::Delete { .. } => "",
+        };
+        let b_name = match &patch.parts[*b] {
+            PatchPart::Create { file_name, .. } | PatchPart::Rebuild { file_name, .. } => file_name,
+            PatchPart::Delete { .. } => "",
+        };
+        let a_base = is_base_file(a_name);
+        let b_base = is_base_file(b_name);
+        a_base.cmp(&b_base) // Base files sort last
+    });
+    for &idx in &pending {
+        apply_pending(idx, &patch.parts, &mut corrupted, &temp_dir, target_dir);
     }
 
     // Clean up temp directory.
