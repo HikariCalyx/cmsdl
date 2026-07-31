@@ -43,7 +43,6 @@ use flate2::read::ZlibDecoder;
 use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::plog;
-use crate::locale::tr;
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -486,7 +485,6 @@ pub fn apply_patches(
 
     if current_version == target_version {
         plog!("client is already at version {}; nothing to do.", target_version);
-        crate::progress::finish(&tr("gui-patcher-nopatch-successful", &[]), true);
         return Ok(PatchOutcome::AlreadyUpToDate);
     }
 
@@ -495,7 +493,6 @@ pub fn apply_patches(
             "client is at version {}, which is newer than the requested target {}; nothing to patch.",
             current_version, target_version
         );
-        crate::progress::finish(&tr("gui-patcher-nopatch-successful", &[]), true);
         return Ok(PatchOutcome::AlreadyUpToDate);
     }
 
@@ -521,21 +518,38 @@ pub fn apply_patches(
         // to progressively closer versions.
         let mut patch_found = false;
         for target in (current + 1..=target_version).rev() {
+            // Try HTTPS first, then fall back to HTTP (older servers may
+            // only support plain HTTP).
             let patch_url = build_patch_url(current, target);
             let zip_name = format!("{:05}to{:05}.patch", current, target);
             let dest = patchdata.join(&zip_name);
 
             plog!("trying patch: {} -> {} ({})", current, target, patch_url);
 
-            // Probe the URL to get the file size.
-            let size = match probe_file_size(&agent, &patch_url) {
-                Ok(s) if s > 0 => s,
+            // Probe the URL to get the file size.  Try the primary URL
+            // first; if that fails try the http:// equivalent in case the
+            // CDN has not been upgraded yet.
+            let fallback_url: String;
+            let (size, download_url) = match probe_file_size(&agent, &patch_url) {
+                Ok(s) if s > 0 => (s, patch_url.as_str()),
                 Ok(_) => {
                     plog!("  server returned empty file; skipping.");
                     continue;
                 }
-                Err(_) => {
-                    continue;
+                Err(e) => {
+                    // Try fallback to HTTP.
+                    fallback_url = patch_url.replacen("https://", "http://", 1);
+                    plog!("  primary URL failed: {:#}; trying {}", e, fallback_url);
+                    match probe_file_size(&agent, &fallback_url) {
+                        Ok(s) if s > 0 => (s, fallback_url.as_str()),
+                        Ok(_) => {
+                            plog!("  server returned empty file (fallback); skipping.");
+                            continue;
+                        }
+                        Err(_) => {
+                            continue;
+                        }
+                    }
                 }
             };
 
@@ -550,7 +564,7 @@ pub fn apply_patches(
                 zip_name,
                 size as f64 / (1024.0 * 1024.0));
 
-            if let Err(e) = download_patch_to_file(&agent, &patch_url, &dest, size) {
+            if let Err(e) = download_patch_to_file(&agent, download_url, &dest, size) {
                 plog!("  failed to download {}: {:#}", zip_name, e);
                 let _ = std::fs::remove_file(&dest);
                 let _ = std::fs::remove_file(crate::resume::progress_path(&dest));
@@ -616,7 +630,6 @@ pub fn apply_patches(
     }
 
     plog!("patching successful: now at version {}.", current);
-    crate::progress::finish(&tr("gui-patcher-patch-successful", &[]), true);
     Ok(PatchOutcome::Updated)
 }
 
@@ -736,7 +749,7 @@ fn get_current_version(target_dir: &Path) -> Result<i16> {
 /// Build a patch download URL from old and new version numbers.
 fn build_patch_url(old_ver: i16, new_ver: i16) -> String {
     format!(
-        "http://tw.cdnpatch.maplestory.beanfun.com/maplestory/patch/patchdir/{:05}/{:05}to{:05}.patch",
+        "https://tw.cdnpatch.maplestory.beanfun.com/maplestory/patch/patchdir/{:05}/{:05}to{:05}.patch",
         new_ver, old_ver, new_ver
     )
 }

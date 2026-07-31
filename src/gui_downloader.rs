@@ -329,6 +329,19 @@ pub fn run_gui_download(
     crate::gui::hide_own_console();
 
     let ui = UiModel::new();
+    // Inform the GUI renderer which region we're downloading for (used to
+    // select the appropriate background image).
+    {
+        let region_str = match region {
+            Region::Cms => "cms",
+            Region::CmsCw => "cms_cw",
+            Region::Tms => "tms",
+            _ => "",
+        };
+        if let Ok(mut m) = ui.lock() {
+            m.region = region_str.to_string();
+        }
+    }
     let reporter = Arc::new(GuiDownloadReporter::new(
         Arc::clone(&ui),
         path.join("cmsdl_downloader.log"),

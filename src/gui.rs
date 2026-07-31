@@ -60,6 +60,9 @@ pub struct UiModel {
     /// Exit code: 0 = success, non-zero = failure. Defaults to 1 so that
     /// manually closing the window before completion is treated as an error.
     pub exit_code: i32,
+    /// Region identifier string (e.g. "cms", "cms_cw", "tms").  Used to
+    /// select the appropriate background image.
+    pub region: String,
 }
 
 impl Default for UiModel {
@@ -77,6 +80,7 @@ impl Default for UiModel {
             progress: 0.0,
             should_close: false,
             exit_code: 1,
+            region: String::new(),
         }
     }
 }
@@ -139,6 +143,8 @@ mod win32 {
 
     // ── Embedded resources ───────────────────────────────────────────────────
     const BG_PNG: &[u8]       = include_bytes!("gui_res/139.png");
+    /// Overlay image drawn on top of the background for the CMS CW region.
+    const OVERLAY_PNG: &[u8]  = include_bytes!("gui_res/shockingmeal.png");
     const BMP_NORMAL: &[u8]   = include_bytes!("gui_res/150.bmp");
     const BMP_HOVER: &[u8]    = include_bytes!("gui_res/151.bmp");
     const BMP_CLICK: &[u8]    = include_bytes!("gui_res/152.bmp");
@@ -527,6 +533,11 @@ mod win32 {
     struct WindowState {
         hwnd:          HWND,
         bg_pixels:     Vec<u32>,      // WIN_W * WIN_H, pre-multiplied ARGB
+        /// Overlay image (e.g. shockingmeal.png for cms_cw), with its
+        /// dimensions.  Empty vec means no overlay.
+        overlay_pixels: Vec<u32>,
+        overlay_w:      i32,
+        overlay_h:      i32,
         btn_pixels:    [Vec<u32>; 3], // close: Normal / Hover / Pressed (BTN_W*BTN_H each)
         min_btn_pixels: [Vec<u32>; 3], // minimize: Normal / Hover / Pressed
 
@@ -1100,6 +1111,25 @@ mod win32 {
         // 1. Background
         for (i, &px) in s.bg_pixels.iter().enumerate().take(dib.len()) {
             dib[i] = to_dib(px);
+        }
+
+        // 1b. Overlay (e.g. shockingmeal.png for cms_cw) — alpha-blend on top
+        //     of the background.  Centered horizontally, placed at a fixed
+        //     vertical offset.
+        if !s.overlay_pixels.is_empty() {
+            let ox = 11; // fixed horizontal offset
+            let oy = 40; // fixed vertical offset from top
+            for py in 0..s.overlay_h {
+                for px in 0..s.overlay_w {
+                    let dx = ox + px;
+                    let dy = oy + py;
+                    if dx < 0 || dx >= WIN_W || dy < 0 || dy >= WIN_H { continue; }
+                    let si = (py * s.overlay_w + px) as usize;
+                    if si >= s.overlay_pixels.len() { continue; }
+                    let di = (dy * WIN_W + dx) as usize;
+                    dib[di] = alpha_blend_dib(dib[di], to_dib(s.overlay_pixels[si]));
+                }
+            }
         }
 
         // 2. Title-bar buttons (minimize + close) — alpha-blend over background.
@@ -1953,9 +1983,22 @@ mod win32 {
         if hwnd.is_null() { anyhow::bail!("CreateWindowExW failed"); }
 
         // Load pixel data for all resources.
+        let (overlay_pixels, overlay_w, overlay_h) = {
+            let region = ui.lock().unwrap().region.clone();
+            if region == "cms_cw" {
+                let (px, w) = load_pixels(OVERLAY_PNG, "png");
+                let h = if w > 0 { px.len() as i32 / w } else { 0 };
+                (px, w, h)
+            } else {
+                (Vec::new(), 0, 0)
+            }
+        };
         let state = Box::new(WindowState {
             hwnd,
             bg_pixels:  load_pixels(BG_PNG, "png").0,
+            overlay_pixels,
+            overlay_w,
+            overlay_h,
             btn_pixels: [
                 load_pixels(BMP_NORMAL, "bmp").0,
                 load_pixels(BMP_HOVER,  "bmp").0,

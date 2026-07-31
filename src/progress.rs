@@ -73,6 +73,7 @@ static DL_REPORTER: RwLock<Option<Arc<dyn DownloadReporter>>> = RwLock::new(None
 
 /// Register the active reporter (called once by the GUI patcher).
 pub fn set_reporter(r: Arc<dyn Reporter>) {
+    eprintln!("[progress] set_reporter called");
     *PATCH_REPORTER.write().unwrap() = Some(r);
 }
 
@@ -116,6 +117,9 @@ pub fn active() -> bool {
 fn with(f: impl FnOnce(&dyn Reporter)) {
     if let Some(r) = PATCH_REPORTER.read().unwrap().as_ref() {
         f(r.as_ref());
+    } else {
+        // In console mode (no reporter), print to stderr for diagnostics.
+        eprintln!("[progress] no reporter registered — call dropped");
     }
 }
 
@@ -129,23 +133,53 @@ pub fn line(msg: &str) {
     }
 }
 
-pub fn scanning() { with(|r| r.scanning()); }
-pub fn installing(current: &str, target: &str) { with(|r| r.installing(current, target)); }
+pub fn scanning() {
+    line("[progress] scanning");
+    with(|r| r.scanning());
+}
+pub fn installing(current: &str, target: &str) {
+    line(&format!("[progress] installing({}, {})", current, target));
+    with(|r| r.installing(current, target));
+}
 pub fn begin_download(index: usize, count: usize, total: u64) {
+    line(&format!("[progress] begin_download(idx={}, cnt={}, total={})", index, count, total));
     with(|r| r.begin_download(index, count, total));
 }
-pub fn download_progress(downloaded: u64) { with(|r| r.download_progress(downloaded)); }
-pub fn extracting(index: usize, count: usize) { with(|r| r.extracting(index, count)); }
-pub fn begin_apply(total: usize) { with(|r| r.begin_apply(total)); }
+pub fn download_progress(downloaded: u64) {
+    // Too noisy to log every call — only log periodically via the reporter.
+    with(|r| r.download_progress(downloaded));
+}
+pub fn extracting(index: usize, count: usize) {
+    line(&format!("[progress] extracting({}, {})", index, count));
+    with(|r| r.extracting(index, count));
+}
+pub fn begin_apply(total: usize) {
+    line(&format!("[progress] begin_apply({})", total));
+    with(|r| r.begin_apply(total));
+}
 pub fn apply_progress(done: usize, total: usize, rel_path: &str) {
+    // Log only at boundaries to avoid flooding.
+    if done == 1 || done == total || done % 100 == 0 {
+        line(&format!("[progress] apply_progress({}/{}, {})", done, total, rel_path));
+    }
     with(|r| r.apply_progress(done, total, rel_path));
 }
-pub fn begin_repair(total: usize, total_bytes: u64) { with(|r| r.begin_repair(total, total_bytes)); }
+pub fn begin_repair(total: usize, total_bytes: u64) {
+    line(&format!("[progress] begin_repair(total={}, bytes={})", total, total_bytes));
+    with(|r| r.begin_repair(total, total_bytes));
+}
 pub fn repair_progress(done: usize, total: usize, rel_path: &str, downloaded: u64) {
+    line(&format!("[progress] repair_progress({}/{}, {}, dl={})", done, total, rel_path, downloaded));
     with(|r| r.repair_progress(done, total, rel_path, downloaded));
 }
-pub fn purging() { with(|r| r.purging()); }
-pub fn finish(msg: &str, close: bool) { with(|r| r.finish(msg, close)); }
+pub fn purging() {
+    line("[progress] purging");
+    with(|r| r.purging());
+}
+pub fn finish(msg: &str, close: bool) {
+    line(&format!("[progress] finish(msg='{}', close={})", msg, close));
+    with(|r| r.finish(msg, close));
+}
 
 /// `plog!("...")` — a detailed procedure line (see [`line`]).
 #[macro_export]

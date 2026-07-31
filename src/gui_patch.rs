@@ -156,6 +156,7 @@ impl Reporter for GuiReporter {
     }
 
     fn scanning(&self) {
+        self.log("[gui-debug] Reporter::scanning() called");
         self.set_label2(tr("gui-patcher-scanning-update", &[]));
         self.set_label1(String::new());
         self.set_label3(String::new());
@@ -163,6 +164,7 @@ impl Reporter for GuiReporter {
     }
 
     fn installing(&self, current: &str, target: &str) {
+        self.log(&format!("[gui-debug] Reporter::installing({}, {})", current, target));
         // An update was found: create/append the log file now.
         self.open_log();
         self.set_label2(tr("gui-patcher-installing-update-from", &[current, target]));
@@ -177,10 +179,13 @@ impl Reporter for GuiReporter {
     }
 
     fn begin_download(&self, index: usize, count: usize, total: u64) {
-        let mut dl = self.dl.lock().unwrap();
-        dl.index = index;
-        dl.count = count;
-        dl.total = total;
+        self.log(&format!("[gui-debug] Reporter::begin_download(idx={}, cnt={}, total={})", index, count, total));
+        {
+            let mut dl = self.dl.lock().unwrap();
+            dl.index = index;
+            dl.count = count;
+            dl.total = total;
+        } // release dl lock before render_download needs it
         *self.speed.lock().unwrap() = SpeedState::reset();
         self.set_label3(String::new());
         self.set_progress(0.0);
@@ -199,6 +204,7 @@ impl Reporter for GuiReporter {
     }
 
     fn extracting(&self, index: usize, count: usize) {
+        self.log(&format!("[gui-debug] Reporter::extracting({}, {})", index, count));
         // Shown between download and apply; for a package that is a single huge
         // file the subsequent patch step reports no per-file progress until it
         // completes, so this label reassures the user work is ongoing.
@@ -210,6 +216,7 @@ impl Reporter for GuiReporter {
     }
 
     fn begin_apply(&self, _total: usize) {
+        self.log(&format!("[gui-debug] Reporter::begin_apply(total={})", _total));
         // Requirement 6: reset the progress bar to 0 for the apply phase.
         self.set_label3(String::new());
         self.set_progress(0.0);
@@ -220,6 +227,7 @@ impl Reporter for GuiReporter {
             self.set_progress(done as f32 / total as f32);
         }
         if self.should_update_ui() || done == total {
+            self.log(&format!("[gui-debug] Reporter::apply_progress({}/{}, {})", done, total, rel_path));
             self.set_label1(tr(
                 "gui-patcher-applying-update",
                 &[&done.to_string(), &total.to_string(), rel_path],
@@ -228,6 +236,7 @@ impl Reporter for GuiReporter {
     }
 
     fn begin_repair(&self, _total: usize, total_bytes: u64) {
+        self.log(&format!("[gui-debug] Reporter::begin_repair(total={}, bytes={})", _total, total_bytes));
         *self.repair_total_bytes.lock().unwrap() = total_bytes;
         *self.speed.lock().unwrap() = SpeedState::reset();
         self.set_label3(String::new());
@@ -241,6 +250,7 @@ impl Reporter for GuiReporter {
         }
         let speed = self.speed.lock().unwrap().tick(downloaded);
         if self.should_update_ui() || done == total {
+            self.log(&format!("[gui-debug] Reporter::repair_progress({}/{}, {}, dl={})", done, total, rel_path, downloaded));
             self.set_label1(tr(
                 "gui-patcher-repairing-file",
                 &[&done.to_string(), &total.to_string(), rel_path, &format_speed(speed)],
@@ -249,12 +259,14 @@ impl Reporter for GuiReporter {
     }
 
     fn purging(&self) {
+        self.log("[gui-debug] Reporter::purging()");
         self.set_label1(tr("gui-patcher-purge", &[]));
         self.set_label3(String::new());
         self.set_progress(0.0);
     }
 
     fn finish(&self, msg: &str, close: bool) {
+        self.log(&format!("[gui-debug] Reporter::finish(msg='{}', close={})", msg, close));
         self.set_label3(String::new());
         if !msg.is_empty() {
             self.set_label1(msg.to_string());
@@ -336,8 +348,23 @@ pub fn run_gui_patch(
     crate::gui::hide_own_console();
 
     let ui = UiModel::new();
+    // Inform the GUI renderer which region we're patching for (used to
+    // select the appropriate background image, etc.).
+    {
+        let region_str = match region {
+            Region::Cms => "cms",
+            Region::CmsCw => "cms_cw",
+            Region::Tms => "tms",
+            _ => "",
+        };
+        if let Ok(mut m) = ui.lock() {
+            m.region = region_str.to_string();
+        }
+    }
     let reporter = Arc::new(GuiReporter::new(Arc::clone(&ui), target.join("cmsdl_patcher.log"), is_tms));
     progress::set_reporter(reporter.clone() as Arc<dyn Reporter>);
+    reporter.log("[gui-debug] GuiReporter registered successfully");
+    crate::plog!("[gui-debug] set_reporter called, is_tms={}", is_tms);
 
     // Show an advisory when patching on a mechanical hard disk.
     if crate::is_hdd::is_hdd(target) {
@@ -366,6 +393,7 @@ pub fn run_gui_patch(
     let proxy_buf = proxy.map(|s| s.to_string());
     let ui_for_result = Arc::clone(&ui);
     std::thread::spawn(move || {
+        crate::plog!("[gui-debug] background patch thread started");
         let proxy = proxy_buf.as_deref();
         let res = run_patch_flow(
             &target_buf, &version_buf, launch_after,
@@ -406,10 +434,22 @@ fn run_patch_flow(
     keep_old_wz_files: bool,
     region: Region,
 ) -> Result<()> {
+    crate::plog!("[gui-debug] run_patch_flow entered, region={}", region);
     if region == Region::Tms {
-        // TMS: use tms_patch. Progress reporting is handled inside
-        // tms_patch::apply_patches (it calls progress::finish internally).
-        crate::tms_patch::apply_patches(target, version, allow_insecure, proxy, purge_wz_files)?;
+        crate::plog!("[gui-debug] entering TMS patch path");
+        // TMS: use tms_patch. Progress reporting (scanning, installing,
+        // download/apply/repair progress) is handled inside apply_patches.
+        // We handle the final finish message here so that the background
+        // thread can set exit_code=0 before the window closes.
+        use crate::tms_patch::PatchOutcome as TmsPatchOutcome;
+        let outcome = crate::tms_patch::apply_patches(
+            target, version, allow_insecure, proxy, purge_wz_files,
+        )?;
+        let done_key = match outcome {
+            TmsPatchOutcome::Updated => "gui-patcher-patch-successful",
+            TmsPatchOutcome::AlreadyUpToDate => "gui-patcher-nopatch-successful",
+        };
+        progress::finish(&tr(done_key, &[]), close_after_finishing);
         return Ok(());
     }
 
