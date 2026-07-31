@@ -54,23 +54,27 @@ const RESUME_BACKOFF: Duration = Duration::from_millis(500);
 
 // --- keep-old-wz-files support ------------------------------------------------
 
-/// Marker file inside `mxd/Data` that signals keep-old-wz-files mode is active.
-/// Its presence (together with `mxd/DataBk`) means reads should be redirected
-/// from `mxd/DataBk` and the session was interrupted.
-const KEEP_OLD_DATA_MARKER: &str = "mxd/Data/.incomplete";
+/// Marker file inside `<data_dir>/Data` that signals keep-old-wz-files mode is active.
+/// Its presence (together with `<data_dir>/DataBk`) means reads should be redirected
+/// from `<data_dir>/DataBk` and the session was interrupted.
+fn keep_old_data_marker() -> String {
+    format!("{}/Data/.incomplete", crate::cms::data_dir())
+}
 
 /// Check whether `key` (a backslash-separated path relative to the client root)
-/// lives under the `mxd/Data` directory.
+/// lives under the `<data_dir>/Data` directory.
 fn is_under_data(key: &str) -> bool {
+    let dd = crate::cms::data_dir();
     let lower = key.to_lowercase().replace('\\', "/");
-    lower.starts_with("mxd/data/") || lower == "mxd/data"
+    lower.starts_with(&format!("{dd}/data/")) || lower == format!("{dd}/data")
 }
 
 /// Check whether keep-old-wz mode is active (both the backup directory and the
 /// marker file exist).
 fn is_keep_old_wz_active(target_dir: &Path) -> bool {
-    target_dir.join("mxd").join("DataBk").is_dir()
-        && target_dir.join(KEEP_OLD_DATA_MARKER).exists()
+    let dd = crate::cms::data_dir();
+    target_dir.join(dd).join("DataBk").is_dir()
+        && target_dir.join(keep_old_data_marker()).exists()
 }
 
 /// Check whether a [`Manifest`] contains any delta or new entries under
@@ -87,9 +91,10 @@ fn manifest_has_data_entries(manifest: &Manifest) -> bool {
 /// `false` when the manifest does not contain any Data entries and there is
 /// nothing to back up.
 fn setup_keep_old_wz(target_dir: &Path, manifest: &Manifest) -> Result<bool> {
-    let data_dir = target_dir.join("mxd").join("Data");
-    let data_bk = target_dir.join("mxd").join("DataBk");
-    let marker = target_dir.join(KEEP_OLD_DATA_MARKER);
+    let dd = crate::cms::data_dir();
+    let data_dir = target_dir.join(dd).join("Data");
+    let data_bk = target_dir.join(dd).join("DataBk");
+    let marker = target_dir.join(keep_old_data_marker());
 
     // Already set up from a previous patch in this session.
     if marker.exists() && data_bk.is_dir() {
@@ -131,15 +136,18 @@ fn setup_keep_old_wz(target_dir: &Path, manifest: &Manifest) -> Result<bool> {
 /// still written to `mxd/Data` via the normal target path.
 fn source_path_for_delta(target_dir: &Path, source_key: &str) -> PathBuf {
     if is_keep_old_wz_active(target_dir) && is_under_data(source_key) {
-        // Strip the "mxd/Data" prefix (with either separator style) and prepend
-        // "mxd/DataBk".
+        let dd = crate::cms::data_dir();
+        let prefix_fwd = format!("{dd}/Data/");
+        let prefix_bs = format!("{dd}\\Data\\");
+        let prefix_fwd_noslash = format!("{dd}/Data");
+        let prefix_bs_noslash = format!("{dd}\\Data");
         let rel = source_key
-            .strip_prefix("mxd\\Data\\")
-            .or_else(|| source_key.strip_prefix("mxd/Data/"))
-            .or_else(|| source_key.strip_prefix("mxd\\Data"))
-            .or_else(|| source_key.strip_prefix("mxd/Data"))
+            .strip_prefix(&prefix_bs)
+            .or_else(|| source_key.strip_prefix(&prefix_fwd))
+            .or_else(|| source_key.strip_prefix(&prefix_bs_noslash))
+            .or_else(|| source_key.strip_prefix(&prefix_fwd_noslash))
             .unwrap_or(source_key);
-        target_dir.join("mxd").join("DataBk").join(rel)
+        target_dir.join(dd).join("DataBk").join(rel)
     } else {
         rel_join(target_dir, source_key)
     }
@@ -681,25 +689,29 @@ fn read_installed_version(target_dir: &Path) -> Option<String> {
 
 /// Parse the installed version from `<target>/mxd/LocalVersion3.xml`, if any.
 fn read_version_from_local_xml(target_dir: &Path) -> Option<String> {
-    let path = target_dir.join("mxd").join("LocalVersion3.xml");
+    let dd = crate::cms::data_dir();
+    let path = target_dir.join(dd).join("LocalVersion3.xml");
     let contents = std::fs::read_to_string(path).ok()?;
-    let tag = "<zone5_8848_v3>";
-    let start = contents.find(tag)? + tag.len();
-    let end = contents.find("</zone5_8848_v3>")?;
+    let zone = crate::cms::config().zone_tag;
+    let tag = format!("<{zone}>");
+    let start = contents.find(&tag)? + tag.len();
+    let end = contents.find(&format!("</{zone}>"))?;
     let json: serde_json::Value = serde_json::from_str(&contents[start..end]).ok()?;
     let v = json.get("version")?.get("v")?.as_str()?.to_owned();
     if v.is_empty() { None } else { Some(v) }
 }
 
 /// Write the installed `version` and `version_view` to
-/// `<target>/mxd/LocalVersion3.xml`.
+/// `<target>/<data_dir>/LocalVersion3.xml`.
 fn write_installed_version(target_dir: &Path, version: &str, version_view: &str) -> Result<()> {
-    let mxd = target_dir.join("mxd");
+    let dd = crate::cms::data_dir();
+    let zone = crate::cms::config().zone_tag;
+    let mxd = target_dir.join(dd);
     std::fs::create_dir_all(&mxd)
         .with_context(|| format!("failed to create {}", mxd.display()))?;
     let xml_path = mxd.join("LocalVersion3.xml");
     let xml = format!(
-        r#"<?xmlversion="1.0"encoding="utf-8"?><Root><zone5_8848_v3>{{"product_name":"zone5_8848_v3","version":{{"v":"{version}","view":"{version_view}"}}}}</zone5_8848_v3></Root>"#
+        r#"<?xmlversion="1.0"encoding="utf-8"?><Root><{zone}>{{"product_name":"{zone}","version":{{"v":"{version}","view":"{version_view}"}}}}</{zone}></Root>"#
     );
     std::fs::write(&xml_path, &xml)
         .with_context(|| format!("failed to write {}", xml_path.display()))
@@ -715,7 +727,8 @@ fn write_installed_version(target_dir: &Path, version: &str, version_view: &str)
 /// with the pre-configured Locale Remulator profile GUID.
 /// Otherwise a warning is printed and the game launches directly.
 pub fn launch_client(target_dir: &Path, lrhook: bool) -> Result<()> {
-    let mxd = target_dir.join("mxd");
+    let dd = crate::cms::data_dir();
+    let mxd = target_dir.join(dd);
     let exe = mxd.join("MapleStory.exe");
     if !exe.exists() {
         bail!("cannot launch: {} not found", exe.display());
@@ -874,7 +887,8 @@ fn try_detect_version_from_wz(
     target_dir: &Path,
     packages: &[cms::PatchPackage],
 ) -> Option<(usize, String)> {
-    let wz_path = target_dir.join("mxd").join("Data").join("Base").join("Base.wz");
+    let dd = crate::cms::data_dir();
+    let wz_path = target_dir.join(dd).join("Data").join("Base").join("Base.wz");
     if !wz_path.exists() {
         return None;
     }
@@ -978,9 +992,11 @@ pub fn apply_patches(
     let _awake = crate::keep_awake::KeepAwake::new();
 
     // 1. The client must already be present.
-    if !target_dir.join("mxd").is_dir() {
+    let dd = crate::cms::data_dir();
+    if !target_dir.join(dd).is_dir() {
         bail!(
-            "no 'mxd' directory found in {}; not a CMS client directory",
+            "no '{}' directory found in {}; not a CMS client directory",
+            dd,
             target_dir.display()
         );
     }
@@ -1142,7 +1158,7 @@ pub fn apply_patches(
 
     // If a previous keep-old-wz run was interrupted the marker still exists;
     // resume with the same mode automatically.
-    let effective_keep = keep_old_wz_files || target_dir.join(KEEP_OLD_DATA_MARKER).exists();
+    let effective_keep = keep_old_wz_files || target_dir.join(keep_old_data_marker()).exists();
 
     // 4-5. Apply each patch in turn. The version marker is only advanced when a
     // patch's every zip part applied with no corrupted files.
@@ -1357,7 +1373,7 @@ pub fn apply_patches(
 
 /// Remove the keep-old-wz `.incomplete` marker from `mxd/Data` if present.
 fn cleanup_keep_old_wz_marker(target_dir: &Path) {
-    let marker = target_dir.join(KEEP_OLD_DATA_MARKER);
+    let marker = target_dir.join(keep_old_data_marker());
     let _ = std::fs::remove_file(&marker);
 }
 

@@ -142,12 +142,17 @@ use std::sync::RwLock;
 static CONFIG_OVERRIDE: RwLock<Option<CmsConfig>> = RwLock::new(None);
 
 /// Return the currently active [`CmsConfig`], falling back to [`CMS_CONFIG`].
-fn config() -> CmsConfig {
+pub(crate) fn config() -> CmsConfig {
     CONFIG_OVERRIDE
         .read()
         .unwrap()
         .clone()
         .unwrap_or(CMS_CONFIG)
+}
+
+/// Return the currently active data directory name (e.g. `"mxd"`, `"mxdclassic"`).
+pub(crate) fn data_dir() -> &'static str {
+    config().data_dir
 }
 
 /// Temporarily override the active config for the duration of `f`.

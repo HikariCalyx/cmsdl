@@ -381,7 +381,13 @@ fn run_patch_flow(
 ) -> Result<()> {
     use crate::cms_patch::{apply_patches, PatchOutcome};
 
-    let outcome = apply_patches(target, version, allow_insecure, proxy, purge_wz_files, keep_old_wz_files)?;
+    let outcome = if region == Region::CmsCw {
+        crate::cms::with_config(crate::cms_cw::CW_CONFIG, || {
+            apply_patches(target, version, allow_insecure, proxy, purge_wz_files, keep_old_wz_files)
+        })?
+    } else {
+        apply_patches(target, version, allow_insecure, proxy, purge_wz_files, keep_old_wz_files)?
+    };
 
     // Choose the terminal label based on whether an update was applied and
     // whether we were asked to launch the game (requirements 9 and 10).
