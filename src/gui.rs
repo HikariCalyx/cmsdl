@@ -338,6 +338,16 @@ mod win32 {
     // System command — window restored from minimised state.
     const SC_RESTORE: usize = 0xF120;
 
+    // PeekMessage mode
+    const PM_REMOVE: u32 = 1;
+
+    // MsgWaitForMultipleObjects wake mask: any posted message or input
+    const QS_ALLINPUT: u32 = 0x04FF;
+
+    // MsgWaitForMultipleObjects return values
+    const WAIT_TIMEOUT:  u32 = 0x102;
+    const WAIT_FAILED:   u32 = 0xFFFF_FFFF;
+
     // GDI+ pixel format
     const PIXEL_FORMAT_32BPP_ARGB: i32 = 0x26200A;
     const IMAGING_LOCK_READ:       u32 = 1;
@@ -440,6 +450,7 @@ mod win32 {
             parent: HWND, menu: HMENU, inst: HINSTANCE, param: *mut c_void) -> HWND;
         fn ShowWindow(hwnd: HWND, cmd: i32) -> BOOL;
         fn GetMessageW(msg: *mut MSG, hwnd: HWND, min: u32, max: u32) -> BOOL;
+        fn PeekMessageW(msg: *mut MSG, hwnd: HWND, min: u32, max: u32, remove: u32) -> BOOL;
         fn TranslateMessage(msg: *const MSG) -> BOOL;
         fn DispatchMessageW(msg: *const MSG) -> LRESULT;
         fn PostQuitMessage(code: i32);
@@ -462,6 +473,9 @@ mod win32 {
         fn CreateIconIndirect(info: *const ICONINFO) -> HICON;
         fn DestroyIcon(icon: HICON) -> BOOL;
         fn IsIconic(hwnd: HWND) -> BOOL;
+        fn MsgWaitForMultipleObjects(n: u32, handles: *const c_void, wait_all: BOOL,
+            timeout: u32, wake_mask: u32) -> u32;
+        fn ValidateRect(hwnd: HWND, rect: *const c_void) -> BOOL;
     }
 
     #[allow(dead_code)]
@@ -1667,8 +1681,14 @@ mod win32 {
 
         match msg {
             // Layered windows don't use WM_PAINT; all drawing goes through
-            // update_layered(). Return 0 to suppress default handling.
-            0x000F /* WM_PAINT */ => 0,
+            // update_layered(). Validate any stale update region that may
+            // have been created by internal system operations (e.g. during
+            // ShowWindow), so the system does not keep synthesising WM_PAINT
+            // messages that would starve lower-priority WM_TIMER messages.
+            0x000F /* WM_PAINT */ => {
+                unsafe { ValidateRect(hwnd, ptr::null()) };
+                0
+            }
 
             WM_MOUSEMOVE => {
                 if sp.is_null() { return 0; }
@@ -1977,17 +1997,62 @@ mod win32 {
         }
         unsafe { ShowWindow(hwnd, 5 /* SW_SHOW */) };
 
-        // Drive the demo animation with a repaint timer.
+        // Drive repaint ticks with a WM_TIMER — this serves as a secondary
+        // mechanism; the primary refresh is driven by the message-loop
+        // timeout below (which is not subject to WM_TIMER's low-priority
+        // synthesis rules).
         unsafe { SetTimer(hwnd, IDT_ANIM, ANIM_TICK_MS, ptr::null()) };
 
-        // Message loop.
-        let mut msg: MSG = unsafe { std::mem::zeroed() };
+        // ── Message loop ─────────────────────────────────────────────────
+        //
+        // WM_TIMER is a *low-priority* synthesised message: GetMessage /
+        // PeekMessage only generate it when the message queue is completely
+        // empty.  During I/O-heavy operations (download / patch) subtle
+        // internal Windows activity can keep the queue non-empty, starving
+        // the timer and freezing the UI.
+        //
+        // We use MsgWaitForMultipleObjects with a 30 ms timeout instead.
+        // When the timeout fires we repaint directly, bypassing the message
+        // queue entirely.  When a real message arrives we drain it normally.
+        // The WM_TIMER handler above is kept as a secondary path for mouse-
+        // hover repaints and the close-on-completion signal.
+        let sp_msg: *mut WindowState =
+            unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *mut WindowState;
         loop {
-            let ret = unsafe { GetMessageW(&mut msg, ptr::null_mut(), 0, 0) };
-            if ret <= 0 { break; }
-            unsafe { TranslateMessage(&msg); DispatchMessageW(&msg); }
-        }
+            // Wait for a message or 30 ms, whichever comes first.
+            let wait_ret = unsafe {
+                MsgWaitForMultipleObjects(0, ptr::null(), 0, ANIM_TICK_MS, QS_ALLINPUT)
+            };
 
-        Ok(())
+            if wait_ret == WAIT_TIMEOUT && !sp_msg.is_null() {
+                // Timer-equivalent: repaint from the latest model state.
+                let s = unsafe { &mut *sp_msg };
+                let (_, _, _, _, progress, should_close, _, _, _, _, _) = s.snapshot();
+                if unsafe { IsIconic(hwnd) } == 0 {
+                    update_layered(s, None);
+                }
+                set_taskbar_progress(s, progress);
+                s.update_taskbar_icon(progress);
+                if should_close {
+                    unsafe { PostQuitMessage(0) };
+                }
+            } else if wait_ret == WAIT_FAILED {
+                // Unlikely: sleep briefly to avoid a busy-loop.
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+
+            // Drain all pending messages (including the WM_TIMER that may
+            // have been synthesised).  If we just handled a WAIT_TIMEOUT and
+            // no messages are pending this loop body is a quick no-op.
+            let mut msg: MSG = unsafe { std::mem::zeroed() };
+            while unsafe { PeekMessageW(&mut msg, ptr::null_mut(), 0, 0, PM_REMOVE) } != 0 {
+                if msg.message == 0x0012 /* WM_QUIT */ {
+                    // Exit the outer loop first so we can clean up below.
+                    unsafe { KillTimer(hwnd, IDT_ANIM) };
+                    return Ok(());
+                }
+                unsafe { TranslateMessage(&msg); DispatchMessageW(&msg); }
+            }
+        }
     }
 } // mod win32

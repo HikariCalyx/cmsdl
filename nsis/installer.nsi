@@ -253,7 +253,7 @@ Function .onInit
     Quit
   ${EndIf}
 
-  ; If the current date is on or before September 8, 2026, add --build 1063 to
+  ; If the current date is on or before September 8, 2026, add --build 1064 to
   ; the download command (required for a specific game build rollout).
   ${GetTime} "" "L" $0 $1 $2 $3 $4 $5 $6
   ; $2 = year (4 digits), $1 = month, $0 = day of month
@@ -264,7 +264,7 @@ Function .onInit
   monthEq:
     IntCmp $0 8 beforeCutoff beforeCutoff afterCutoff
   beforeCutoff:
-    StrCpy $BuildFlag "--build 1063"
+    StrCpy $BuildFlag "--build 1064"
   afterCutoff:
 
   ; Default game variants: install both.
