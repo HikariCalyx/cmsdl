@@ -629,7 +629,7 @@ Section "Install"
     ; Download CMS_CW if selected.
     StrCmp $InstallCMSCW "1" 0 skipCMSCWDownload
       DetailPrint "$(STR_DOWNLOADING_CMS_CW)"
-      ExecWait '"$INSTDIR\cmsdl.exe" cms_cw --download "$INSTDIR" --purge-wz-files$NoGuiFlag$CloseFlag' $0
+      ExecWait '"$INSTDIR\cmsdl.exe" cms_cw --download "$INSTDIR" $NoGuiFlag$CloseFlag' $0
       StrCmp $0 "0" skipCMSCWDownload
         MessageBox MB_ICONSTOP "$(STR_DOWNLOAD_CMS_CW_FAILED)"
         Abort
