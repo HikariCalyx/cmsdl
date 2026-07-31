@@ -597,7 +597,7 @@ fn patch_apply_cms(
              performing a full client download instead of patching.",
             sentinel.display()
         );
-        download(Region::Cms, target, false, None, allow_insecure, proxy, None, false, true, false, None)?;
+        download(Region::Cms, target, false, None, allow_insecure, proxy, None, false, no_gui, false, None)?;
         create_shortcut(Region::Cms, target, lrhook, no_gui, close_after_finishing)?;
         if launch_after {
             crate::cms_patch::launch_client(target, lrhook)?;
@@ -653,7 +653,7 @@ fn patch_apply_cms_cw(
              performing a full client download instead of patching.",
             sentinel.display()
         );
-        download(Region::CmsCw, target, false, None, allow_insecure, proxy, None, false, true, false, None)?;
+        download(Region::CmsCw, target, false, None, allow_insecure, proxy, None, false, no_gui, false, None)?;
         create_shortcut(Region::CmsCw, target, false, no_gui, close_after_finishing)?;
         if launch_after {
             cms_cw::launch_client(target)?;
@@ -706,7 +706,7 @@ fn patch_apply_tms(
         );
         // Clean up any leftover repair sentinel too.
         let _ = std::fs::remove_file(target.join("Data/.incomplete"));
-        download(Region::Tms, target, false, None, allow_insecure, proxy, None, false, true, false, None)?;
+        download(Region::Tms, target, false, None, allow_insecure, proxy, None, false, no_gui, false, None)?;
         return Ok(());
     }
 
@@ -722,7 +722,7 @@ fn patch_apply_tms(
         );
         // Remove the sentinel now so the full download won't trip over it.
         let _ = std::fs::remove_file(&repair_sentinel);
-        download(Region::Tms, target, false, None, allow_insecure, proxy, None, false, true, false, None)?;
+        download(Region::Tms, target, false, None, allow_insecure, proxy, None, false, no_gui, false, None)?;
         return Ok(());
     }
 
