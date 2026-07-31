@@ -1585,8 +1585,19 @@ fn is_junk_dir_name(name: &str) -> bool {
 
 // ── Corrupted file repair ───────────────────────────────────────────────────
 
+/// Sentinel file created in `Data/` before repair begins. Its presence means
+/// the repair was interrupted; on the next run a full client download is
+/// performed instead of patching.
+const TMS_REPAIR_SENTINEL: &str = "Data/.incomplete";
+
+/// Maximum number of files repaired concurrently on SSD.
+const REPAIR_PARALLEL_SSD: usize = 10;
+/// Maximum number of files repaired concurrently on HDD.
+const REPAIR_PARALLEL_HDD: usize = 1;
+
 /// Download specific files from the TMS full client manifest to repair
-/// corrupted files.
+/// corrupted files.  Each file is downloaded with up to 5 parallel segments;
+/// files are processed concurrently (10 on SSD, 1 on HDD).
 ///
 /// Returns the list of files that still could not be repaired.
 fn repair_corrupted_files(
@@ -1595,7 +1606,11 @@ fn repair_corrupted_files(
     allow_insecure: bool,
     proxy: Option<&str>,
 ) -> Result<Vec<String>> {
-    let agent = crate::net::agent(allow_insecure, proxy);
+    let agent = crate::net::agent_builder(allow_insecure, proxy)
+        .timeout_connect(CONNECT_TIMEOUT)
+        .timeout_read(READ_TIMEOUT)
+        .build();
+
     let info = crate::tms::get_product_info(&agent)
         .context("failed to fetch TMS product manifest for repair")?;
 
@@ -1603,40 +1618,106 @@ fn repair_corrupted_files(
         .map(|i| &info.execution_path[..i])
         .unwrap_or("");
 
-    let corrupted_set: HashSet<&str> = corrupted.iter().map(|s| s.as_str()).collect();
-    let mut still_failed: Vec<String> = Vec::new();
+    // Normalise both sides to forward slashes for matching.
+    let corrupted_set: HashSet<String> = corrupted
+        .iter()
+        .map(|s| s.replace('\\', "/"))
+        .collect();
 
+    // Build the repair list.
+    struct RepairItem {
+        url: String,
+        dest: PathBuf,
+        size: u64,
+        sha256: String,
+        path: String,
+    }
+    let mut items: Vec<RepairItem> = Vec::new();
     for file in &info.files {
         let normalized = file.path.replace('\\', "/");
-        if !corrupted_set.contains(normalized.as_str()) {
+        if !corrupted_set.contains(&normalized) {
             continue;
         }
-
         let url = if base_path.is_empty() {
             format!("{}/{}", info.base_url.trim_end_matches('/'), file.path)
         } else {
             format!("{}/{}/{}", info.base_url.trim_end_matches('/'), base_path, file.path)
         };
-
-        let target_path = target_dir.join(sanitize_path(&file.path));
-        plog!("  repairing: {} ({:.2} MiB)...",
-            file.path,
-            file.size_in_bytes as f64 / (1024.0 * 1024.0));
-
-        match download_and_verify(&agent, &url, &target_path, file.size_in_bytes, &file.sha256) {
-            Ok(()) => {}
-            Err(e) => {
-                plog!("  failed to repair {}: {:#}", file.path, e);
-                still_failed.push(file.path.clone());
-            }
-        }
+        items.push(RepairItem {
+            url,
+            dest: target_dir.join(sanitize_path(&file.path)),
+            size: file.size_in_bytes,
+            sha256: file.sha256.clone(),
+            path: file.path.clone(),
+        });
     }
 
-    Ok(still_failed)
+    if items.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Create a sentinel so an interrupted repair triggers a full re-download
+    // on the next run instead of a partial patch.
+    let sentinel_path = target_dir.join(TMS_REPAIR_SENTINEL);
+    if let Some(parent) = sentinel_path.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    std::fs::write(&sentinel_path, "").ok();
+
+    let max_parallel = if crate::is_hdd::is_hdd(target_dir) {
+        plog!("  HDD detected — repairing files one at a time.");
+        REPAIR_PARALLEL_HDD
+    } else {
+        REPAIR_PARALLEL_SSD
+    };
+
+    let workers = max_parallel.min(items.len()).max(1);
+    let counter = AtomicUsize::new(0);
+    let still_failed: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    let first_err: Mutex<Option<anyhow::Error>> = Mutex::new(None);
+
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| {
+                loop {
+                    let idx = counter.fetch_add(1, Ordering::Relaxed);
+                    if idx >= items.len() {
+                        break;
+                    }
+                    let item = &items[idx];
+                    plog!("  repairing: {} ({:.2} MiB)...",
+                        item.path,
+                        item.size as f64 / (1024.0 * 1024.0));
+
+                    match download_and_verify_segmented(&agent, &item.url, &item.dest, item.size, &item.sha256) {
+                        Ok(()) => {}
+                        Err(e) => {
+                            plog!("  failed to repair {}: {}", item.path, e);
+                            still_failed.lock().unwrap().push(item.path.clone());
+                        }
+                    }
+                }
+            });
+        }
+    });
+
+    if let Some(e) = first_err.into_inner().unwrap() {
+        return Err(e);
+    }
+
+    let failed = still_failed.into_inner().unwrap();
+
+    // Remove the sentinel only when repair completed successfully.
+    if failed.is_empty() {
+        let _ = std::fs::remove_file(&sentinel_path);
+    }
+
+    Ok(failed)
 }
 
-/// Download a file from `url` to `dest`, verifying its size and SHA-256.
-fn download_and_verify(
+/// Download a file to `dest` with up to 5 parallel byte-range segments and
+/// resume support, then verify SHA-256.
+fn download_and_verify_segmented(
     agent: &ureq::Agent,
     url: &str,
     dest: &Path,
@@ -1648,53 +1729,141 @@ fn download_and_verify(
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
 
-    for attempt in 0..HTTP_RETRIES {
-        let resp = match agent.get(url).call() {
-            Ok(r) => r,
-            Err(e) => {
-                if attempt + 1 < HTTP_RETRIES {
-                    std::thread::sleep(Duration::from_millis(500));
-                    continue;
-                }
-                return Err(e.into());
-            }
-        };
-
-        let mut reader = resp.into_reader();
-        let mut data = Vec::with_capacity(expected_size as usize);
-        match reader.read_to_end(&mut data) {
-            Ok(_) => {
-                if data.len() as u64 != expected_size {
-                    bail!(
-                        "size mismatch: expected {}, got {}",
-                        expected_size, data.len()
-                    );
-                }
-
-                // Verify SHA-256.
+    // Already present and correct?
+    if dest.exists() && !crate::resume::progress_path(dest).exists() {
+        if let Ok(meta) = dest.metadata() {
+            if meta.len() == expected_size {
+                let data = std::fs::read(dest)
+                    .with_context(|| format!("failed to read {}", dest.display()))?;
                 use sha2::Digest;
                 let mut hasher = sha2::Sha256::new();
                 hasher.update(&data);
                 let hash = hex::encode(hasher.finalize());
-                if !hash.eq_ignore_ascii_case(expected_sha256) {
-                    bail!(
-                        "SHA-256 mismatch: expected {}, got {}",
-                        expected_sha256, hash
-                    );
+                if hash.eq_ignore_ascii_case(expected_sha256) {
+                    return Ok(());
                 }
-
-                std::fs::write(dest, &data)
-                    .with_context(|| format!("failed to write {}", dest.display()))?;
-                return Ok(());
-            }
-            Err(e) => {
-                if attempt + 1 < HTTP_RETRIES {
-                    std::thread::sleep(Duration::from_millis(500));
-                    continue;
-                }
-                return Err(e.into());
             }
         }
     }
-    unreachable!()
+
+    let pb = if crate::progress::active() {
+        ProgressBar::hidden()
+    } else {
+        ProgressBar::new(expected_size)
+    };
+    pb.set_style(
+        ProgressStyle::with_template(
+            "    [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({binary_bytes_per_sec}, ETA {eta})",
+        )
+        .unwrap()
+        .progress_chars("=>-"),
+    );
+    pb.enable_steady_tick(Duration::from_millis(120));
+
+    let segments = effective_segments(expected_size, SEGMENTS_PER_FILE);
+
+    if segments <= 1 || expected_size == 0 || !supports_ranges(agent, url) {
+        let _ = std::fs::remove_file(crate::resume::progress_path(dest));
+        // Simple stream: read into memory, verify, write.
+        for attempt in 0..HTTP_RETRIES {
+            match agent.get(url).call() {
+                Ok(resp) => {
+                    let mut reader = resp.into_reader();
+                    let mut data = Vec::with_capacity(expected_size as usize);
+                    if reader.read_to_end(&mut data).is_ok() {
+                        if data.len() as u64 == expected_size {
+                            use sha2::Digest;
+                            let mut hasher = sha2::Sha256::new();
+                            hasher.update(&data);
+                            let hash = hex::encode(hasher.finalize());
+                            if hash.eq_ignore_ascii_case(expected_sha256) {
+                                std::fs::write(dest, &data)?;
+                                pb.finish_and_clear();
+                                return Ok(());
+                            }
+                        }
+                    }
+                }
+                Err(_) if attempt + 1 < HTTP_RETRIES => {
+                    std::thread::sleep(Duration::from_millis(500));
+                    continue;
+                }
+                Err(e) => {
+                    pb.finish_and_clear();
+                    return Err(e.into());
+                }
+            }
+            if attempt + 1 >= HTTP_RETRIES {
+                pb.finish_and_clear();
+                bail!("failed to download after {HTTP_RETRIES} attempts");
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    } else {
+        // Multi-segment.
+        let progress_path = crate::resume::progress_path(dest);
+        let saved_opt = crate::resume::read_progress(&progress_path)
+            .filter(|_| dest.exists())
+            .filter(|_| dest.metadata().map_or(false, |m| m.len() == expected_size));
+
+        let ranges: Vec<(u64, u64)>;
+        let progress: crate::resume::FileProgress;
+
+        if let Some(saved) = saved_opt
+            .and_then(|s| crate::resume::build_resume_ranges(&s, expected_size).map(|(r, pre)| (s, r, pre)))
+        {
+            let (saved_segs, resume_ranges, pre_completed) = saved;
+            pb.inc(pre_completed);
+            progress = crate::resume::FileProgress::from_saved(dest, &saved_segs, &resume_ranges)
+                .with_context(|| format!("failed to write progress file {}", progress_path.display()))?;
+            ranges = resume_ranges;
+        } else {
+            {
+                let file = std::fs::File::create(dest)?;
+                file.set_len(expected_size)?;
+            }
+            let fresh_ranges = compute_ranges(expected_size, segments);
+            progress = crate::resume::FileProgress::new(dest, &fresh_ranges)?;
+            ranges = fresh_ranges;
+        }
+
+        let first_err: Mutex<Option<anyhow::Error>> = Mutex::new(None);
+        std::thread::scope(|scope| {
+            let progress = &progress;
+            for (slot, &(start, end)) in ranges.iter().enumerate() {
+                let pb = &pb;
+                let first_err = &first_err;
+                scope.spawn(move || {
+                    if let Err(e) = download_segment(agent, url, dest, start, end, pb, progress, slot) {
+                        let mut s = first_err.lock().unwrap();
+                        if s.is_none() { *s = Some(e); }
+                    }
+                });
+            }
+        });
+
+        if let Some(e) = first_err.into_inner().unwrap() {
+            pb.finish_and_clear();
+            return Err(e);
+        }
+        progress.delete();
+
+        // Verify SHA-256.
+        let data = std::fs::read(dest)?;
+        if data.len() as u64 != expected_size {
+            pb.finish_and_clear();
+            bail!("size mismatch: expected {expected_size}, got {}", data.len());
+        }
+        use sha2::Digest;
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(&data);
+        let hash = hex::encode(hasher.finalize());
+        if !hash.eq_ignore_ascii_case(expected_sha256) {
+            pb.finish_and_clear();
+            bail!("SHA-256 mismatch: expected {expected_sha256}, got {hash}");
+        }
+    }
+
+    pb.finish_and_clear();
+    Ok(())
 }

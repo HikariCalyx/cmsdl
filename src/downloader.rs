@@ -665,11 +665,13 @@ fn patch_apply_tms(
     region: Region,
 ) -> Result<()> {
     let sentinel = target.join(format!(".incomplete_{region}"));
-    if sentinel.exists() {
+    let repair_sentinel = target.join("Data/.incomplete");
+    if sentinel.exists() || repair_sentinel.exists() {
+        let which = if repair_sentinel.exists() { &repair_sentinel } else { &sentinel };
         println!(
-            "cmsdl {VERSION}: incomplete download marker detected at '{}'; \
+            "cmsdl {VERSION}: incomplete marker detected at '{}'; \
              performing a full client download instead of patching.",
-            sentinel.display()
+            which.display()
         );
         download(Region::Tms, target, false, None, allow_insecure, proxy, None, false, true, false, None)?;
         return Ok(());
