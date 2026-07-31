@@ -420,9 +420,9 @@ Section "Install"
     ; When Gaming VPN Mode is enabled, copy cmsdl.exe to $TEMP as
     ; MapleStory.exe so that gaming VPN / accelerator software can
     ; detect and route the process by its executable name.
-    StrCmp $GamingVPNFlag "1" 0 vpnDone
+    StrCmp $GamingVPNFlag "1" 0 updVpnDone
       CopyFiles /SILENT "$INSTDIR\cmsdl.exe" "$TEMP\MapleStory.exe"
-    vpnDone:
+    updVpnDone:
 
     ; Warn if the connection is metered.
     StrCmp $GamingVPNFlag "1" 0 +3
