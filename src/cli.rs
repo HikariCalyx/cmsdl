@@ -8,7 +8,7 @@ use clap::{ArgGroup, Parser, ValueEnum};
 #[command(group(
     ArgGroup::new("action")
         .required(true)
-        .args(["check", "download", "get_bit_torrent", "patch", "create_shortcut", "create_patch", "maintenance"]),
+        .args(["check", "download", "get_bit_torrent", "patch", "patch_file", "create_shortcut", "create_patch", "maintenance"]),
 ))]
 pub struct Cli {
     /// The region to operate on (case-insensitive).
@@ -109,6 +109,13 @@ pub struct Cli {
     /// launches directly.
     #[arg(long)]
     pub lrhook: bool,
+
+    /// Apply a local `.patch` file directly to the client directory (TMS only).
+    ///
+    /// Pass the path to a `.patch` file; the client directory is given as
+    /// the positional argument.  No version detection or download is performed.
+    #[arg(long, value_name = "PATH")]
+    pub patch_file: Option<PathBuf>,
 
     /// Create a launcher shortcut for the CMS client at the given directory.
     /// (Windows only.)
@@ -281,6 +288,8 @@ pub enum Action {
     },
     /// Fetch and display the most recent maintenance notice.
     Maintenance { maint_id: Option<u64> },
+    /// Apply a local `.patch` file directly (TMS format).
+    PatchFile { patch_path: PathBuf, target_dir: PathBuf },
 }
 
 impl Cli {
@@ -367,6 +376,17 @@ impl Cli {
             }
             Action::Maintenance {
                 maint_id: self.maintid,
+            }
+        } else if let Some(patch_path) = &self.patch_file {
+            let target_dir = self.patch_target.clone().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "--patch-file requires a client directory, e.g. \
+                     `cmsdl tms --patch-file /path/to/file.patch /path/to/client`"
+                )
+            })?;
+            Action::PatchFile {
+                patch_path: sanitize_path(patch_path),
+                target_dir: sanitize_path(&target_dir),
             }
         } else {
             unreachable!("clap ArgGroup guarantees exactly one action is set")

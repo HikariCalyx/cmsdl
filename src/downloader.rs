@@ -544,13 +544,32 @@ pub fn patch_apply(
             patch_apply_cms_cw(target, version, launch_after, allow_insecure, proxy, purge_wz_files, no_gui, close_after_finishing, keep_old_wz_files, region)?;
         }
         Region::Tms => {
-            bail!("region '{region}' does not support patching");
+            patch_apply_tms(target, version, launch_after, allow_insecure, proxy, purge_wz_files, no_gui, close_after_finishing, region)?;
         }
         Region::Manual => {
             bail!("--patch is not supported for 'manual'");
         }
     }
 
+    Ok(())
+}
+
+/// Apply a local `.patch` file directly to a client directory (TMS format).
+pub fn patch_file(
+    region: Region,
+    patch_path: &Path,
+    target_dir: &Path,
+    purge_wz_files: bool,
+) -> Result<()> {
+    if region != Region::Tms {
+        bail!("--patch-file is only supported for region 'tms'");
+    }
+    println!(
+        "cmsdl {VERSION}: applying patch file '{}' to '{}'.",
+        patch_path.display(),
+        target_dir.display()
+    );
+    crate::tms_patch::apply_patch_file(target_dir, patch_path, purge_wz_files)?;
     Ok(())
 }
 
@@ -657,6 +676,39 @@ fn patch_apply_cms_cw(
     if launch_after {
         cms_cw::launch_client(target)?;
     }
+    Ok(())
+}
+
+/// Shared patch-apply logic for the TMS region (console-only, no GUI for now).
+#[allow(clippy::too_many_arguments)]
+fn patch_apply_tms(
+    target: &Path,
+    version: &str,
+    _launch_after: bool,
+    allow_insecure: bool,
+    proxy: Option<&str>,
+    purge_wz_files: bool,
+    _no_gui: bool,
+    _close_after_finishing: bool,
+    region: Region,
+) -> Result<()> {
+    let sentinel = target.join(format!(".incomplete_{region}"));
+    if sentinel.exists() {
+        println!(
+            "cmsdl {VERSION}: incomplete download marker detected at '{}'; \
+             performing a full client download instead of patching.",
+            sentinel.display()
+        );
+        download(Region::Tms, target, false, None, allow_insecure, proxy, None, false, true, false, None)?;
+        return Ok(());
+    }
+
+    // TMS patching is console-only for now.
+    println!(
+        "cmsdl {VERSION}: patching region '{region}' client at '{}' up to '{version}'.",
+        target.display()
+    );
+    crate::tms_patch::apply_patches(target, version, allow_insecure, proxy, purge_wz_files)?;
     Ok(())
 }
 

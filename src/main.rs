@@ -228,6 +228,9 @@ fn main() -> Result<()> {
             let agent = net::agent(cli.allow_insecure, proxy);
             maintenance::show_maintenance(&agent, cli.region, cli.json, cli.discord, maint_id)?
         }
+        Action::PatchFile { patch_path, target_dir } => {
+            downloader::patch_file(cli.region, &patch_path, &target_dir, cli.purge_wz_files)?
+        }
         Action::ManualDownload { url, target_dir, output } => downloader::manual_download(
             &url,
             &target_dir,
