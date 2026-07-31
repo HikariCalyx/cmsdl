@@ -417,7 +417,17 @@ Section "Install"
     ; only updates the existing game installation.
     File "..\target\release\cmsdl.exe"
 
+    ; When Gaming VPN Mode is enabled, copy cmsdl.exe to $TEMP as
+    ; MapleStory.exe so that gaming VPN / accelerator software can
+    ; detect and route the process by its executable name.
+    StrCmp $GamingVPNFlag "1" 0 vpnDone
+      CopyFiles /SILENT "$INSTDIR\cmsdl.exe" "$TEMP\MapleStory.exe"
+    vpnDone:
+
     ; Warn if the connection is metered.
+    StrCmp $GamingVPNFlag "1" 0 +3
+      ExecWait '"$TEMP\MapleStory.exe" is_metered' $0
+      Goto +2
     ExecWait '"$INSTDIR\cmsdl.exe" is_metered' $0
     StrCmp $0 "1" 0 +3
       MessageBox MB_YESNO|MB_ICONEXCLAMATION "$(STR_METERED_WARNING)" IDYES +2
@@ -425,7 +435,11 @@ Section "Install"
 
     ; Execute patch command.
     DetailPrint "$(STR_PATCHING)"
+    StrCmp $GamingVPNFlag "1" 0 +3
+      ExecWait '"$TEMP\MapleStory.exe" tms --patch latest "$INSTDIR" --purge-wz-files$NoGuiFlag$CloseFlag$ProxyFlag' $0
+      Goto checkPatchResult
     ExecWait '"$INSTDIR\cmsdl.exe" tms --patch latest "$INSTDIR" --purge-wz-files$NoGuiFlag$CloseFlag$ProxyFlag' $0
+    checkPatchResult:
     StrCmp $0 "0" sectionDone
       MessageBox MB_ICONSTOP "$(STR_PATCH_FAILED)"
       Abort
