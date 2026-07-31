@@ -517,8 +517,7 @@ pub fn patch_list(
 ///
 /// When `launch_after` is set, the client is launched once patching completes
 /// successfully. When `lrhook` is also set, the client is launched through
-/// Locale Remulator if its files are present. Only the CMS region supports
-/// patching.
+/// Locale Remulator if its files are present.
 pub fn patch_apply(
     region: Region,
     version: &str,
@@ -540,7 +539,7 @@ pub fn patch_apply(
             patch_apply_cms_cw(target, version, launch_after, allow_insecure, proxy, purge_wz_files, no_gui, close_after_finishing, keep_old_wz_files, region)?;
         }
         Region::Tms => {
-            bail!("region '{region}' does not support patching");
+            patch_apply_tms(target, version, allow_insecure, proxy, purge_wz_files, region)?;
         }
         Region::Manual => {
             bail!("--patch is not supported for 'manual'");
@@ -575,7 +574,7 @@ fn patch_apply_cms(
         download(Region::Cms, target, false, None, allow_insecure, proxy, None, false, true, false, None)?;
         create_shortcut(Region::Cms, target, lrhook, no_gui, close_after_finishing)?;
         if launch_after {
-            crate::patch::launch_client(target, lrhook)?;
+            crate::cms_patch::launch_client(target, lrhook)?;
         }
         return Ok(());
     }
@@ -592,9 +591,9 @@ fn patch_apply_cms(
         "cmsdl {VERSION}: patching region '{region}' client at '{}' up to '{version}'.",
         target.display()
     );
-    crate::patch::apply_patches(target, version, allow_insecure, proxy, purge_wz_files, keep_old_wz_files)?;
+    crate::cms_patch::apply_patches(target, version, allow_insecure, proxy, purge_wz_files, keep_old_wz_files)?;
     if launch_after {
-        crate::patch::launch_client(target, lrhook)?;
+        crate::cms_patch::launch_client(target, lrhook)?;
     }
     Ok(())
 }
@@ -647,10 +646,38 @@ fn patch_apply_cms_cw(
         "cmsdl {VERSION}: patching region '{region}' client at '{}' up to '{version}'.",
         target.display()
     );
-    crate::patch::apply_patches(target, version, allow_insecure, proxy, purge_wz_files, keep_old_wz_files)?;
+    crate::cms_patch::apply_patches(target, version, allow_insecure, proxy, purge_wz_files, keep_old_wz_files)?;
     if launch_after {
         cms_cw::launch_client(target)?;
     }
+    Ok(())
+}
+
+/// Shared patch-apply logic for the TMS region.
+fn patch_apply_tms(
+    target: &Path,
+    version: &str,
+    allow_insecure: bool,
+    proxy: Option<&str>,
+    purge_wz_files: bool,
+    region: Region,
+) -> Result<()> {
+    let sentinel = target.join(format!(".incomplete_{region}"));
+    if sentinel.exists() {
+        println!(
+            "cmsdl {VERSION}: incomplete download marker detected at '{}'; \
+             performing a full client download instead of patching.",
+            sentinel.display()
+        );
+        download(Region::Tms, target, false, None, allow_insecure, proxy, None, false, true, false, None)?;
+        return Ok(());
+    }
+
+    println!(
+        "cmsdl {VERSION}: patching region '{region}' client at '{}' to '{version}'.",
+        target.display()
+    );
+    crate::tms_patch::apply_patches(target, version, allow_insecure, proxy, purge_wz_files)?;
     Ok(())
 }
 

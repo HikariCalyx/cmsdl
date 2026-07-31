@@ -381,7 +381,7 @@ pub fn get_patch_total_size(
     let url = build_signed_url(challenge_code, t, &path);
     let json =
         http_get_text(agent, &url).context("failed to fetch patch FileList.dat for sizing")?;
-    let fl: crate::patch::PatchFileList =
+    let fl: crate::cms_patch::PatchFileList =
         serde_json::from_str(&json).context("failed to parse patch FileList.dat for sizing")?;
     let total: u64 = fl
         .file_list

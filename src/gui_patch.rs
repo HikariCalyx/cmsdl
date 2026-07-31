@@ -379,7 +379,7 @@ fn run_patch_flow(
     keep_old_wz_files: bool,
     region: Region,
 ) -> Result<()> {
-    use crate::patch::{apply_patches, PatchOutcome};
+    use crate::cms_patch::{apply_patches, PatchOutcome};
 
     let outcome = apply_patches(target, version, allow_insecure, proxy, purge_wz_files, keep_old_wz_files)?;
 
@@ -398,9 +398,9 @@ fn run_patch_flow(
         // Show the "launching" message, then attempt the (UAC-elevated) launch.
         progress::finish(&tr(launch_key, &[]), false);
         let launch_result = match region {
-            Region::Cms => crate::patch::launch_client(target, lrhook),
+            Region::Cms => crate::cms_patch::launch_client(target, lrhook),
             Region::CmsCw => crate::cms_cw::launch_client(target),
-            _ => crate::patch::launch_client(target, lrhook),
+            _ => crate::cms_patch::launch_client(target, lrhook),
         };
         match launch_result {
             Ok(()) => {

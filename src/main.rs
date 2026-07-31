@@ -1,6 +1,7 @@
 mod cli;
 mod cms;
 mod cms_cw;
+mod cms_patch;
 mod downloader;
 mod filter;
 mod gui;
@@ -14,12 +15,12 @@ mod manual;
 mod metered;
 mod miniwzlib;
 mod net;
-mod patch;
 mod patch_builder;
 mod progress;
 mod resume;
 mod taskprogress;
 mod tms;
+mod tms_patch;
 
 use anyhow::Result;
 use clap::Parser;
