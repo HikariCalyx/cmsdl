@@ -221,7 +221,7 @@ Function ModeSelectPage
   ; Console-mode opt-in checkbox (always available). When checked, the created
   ; shortcut and the post-install launch pass --no-gui so the patcher runs in
   ; the console instead of the graphical window.
-  ${NSD_CreateCheckbox} 10u 94u 95% 12u "$(STR_USE_CONSOLE_TYPE)"
+  ${NSD_CreateCheckbox} 10u 82u 95% 12u "$(STR_USE_CONSOLE_TYPE)"
   Pop $CheckConsole
   ; Restore previous state if the user went back.
   StrCmp $NoGuiFlag " --no-gui" 0 +2
@@ -229,14 +229,14 @@ Function ModeSelectPage
 
   ; Gaming VPN Mode checkbox. When checked, cmsdl is extracted to $TEMP
   ; as MapleStory.exe so gaming VPN software can detect and route it.
-  ${NSD_CreateCheckbox} 10u 92u 95% 12u "$(STR_GAMING_VPN_MODE)"
+  ${NSD_CreateCheckbox} 10u 98u 95% 12u "$(STR_GAMING_VPN_MODE)"
   Pop $CheckGamingVPN
   StrCmp $GamingVPNFlag "1" 0 +2
     ${NSD_Check} $CheckGamingVPN
 
   ; System Proxy Mode checkbox. When checked, --proxy is added to the
   ; command line so cmsdl uses the configured system proxy.
-  ${NSD_CreateCheckbox} 10u 108u 95% 12u "$(STR_SYSTEM_PROXY_MODE)"
+  ${NSD_CreateCheckbox} 10u 114u 95% 12u "$(STR_SYSTEM_PROXY_MODE)"
   Pop $CheckSystemProxy
   StrCmp $ProxyFlag " --proxy" 0 +2
     ${NSD_Check} $CheckSystemProxy
@@ -307,13 +307,11 @@ Function ModeSelectPageLeave
     ${EndIf}
 FunctionEnd
 
-; Skip the directory page for MSVC mode — no install path is needed.
+; Skip the directory page for modes that don't need an install path.
 Function DirectoryPagePre
   StrCmp $InstallMode "4" 0 +2
     Abort
   StrCmp $InstallMode "3" 0 +2
-    Abort
-  StrCmp $InstallMode "2" 0 +2
     Abort
 FunctionEnd
 
