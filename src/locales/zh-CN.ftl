@@ -1,5 +1,6 @@
 gui-patcher-scanning-update = 正在检查客户端更新。
 gui-patcher-installing-update-from = 正在从 %s 更新至 %s
+gui-patcher-downloading-update-tms = 正在下载 %s 到 %s 的更新包
 gui-patcher-downloading-update = 正在下载第 %s 个更新包，共 %s 个 (%s)
 gui-patcher-extracting-package = 正在解压第 %s 个更新包，共 %s 个
 gui-patcher-applying-update = [%s/%s] 正在更新 %s

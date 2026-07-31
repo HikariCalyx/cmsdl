@@ -679,17 +679,17 @@ fn patch_apply_cms_cw(
     Ok(())
 }
 
-/// Shared patch-apply logic for the TMS region (console-only, no GUI for now).
+/// Shared patch-apply logic for the TMS region.
 #[allow(clippy::too_many_arguments)]
 fn patch_apply_tms(
     target: &Path,
     version: &str,
-    _launch_after: bool,
+    launch_after: bool,
     allow_insecure: bool,
     proxy: Option<&str>,
     purge_wz_files: bool,
-    _no_gui: bool,
-    _close_after_finishing: bool,
+    no_gui: bool,
+    close_after_finishing: bool,
     region: Region,
 ) -> Result<()> {
     let sentinel = target.join(format!(".incomplete_{region}"));
@@ -703,7 +703,16 @@ fn patch_apply_tms(
         return Ok(());
     }
 
-    // TMS patching is console-only for now.
+    let use_gui = cfg!(windows) && !no_gui;
+    if use_gui {
+        // TMS: no lrhook, no keep_old_wz_files support.
+        return crate::gui_patch::run_gui_patch(
+            target, version, launch_after, allow_insecure, proxy, purge_wz_files, false,
+            close_after_finishing, false, region,
+        );
+    }
+
+    // Console mode.
     println!(
         "cmsdl {VERSION}: patching region '{region}' client at '{}' up to '{version}'.",
         target.display()

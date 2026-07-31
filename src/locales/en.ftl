@@ -1,5 +1,6 @@
 gui-patcher-scanning-update = Scanning client update...
 gui-patcher-installing-update-from = Installing update from %s to %s
+gui-patcher-downloading-update-tms = Downloading update from %s to %s
 gui-patcher-downloading-update = Downloading update pack %s of %s (%s)
 gui-patcher-extracting-package = Extracting update package %s of %s
 gui-patcher-applying-update = [%s/%s] Updating %s

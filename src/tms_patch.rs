@@ -35,7 +35,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -43,6 +43,7 @@ use flate2::read::ZlibDecoder;
 use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::plog;
+use crate::locale::tr;
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -480,8 +481,12 @@ pub fn apply_patches(
     let current_version = get_current_version(target_dir)?;
     plog!("current client version: {}", current_version);
 
+    // Signal the GUI that we are scanning for an update.
+    crate::progress::scanning();
+
     if current_version == target_version {
         plog!("client is already at version {}; nothing to do.", target_version);
+        crate::progress::finish(&tr("gui-patcher-nopatch-successful", &[]), true);
         return Ok(PatchOutcome::AlreadyUpToDate);
     }
 
@@ -490,6 +495,7 @@ pub fn apply_patches(
             "client is at version {}, which is newer than the requested target {}; nothing to patch.",
             current_version, target_version
         );
+        crate::progress::finish(&tr("gui-patcher-nopatch-successful", &[]), true);
         return Ok(PatchOutcome::AlreadyUpToDate);
     }
 
@@ -533,6 +539,12 @@ pub fn apply_patches(
                 }
             };
 
+            // Report to the GUI that we are installing this update.
+            let cur_str = current.to_string();
+            let tgt_str = target.to_string();
+            crate::progress::installing(&cur_str, &tgt_str);
+            crate::progress::begin_download(1, 1, size);
+
             plog!("  [{}/?] downloading {} ({:.2} MiB)...",
                 patch_index.load(Ordering::Relaxed) + 1,
                 zip_name,
@@ -551,7 +563,8 @@ pub fn apply_patches(
                 .with_context(|| format!("failed to read downloaded patch {}", dest.display()))?;
             let _ = std::fs::remove_file(&dest);
 
-            // Apply the patch.
+            // Apply the patch with progress reporting.
+            crate::progress::begin_apply(0); // total parts determined inside apply_patch_data
             let corrupted = apply_patch_data(&patch_data, target_dir)
                 .with_context(|| format!("failed to apply patch {} -> {}", current, target))?;
 
@@ -585,6 +598,7 @@ pub fn apply_patches(
     if !all_corrupted.is_empty() {
         plog!("\nrepairing {} corrupted file(s) from the full client...",
             all_corrupted.len());
+        crate::progress::begin_repair(all_corrupted.len(), 0);
         let still_failed = repair_corrupted_files(
             target_dir, &all_corrupted, allow_insecure, proxy,
         )?;
@@ -602,6 +616,7 @@ pub fn apply_patches(
     }
 
     plog!("patching successful: now at version {}.", current);
+    crate::progress::finish(&tr("gui-patcher-patch-successful", &[]), true);
     Ok(PatchOutcome::Updated)
 }
 
@@ -789,6 +804,7 @@ fn download_patch_to_file(
             if meta.len() == size {
                 plog!("    {} already present (skipping download).",
                     dest.file_name().unwrap_or_default().to_string_lossy());
+                crate::progress::download_progress(size);
                 return Ok(());
             }
         }
@@ -808,12 +824,14 @@ fn download_patch_to_file(
     );
     pb.enable_steady_tick(Duration::from_millis(120));
 
+    let dl_progress = Arc::new(AtomicUsize::new(0));
+
     let segments = effective_segments(size, SEGMENTS_PER_FILE);
 
     if segments <= 1 || size == 0 || !supports_ranges(agent, url) {
         // Single resumable stream.
         let _ = std::fs::remove_file(crate::resume::progress_path(dest));
-        download_single_stream(agent, url, dest, size, &pb)?;
+        download_single_stream(agent, url, dest, size, &pb, Some(&dl_progress))?;
     } else {
         // Multi-segment: resume from saved progress or start fresh.
         let progress_path = crate::resume::progress_path(dest);
@@ -829,6 +847,8 @@ fn download_patch_to_file(
         {
             let (saved_segs, resume_ranges, pre_completed) = saved;
             pb.inc(pre_completed);
+            dl_progress.store(pre_completed as usize, Ordering::Relaxed);
+            crate::progress::download_progress(pre_completed);
             progress = crate::resume::FileProgress::from_saved(dest, &saved_segs, &resume_ranges)
                 .with_context(|| {
                     format!("failed to write progress file {}", progress_path.display())
@@ -859,8 +879,9 @@ fn download_patch_to_file(
                 .map(|(slot, &(start, end))| {
                     let pb = &pb;
                     let first_err = &first_err;
+                    let dl_progress = &dl_progress;
                     scope.spawn(move || {
-                        if let Err(e) = download_segment(agent, url, dest, start, end, pb, progress, slot) {
+                        if let Err(e) = download_segment(agent, url, dest, start, end, pb, progress, slot, Some(dl_progress)) {
                             let mut s = first_err.lock().unwrap();
                             if s.is_none() {
                                 *s = Some(e);
@@ -883,6 +904,7 @@ fn download_patch_to_file(
     }
 
     pb.finish_and_clear();
+    crate::progress::download_progress(size);
     Ok(())
 }
 
@@ -894,6 +916,7 @@ fn download_single_stream(
     dest: &Path,
     size: u64,
     pb: &ProgressBar,
+    dl_progress: Option<&AtomicUsize>,
 ) -> Result<()> {
     let mut file = std::fs::OpenOptions::new()
         .create(true)
@@ -907,7 +930,7 @@ fn download_single_stream(
 
     while size == 0 || pos < size {
         let before = pos;
-        let _ = stream_range(agent, url, &mut file, &mut pos, pb);
+        let _ = stream_range(agent, url, &mut file, &mut pos, pb, dl_progress);
 
         if size != 0 && pos >= size {
             break;
@@ -941,6 +964,7 @@ fn download_segment(
     pb: &ProgressBar,
     progress: &crate::resume::FileProgress,
     slot: usize,
+    dl_progress: Option<&AtomicUsize>,
 ) -> Result<()> {
     let mut file = std::fs::OpenOptions::new()
         .write(true)
@@ -952,7 +976,7 @@ fn download_segment(
 
     while pos <= end {
         let before = pos;
-        let _ = stream_bounded(agent, url, &mut file, &mut pos, end, pb, progress, slot);
+        let _ = stream_bounded(agent, url, &mut file, &mut pos, end, pb, progress, slot, dl_progress);
 
         progress.update(slot, pos);
 
@@ -1014,6 +1038,7 @@ fn stream_range(
     file: &mut std::fs::File,
     pos: &mut u64,
     pb: &ProgressBar,
+    dl_progress: Option<&AtomicUsize>,
 ) -> Result<()> {
     let resp = agent
         .get(url)
@@ -1039,6 +1064,10 @@ fn stream_range(
         file.write_all(&buf[..n]).context("failed to write to disk")?;
         *pos += n as u64;
         pb.set_position(*pos);
+        if let Some(dp) = dl_progress {
+            let total = dp.fetch_add(n, Ordering::Relaxed) + n;
+            crate::progress::download_progress(total as u64);
+        }
     }
     Ok(())
 }
@@ -1053,6 +1082,7 @@ fn stream_bounded(
     pb: &ProgressBar,
     progress: &crate::resume::FileProgress,
     slot: usize,
+    dl_progress: Option<&AtomicUsize>,
 ) -> Result<()> {
     let resp = agent
         .get(url)
@@ -1080,6 +1110,10 @@ fn stream_bounded(
         *pos += take as u64;
         since_flush += take as u64;
         pb.inc(take as u64);
+        if let Some(dp) = dl_progress {
+            let total = dp.fetch_add(take, Ordering::Relaxed) + take;
+            crate::progress::download_progress(total as u64);
+        }
         if since_flush >= crate::resume::PROGRESS_FLUSH_INTERVAL {
             progress.update(slot, *pos);
             since_flush = 0;
@@ -1316,6 +1350,8 @@ fn apply_patch_data(patch_data: &[u8], target_dir: &Path) -> Result<Vec<String>>
 
     // Phase 1: Build each part to temp, applying completed parts immediately
     // when no remaining dependents need their source file.
+    let total_apply = patch.parts.iter().filter(|p| !matches!(p, PatchPart::Delete { .. })).count();
+    let apply_done = AtomicUsize::new(0);
     for (i, part) in patch.parts.iter().enumerate() {
         let file_name = match part {
             PatchPart::Create { file_name, .. } | PatchPart::Rebuild { file_name, .. } => file_name,
@@ -1331,6 +1367,9 @@ fn apply_patch_data(patch_data: &[u8], target_dir: &Path) -> Result<Vec<String>>
             }
             PatchPart::Delete { .. } => unreachable!(),
         };
+
+        let done = apply_done.fetch_add(1, Ordering::Relaxed) + 1;
+        crate::progress::apply_progress(done, total_apply, file_name);
 
         if let Err(e) = result {
             plog!("    apply fail: {} - {}", file_name, e);
@@ -1833,6 +1872,8 @@ fn repair_corrupted_files(
 
     let workers = max_parallel.min(items.len()).max(1);
     let counter = AtomicUsize::new(0);
+    let done_counter = AtomicUsize::new(0);
+    let bytes_downloaded = AtomicUsize::new(0);
     let still_failed: Mutex<Vec<String>> = Mutex::new(Vec::new());
     let first_err: Mutex<Option<anyhow::Error>> = Mutex::new(None);
 
@@ -1856,6 +1897,10 @@ fn repair_corrupted_files(
                             still_failed.lock().unwrap().push(item.path.clone());
                         }
                     }
+
+                    let done = done_counter.fetch_add(1, Ordering::Relaxed) + 1;
+                    let dl = bytes_downloaded.fetch_add(item.size as usize, Ordering::Relaxed) + item.size as usize;
+                    crate::progress::repair_progress(done, items.len(), &item.path, dl as u64);
                 }
             });
         }
@@ -1985,7 +2030,7 @@ fn download_and_verify_segmented(
                 let pb = &pb;
                 let first_err = &first_err;
                 scope.spawn(move || {
-                    if let Err(e) = download_segment(agent, url, dest, start, end, pb, progress, slot) {
+                    if let Err(e) = download_segment(agent, url, dest, start, end, pb, progress, slot, None) {
                         let mut s = first_err.lock().unwrap();
                         if s.is_none() { *s = Some(e); }
                     }

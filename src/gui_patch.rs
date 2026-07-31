@@ -47,11 +47,15 @@ impl SpeedState {
 }
 
 /// Current download package context (index/count/total bytes).
-#[derive(Default, Clone, Copy)]
+#[derive(Default, Clone)]
 struct DownloadCtx {
     index: usize,
     count: usize,
     total: u64,
+    /// Current client version (stored by `installing`, used for TMS label).
+    cur_ver: String,
+    /// Target version (stored by `installing`, used for TMS label).
+    tgt_ver: String,
 }
 
 struct LogState {
@@ -69,10 +73,14 @@ pub struct GuiReporter {
     speed: Mutex<SpeedState>,
     last_ui: Mutex<Instant>,
     repair_total_bytes: Mutex<u64>,
+    /// When true, the download label uses the TMS-specific format string
+    /// (`gui-patcher-downloading-update-tms`) showing version numbers instead
+    /// of the generic package index/count/speed format.
+    is_tms: bool,
 }
 
 impl GuiReporter {
-    fn new(ui: Arc<Mutex<UiModel>>, log_path: PathBuf) -> Self {
+    fn new(ui: Arc<Mutex<UiModel>>, log_path: PathBuf, is_tms: bool) -> Self {
         GuiReporter {
             ui,
             log: Mutex::new(LogState { file: None, buffer: Vec::new(), path: log_path }),
@@ -80,6 +88,7 @@ impl GuiReporter {
             speed: Mutex::new(SpeedState::reset()),
             last_ui: Mutex::new(Instant::now()),
             repair_total_bytes: Mutex::new(0),
+            is_tms,
         }
     }
 
@@ -159,10 +168,19 @@ impl Reporter for GuiReporter {
         self.set_label2(tr("gui-patcher-installing-update-from", &[current, target]));
         self.set_label3(String::new());
         self.set_progress(0.0);
+        // Store version info for TMS download label.
+        if self.is_tms {
+            let mut dl = self.dl.lock().unwrap();
+            dl.cur_ver = current.to_string();
+            dl.tgt_ver = target.to_string();
+        }
     }
 
     fn begin_download(&self, index: usize, count: usize, total: u64) {
-        *self.dl.lock().unwrap() = DownloadCtx { index, count, total };
+        let mut dl = self.dl.lock().unwrap();
+        dl.index = index;
+        dl.count = count;
+        dl.total = total;
         *self.speed.lock().unwrap() = SpeedState::reset();
         self.set_label3(String::new());
         self.set_progress(0.0);
@@ -171,9 +189,9 @@ impl Reporter for GuiReporter {
     }
 
     fn download_progress(&self, downloaded: u64) {
-        let ctx = *self.dl.lock().unwrap();
-        if ctx.total > 0 {
-            self.set_progress(downloaded as f32 / ctx.total as f32);
+        let total = self.dl.lock().unwrap().total;
+        if total > 0 {
+            self.set_progress(downloaded as f32 / total as f32);
         }
         if self.should_update_ui() {
             self.render_download(downloaded);
@@ -253,12 +271,19 @@ impl GuiReporter {
     /// Render the label1 "downloading" line for the current package + speed,
     /// and update the ETA label.
     fn render_download(&self, downloaded: u64) {
-        let ctx = *self.dl.lock().unwrap();
+        let ctx = self.dl.lock().unwrap().clone();
         let speed = self.speed.lock().unwrap().tick(downloaded);
-        self.set_label1(tr(
-            "gui-patcher-downloading-update",
-            &[&ctx.index.to_string(), &ctx.count.to_string(), &format_speed(speed)],
-        ));
+        if self.is_tms {
+            self.set_label1(tr(
+                "gui-patcher-downloading-update-tms",
+                &[&ctx.cur_ver, &ctx.tgt_ver],
+            ));
+        } else {
+            self.set_label1(tr(
+                "gui-patcher-downloading-update",
+                &[&ctx.index.to_string(), &ctx.count.to_string(), &format_speed(speed)],
+            ));
+        }
         // ETA: remaining bytes / current speed.
         let remaining = ctx.total.saturating_sub(downloaded);
         let eta_secs = if speed > 0.0 { remaining as f64 / speed } else { 0.0 };
@@ -290,9 +315,11 @@ pub fn run_gui_patch(
     // Validate the client directory before showing anything. (Done before
     // hiding the console so an invalid-path error is still visible when run
     // from a terminal.)
+    let is_tms = region == Region::Tms;
     let data_dir = match region {
         Region::Cms => "mxd",
         Region::CmsCw => "mxdclassic",
+        Region::Tms => "Data",
         _ => "mxd",
     };
     if !target.join(data_dir).is_dir() {
@@ -309,7 +336,7 @@ pub fn run_gui_patch(
     crate::gui::hide_own_console();
 
     let ui = UiModel::new();
-    let reporter = Arc::new(GuiReporter::new(Arc::clone(&ui), target.join("cmsdl_patcher.log")));
+    let reporter = Arc::new(GuiReporter::new(Arc::clone(&ui), target.join("cmsdl_patcher.log"), is_tms));
     progress::set_reporter(reporter.clone() as Arc<dyn Reporter>);
 
     // Show an advisory when patching on a mechanical hard disk.
@@ -379,6 +406,13 @@ fn run_patch_flow(
     keep_old_wz_files: bool,
     region: Region,
 ) -> Result<()> {
+    if region == Region::Tms {
+        // TMS: use tms_patch. Progress reporting is handled inside
+        // tms_patch::apply_patches (it calls progress::finish internally).
+        crate::tms_patch::apply_patches(target, version, allow_insecure, proxy, purge_wz_files)?;
+        return Ok(());
+    }
+
     use crate::cms_patch::{apply_patches, PatchOutcome};
 
     let outcome = if region == Region::CmsCw {
