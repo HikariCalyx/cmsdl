@@ -52,8 +52,10 @@ Var NoGuiFlag
 Var CloseFlag
 Var CheckGamingVPN
 Var CheckSystemProxy
+Var CheckPortable
 Var GamingVPNFlag
 Var ProxyFlag
+Var PortableFlag
 
 ; ============================================================================
 ; MUI2 Settings
@@ -103,6 +105,7 @@ LangString STR_UPDATE_ABORT ${LANG_ENGLISH} "No existing game installation was f
 LangString STR_METERED_WARNING ${LANG_ENGLISH} "Your network connection is metered.$\nDownloading the game may incur additional costs.$\n$\nDo you want to continue?"
 LangString STR_GAMING_VPN_MODE ${LANG_ENGLISH} "Gaming VPN Mode (e.g. WTFast, ExitLag, Mudfish, etc.)"
 LangString STR_SYSTEM_PROXY_MODE ${LANG_ENGLISH} "Use System Proxy"
+LangString STR_PORTABLE_MODE ${LANG_ENGLISH} "Portable mode (do not create uninstaller)"
 
 ; ============================================================================
 ; Language Strings - Traditional Chinese
@@ -130,6 +133,7 @@ LangString STR_UPDATE_ABORT ${LANG_TRADCHINESE} "在所選目錄中未找到現�
 LangString STR_METERED_WARNING ${LANG_TRADCHINESE} "您的網路連線為按流量計費的連線。$\n下載遊戲可能會產生額外費用。$\n$\n您是否要繼續？"
 LangString STR_GAMING_VPN_MODE ${LANG_TRADCHINESE} "遊戲 VPN / 加速器模式 (例如 WTFast, ExitLag, Mudfish 等)"
 LangString STR_SYSTEM_PROXY_MODE ${LANG_TRADCHINESE} "使用系統代理"
+LangString STR_PORTABLE_MODE ${LANG_TRADCHINESE} "可攜式模式（不產生反安裝程式）"
 
 ; ============================================================================
 ; Installer Attributes
@@ -174,6 +178,7 @@ Function .onInit
   StrCpy $CloseFlag " --close-after-finishing"
   StrCpy $GamingVPNFlag ""
   StrCpy $ProxyFlag ""
+  StrCpy $PortableFlag ""
 
   ; Select language based on OS language (Traditional Chinese = 0404).
   ; Set this first so the requirement-check message boxes are localized.
@@ -241,6 +246,13 @@ Function ModeSelectPage
   StrCmp $ProxyFlag " --proxy" 0 +2
     ${NSD_Check} $CheckSystemProxy
 
+  ; Portable Mode checkbox. When checked, no uninstaller or registry entries
+  ; are created — the game directory can be moved or deleted freely.
+  ${NSD_CreateCheckbox} 10u 130u 95% 12u "$(STR_PORTABLE_MODE)"
+  Pop $CheckPortable
+  StrCmp $PortableFlag "1" 0 +2
+    ${NSD_Check} $CheckPortable
+
   ; Restore previous selection
   StrCmp $InstallMode "2" selUpdate
   StrCmp $InstallMode "3" selUpdateCMSDL
@@ -305,6 +317,14 @@ Function ModeSelectPageLeave
     ${Else}
       StrCpy $ProxyFlag ""
     ${EndIf}
+
+    ; Portable Mode checkbox
+    ${NSD_GetState} $CheckPortable $0
+    ${If} $0 == 1
+      StrCpy $PortableFlag "1"
+    ${Else}
+      StrCpy $PortableFlag ""
+    ${EndIf}
 FunctionEnd
 
 ; Skip the directory page for modes that don't need an install path.
@@ -357,8 +377,9 @@ Section "Install"
     ; Extract cmsdl.exe
     File "..\target\release\cmsdl.exe"
 
-    ; Registry + uninstaller.
-    Call WriteRegInfo
+    ; Registry + uninstaller.  Skip in portable mode.
+    StrCmp $PortableFlag "1" +2
+      Call WriteRegInfo
 
     ; When Gaming VPN Mode is enabled, copy cmsdl.exe to $TEMP as
     ; MapleStory.exe so that gaming VPN / accelerator software can
@@ -445,7 +466,9 @@ Section "Install"
 
     ; Create Start Menu shortcuts
     CreateShortcut "$SMPROGRAMS\$(STR_PRODUCT_NAME)\$(STR_PRODUCT_NAME).lnk" "$INSTDIR\MapleStory.exe" 0
-    CreateShortcut "$SMPROGRAMS\$(STR_PRODUCT_NAME)\Uninstall.lnk" "$INSTDIR\Uninstall.exe"
+    ; Skip uninstaller shortcut in portable mode (no uninstaller was created).
+    StrCmp $PortableFlag "1" +2
+      CreateShortcut "$SMPROGRAMS\$(STR_PRODUCT_NAME)\Uninstall.lnk" "$INSTDIR\Uninstall.exe"
 
   sectionDone:
 
