@@ -612,7 +612,6 @@ pub fn apply_patches(
     if !all_corrupted.is_empty() {
         plog!("\nrepairing {} corrupted file(s) from the full client...",
             all_corrupted.len());
-        crate::progress::begin_repair(all_corrupted.len(), 0);
         let still_failed = repair_corrupted_files(
             target_dir, &all_corrupted, allow_insecure, proxy,
         )?;
@@ -1867,6 +1866,10 @@ fn repair_corrupted_files(
     if items.is_empty() {
         return Ok(Vec::new());
     }
+
+    // Report total file count and byte size for the GUI progress bar.
+    let total_bytes: u64 = items.iter().map(|i| i.size).sum();
+    crate::progress::begin_repair(items.len(), total_bytes);
 
     // Create a sentinel so an interrupted repair triggers a full re-download
     // on the next run instead of a partial patch.

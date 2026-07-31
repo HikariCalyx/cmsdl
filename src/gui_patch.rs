@@ -167,11 +167,11 @@ impl Reporter for GuiReporter {
         self.log(&format!("[gui-debug] Reporter::installing({}, {})", current, target));
         // An update was found: create/append the log file now.
         self.open_log();
-        self.set_label2(tr("gui-patcher-installing-update-from", &[current, target]));
+        self.set_label2(tr("gui-patcher-installing-update-from", &[current, target, "0 B/s"]));
         self.set_label3(String::new());
         self.set_progress(0.0);
-        // Store version info for TMS download label.
-        if self.is_tms {
+        // Store version info for TMS download label and for label2 updates.
+        {
             let mut dl = self.dl.lock().unwrap();
             dl.cur_ver = current.to_string();
             dl.tgt_ver = target.to_string();
@@ -247,6 +247,9 @@ impl Reporter for GuiReporter {
         let total_bytes = *self.repair_total_bytes.lock().unwrap();
         if total_bytes > 0 {
             self.set_progress(downloaded as f32 / total_bytes as f32);
+        } else if total > 0 {
+            // Fallback: use file count when byte count is unavailable.
+            self.set_progress(done as f32 / total as f32);
         }
         let speed = self.speed.lock().unwrap().tick(downloaded);
         if self.should_update_ui() || done == total {
@@ -285,17 +288,28 @@ impl GuiReporter {
     fn render_download(&self, downloaded: u64) {
         let ctx = self.dl.lock().unwrap().clone();
         let speed = self.speed.lock().unwrap().tick(downloaded);
+        let speed_str = format_speed(speed);
         if self.is_tms {
             self.set_label1(tr(
                 "gui-patcher-downloading-update-tms",
-                &[&ctx.cur_ver, &ctx.tgt_ver],
+                &[
+                    &ctx.cur_ver,
+                    &ctx.tgt_ver,
+                    &progress::format_size(downloaded),
+                    &progress::format_size(ctx.total),
+                ],
             ));
         } else {
             self.set_label1(tr(
                 "gui-patcher-downloading-update",
-                &[&ctx.index.to_string(), &ctx.count.to_string(), &format_speed(speed)],
+                &[&ctx.index.to_string(), &ctx.count.to_string(), &speed_str],
             ));
         }
+        // Keep label2 updated with current download speed.
+        self.set_label2(tr(
+            "gui-patcher-installing-update-from",
+            &[&ctx.cur_ver, &ctx.tgt_ver, &speed_str],
+        ));
         // ETA: remaining bytes / current speed.
         let remaining = ctx.total.saturating_sub(downloaded);
         let eta_secs = if speed > 0.0 { remaining as f64 / speed } else { 0.0 };
