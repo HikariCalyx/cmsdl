@@ -747,18 +747,13 @@ fn find_cms_maintenance(news_list: &[NewsCategory]) -> Result<&NewsItem> {
 }
 
 fn fetch_cms_news_content(agent: &ureq::Agent, id: u64) -> Result<NewsContentData> {
-    fetch_news_content(agent, CMS_NEWS_CONTENT_URL, id)
-}
-
-fn fetch_cms_cw_news_content(agent: &ureq::Agent, id: u64) -> Result<NewsContentData> {
-    fetch_news_content(agent, CMS_CW_NEWS_CONTENT_URL, id)
-}
-
-/// Common helper: fetch and parse a single news article from a given base URL.
-fn fetch_news_content(agent: &ureq::Agent, base_url: &str, id: u64) -> Result<NewsContentData> {
-    let url = format!("{base_url}{id}");
+    let url = format!("{CMS_NEWS_CONTENT_URL}{id}");
+    let referer = format!("https://mxd.web.sdo.com/web8/newsContent.html?id={id}&CategoryID=275");
     let resp = agent
         .get(&url)
+        .set("Referer", &referer)
+        .set("X-Requested-With", "XMLHttpRequest")
+        .set("Accept", "application/json, text/javascript, */*; q=0.01")
         .call()
         .context("failed to fetch news content")?;
     let body = resp
@@ -777,6 +772,35 @@ fn fetch_news_content(agent: &ureq::Agent, base_url: &str, id: u64) -> Result<Ne
 
     Ok(response.data)
 }
+
+fn fetch_cms_cw_news_content(agent: &ureq::Agent, id: u64) -> Result<NewsContentData> {
+    let url = format!("{CMS_CW_NEWS_CONTENT_URL}{id}");
+    let referer = format!("https://mxdc.web.sdo.com/web2/newsContent.html?id={id}&CategoryID=8469");
+    let resp = agent
+        .get(&url)
+        .set("Referer", &referer)
+        .set("X-Requested-With", "XMLHttpRequest")
+        .set("Accept", "application/json, text/javascript, */*; q=0.01")
+        .call()
+        .context("failed to fetch news content")?;
+    let body = resp
+        .into_string()
+        .context("failed to read news content response")?;
+    let response: NewsContentResponse =
+        serde_json::from_str(&body).context("failed to parse news content JSON")?;
+
+    if response.result != 0 {
+        bail!(
+            "API returned error: {} (code {})",
+            response.message,
+            response.result
+        );
+    }
+
+    Ok(response.data)
+}
+
+
 
 // ── TMS implementation ──────────────────────────────────────────────────────
 
