@@ -178,4 +178,5 @@ cargo build --release
 ## Credits
 - @Deneo , for reverse-enginerring job
 - @InWILL for Locale Remulator
+- [choyang](https://x.com/choyang___) & [shio_rice](https://x.com/shio_rice0) for splash screen
 - GUI part used [Maplestory OTF fonttype](https://maplestory.nexon.com/Media/Font)
