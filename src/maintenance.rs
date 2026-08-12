@@ -317,8 +317,15 @@ fn localize_stroke_out(body: &str) -> String {
 enum MaintenanceType {
     /// Full server shutdown (停机维护 / 停機維護).
     Shutdown,
-    /// Per-channel maintenance (分频道维护 / 分流維護).
+    /// Per-channel maintenance where channels are split into groups
+    /// (分频道维护 / 分流維護).
     PerChannel,
+    /// Maintenance on a specific channel or channel category, e.g. VIP
+    /// channels (频道维护 / 頻道維護).
+    Channel,
+    /// Login-server-only maintenance — game worlds stay online but new
+    /// logins are blocked (登录服务器维护 / 登入伺服器維護).
+    LoginServer,
 }
 
 impl std::fmt::Display for MaintenanceType {
@@ -326,6 +333,8 @@ impl std::fmt::Display for MaintenanceType {
         match self {
             MaintenanceType::Shutdown => write!(f, "ShutdownMaintenance"),
             MaintenanceType::PerChannel => write!(f, "PerChannelMaintenance"),
+            MaintenanceType::Channel => write!(f, "ChannelMaintenance"),
+            MaintenanceType::LoginServer => write!(f, "LoginServerMaintenance"),
         }
     }
 }
@@ -333,7 +342,7 @@ impl std::fmt::Display for MaintenanceType {
 /// Detect the maintenance type by scanning the title and body for keywords.
 fn detect_maintenance_type(title: &str, body: &str) -> MaintenanceType {
     let combined = format!("{title} {body}");
-    // Per-channel indicators (check first — more specific).
+    // Per-channel indicators (check first — most specific).
     if combined.contains("分频道维护")
         || combined.contains("分頻道維護")
         || combined.contains("分流維護")
@@ -341,6 +350,16 @@ fn detect_maintenance_type(title: &str, body: &str) -> MaintenanceType {
         || combined.contains("分段分流")
     {
         return MaintenanceType::PerChannel;
+    }
+    // Login-server-only maintenance (login server restarts while game
+    // worlds stay online).
+    if combined.contains("登录服务器维护") || combined.contains("登入伺服器維護") {
+        return MaintenanceType::LoginServer;
+    }
+    // Specific-channel indicators ("频道维护" is a subset of PerChannel's
+    // "分频道维护", but PerChannel already matched above).
+    if combined.contains("频道维护") || combined.contains("頻道維護") {
+        return MaintenanceType::Channel;
     }
     // Shutdown indicators.
     if combined.contains("停机维护")
@@ -564,7 +583,7 @@ fn try_extract_tms_batch_groups(
 
 /// Remove `<s>`, `<strike>`, `<del>` tag pairs and their content from HTML.
 fn strip_strike_tags(html: &str) -> String {
-    let re = Regex::new(r"<(s|strike|del)\b[^>]*>.*?</\1>").ok();
+    let re = Regex::new(r"<s\b[^>]*>.*?</s>|<strike\b[^>]*>.*?</strike>|<del\b[^>]*>.*?</del>").ok();
     match re {
         Some(r) => r.replace_all(html, "").into_owned(),
         None => html.to_string(),
