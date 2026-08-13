@@ -16,7 +16,7 @@ Unicode true
 !include "FileFunc.nsh"
 
 ; Version
-!define VERSION "4.227.6.0"
+!define VERSION "4.227.6.2"
 
 ; Product Info (English)
 !define PRODUCT_NAME "MapleStory CN"
@@ -473,10 +473,42 @@ Function WriteRegInfo
 FunctionEnd
 
 ; ============================================================================
+; 360 Total Security detection
+; ============================================================================
+
+Function CheckQihoo360
+  ; Detect 360 Total Security / Qihoo 360 Safeguard tray processes.
+  ; tasklist enumerates running processes; findstr exits with 0 when it
+  ; matches 360Tray.exe or QHSafeTray.exe, and 1 when neither is running.
+  checkQihooLoop:
+  nsExec::ExecToStack 'cmd /C tasklist /FO CSV /NH | findstr /I /C:$\"360Tray.exe$\" /C:$\"QHSafeTray.exe$\"'
+  Pop $R0   ; exit code: 0 = running, 1 = not running
+  Pop $R1   ; stdout (discard)
+  StrCmp $R0 "0" qihooRunning qihooDone
+
+  qihooRunning:
+  MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "$(STR_CLOSE_QIHOO_360_TOTAL_SECURITY)" IDRETRY checkQihooLoop
+  ; The user cannot close it — abort the installation.
+  Abort
+
+  qihooDone:
+FunctionEnd
+
+; ============================================================================
 ; Installer Section
 ; ============================================================================
 
 Section "Install"
+  ; 360 Total Security is known to corrupt or quarantine game files while
+  ; downloading or patching. Ask the user to close it first, and abort the
+  ; installation if they cannot. Only install and update modes are affected.
+  StrCmp $InstallMode "1" doQihooCheck
+  StrCmp $InstallMode "2" doQihooCheck
+  Goto qihooOk
+  doQihooCheck:
+    Call CheckQihoo360
+  qihooOk:
+
   SetOutPath "$INSTDIR"
 
   ; Fix SDOLogin mode: skip LR extraction, registry, and uninstaller.

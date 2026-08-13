@@ -15,7 +15,7 @@ Unicode true
 !include "nsDialogs.nsh"
 
 ; Version
-!define VERSION "6.281.1.2"
+!define VERSION "6.281.1.3"
 
 ; Product Info (English)
 !define PRODUCT_NAME "MapleStory TW"
@@ -106,6 +106,7 @@ LangString STR_METERED_WARNING ${LANG_ENGLISH} "Your network connection is meter
 LangString STR_GAMING_VPN_MODE ${LANG_ENGLISH} "Gaming VPN Mode (e.g. WTFast, ExitLag, Mudfish, etc.)"
 LangString STR_SYSTEM_PROXY_MODE ${LANG_ENGLISH} "Use System Proxy"
 LangString STR_PORTABLE_MODE ${LANG_ENGLISH} "Portable mode (do not create uninstaller)"
+LangString STR_CLOSE_QIHOO_360_TOTAL_SECURITY ${LANG_ENGLISH} "Please close or uninstall 360 Total Security and click Retry. If you do not want to close it or cannot close it, click Abort to exit the installation."
 
 ; ============================================================================
 ; Language Strings - Traditional Chinese
@@ -134,6 +135,7 @@ LangString STR_METERED_WARNING ${LANG_TRADCHINESE} "您的網路連線為按流�
 LangString STR_GAMING_VPN_MODE ${LANG_TRADCHINESE} "遊戲 VPN / 加速器模式 (例如 WTFast, ExitLag, Mudfish 等)"
 LangString STR_SYSTEM_PROXY_MODE ${LANG_TRADCHINESE} "使用系統代理"
 LangString STR_PORTABLE_MODE ${LANG_TRADCHINESE} "可攜式模式（不產生反安裝程式）"
+LangString STR_CLOSE_QIHOO_360_TOTAL_SECURITY ${LANG_TRADCHINESE} "請先關閉或解除安裝 360 Total Security，然後按「重試」。若不願關閉或無法關閉，可按「中止」結束安裝。"
 
 ; ============================================================================
 ; Installer Attributes
@@ -358,10 +360,42 @@ Function WriteRegInfo
 FunctionEnd
 
 ; ============================================================================
+; 360 Total Security detection
+; ============================================================================
+
+Function CheckQihoo360
+  ; Detect 360 Total Security / Qihoo 360 Safeguard tray processes.
+  ; tasklist enumerates running processes; findstr exits with 0 when it
+  ; matches 360Tray.exe or QHSafeTray.exe, and 1 when neither is running.
+  checkQihooLoop:
+  nsExec::ExecToStack 'cmd /C tasklist /FO CSV /NH | findstr /I /C:$\"360Tray.exe$\" /C:$\"QHSafeTray.exe$\"'
+  Pop $R0   ; exit code: 0 = running, 1 = not running
+  Pop $R1   ; stdout (discard)
+  StrCmp $R0 "0" qihooRunning qihooDone
+
+  qihooRunning:
+  MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "$(STR_CLOSE_QIHOO_360_TOTAL_SECURITY)" IDRETRY checkQihooLoop
+  ; The user cannot close it — abort the installation.
+  Abort
+
+  qihooDone:
+FunctionEnd
+
+; ============================================================================
 ; Installer Section
 ; ============================================================================
 
 Section "Install"
+  ; 360 Total Security is known to corrupt or quarantine game files while
+  ; downloading or patching. Ask the user to close it first, and abort the
+  ; installation if they cannot. Only install and update modes are affected.
+  StrCmp $InstallMode "1" doQihooCheck
+  StrCmp $InstallMode "2" doQihooCheck
+  Goto qihooOk
+  doQihooCheck:
+    Call CheckQihoo360
+  qihooOk:
+
   SetOutPath "$INSTDIR"
 
   ; Branch on operation mode
