@@ -16,7 +16,7 @@ Unicode true
 !include "FileFunc.nsh"
 
 ; Version
-!define VERSION "4.227.3.0"
+!define VERSION "4.227.6.0"
 
 ; Product Info (English)
 !define PRODUCT_NAME "MapleStory CN"
@@ -138,6 +138,7 @@ LangString STR_FINISH_NO_LAUNCH ${LANG_ENGLISH} "Do not launch"
 LangString STR_FINISH_LAUNCH_CMS ${LANG_ENGLISH} "Launch MapleStory CN"
 LangString STR_FINISH_LAUNCH_CMS_CW ${LANG_ENGLISH} "Launch MapleStory Classic World CN"
 LangString STR_LAUNCH_PROMPT_CMS_CW ${LANG_ENGLISH} "Installation completed. Would you like to launch MapleStory Classic World CN now?"
+LangString STR_CLOSE_QIHOO_360_TOTAL_SECURITY ${LANG_ENGLISH} "Please close or uninstall 360 Total Security and click Retry. If you do not want to close it or cannot close it, click Abort to exit the installation."
 
 ; ============================================================================
 ; Language Strings - Simplified Chinese
@@ -184,6 +185,7 @@ LangString STR_FINISH_NO_LAUNCH ${LANG_SIMPCHINESE} "不启动"
 LangString STR_FINISH_LAUNCH_CMS ${LANG_SIMPCHINESE} "启动冒险岛正式服"
 LangString STR_FINISH_LAUNCH_CMS_CW ${LANG_SIMPCHINESE} "启动冒险岛怀旧服"
 LangString STR_LAUNCH_PROMPT_CMS_CW ${LANG_SIMPCHINESE} "安装完成。您要立即启动冒险岛怀旧服吗？"
+LangString STR_CLOSE_QIHOO_360_TOTAL_SECURITY ${LANG_SIMPCHINESE} "请关闭或卸载 360 安全卫士后，点击重试按钮。若不愿意关闭或无法关闭，可点击中止按钮退出安装。"
 
 ; ============================================================================
 ; Installer Attributes
@@ -253,7 +255,7 @@ Function .onInit
     Quit
   ${EndIf}
 
-  ; If the current date is on or before September 8, 2026, add --build 1064 to
+  ; If the current date is on or before September 8, 2026, add --build 1094 to
   ; the download command (required for a specific game build rollout).
   ${GetTime} "" "L" $0 $1 $2 $3 $4 $5 $6
   ; $2 = year (4 digits), $1 = month, $0 = day of month
@@ -264,7 +266,7 @@ Function .onInit
   monthEq:
     IntCmp $0 8 beforeCutoff beforeCutoff afterCutoff
   beforeCutoff:
-    StrCpy $BuildFlag "--build 1064"
+    StrCpy $BuildFlag "--build 1094"
   afterCutoff:
 
   ; Default game variants: install both.
