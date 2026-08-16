@@ -15,6 +15,7 @@ mod manual;
 mod metered;
 mod miniwzlib;
 mod net;
+mod nxoverlay;
 mod patch_builder;
 mod progress;
 mod resume;

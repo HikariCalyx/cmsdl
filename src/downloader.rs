@@ -571,6 +571,7 @@ pub fn patch_file(
         target_dir.display()
     );
     crate::tms_patch::apply_patch_file(target_dir, patch_path, purge_wz_files)?;
+    crate::nxoverlay::clear_nxoverlay();
     Ok(())
 }
 
@@ -617,7 +618,10 @@ fn patch_apply_cms(
         "cmsdl {VERSION}: patching region '{region}' client at '{}' up to '{version}'.",
         target.display()
     );
-    crate::cms_patch::apply_patches(target, version, allow_insecure, proxy, purge_wz_files, keep_old_wz_files)?;
+    let outcome = crate::cms_patch::apply_patches(target, version, allow_insecure, proxy, purge_wz_files, keep_old_wz_files)?;
+    if matches!(outcome, crate::cms_patch::PatchOutcome::Updated) {
+        crate::nxoverlay::clear_nxoverlay();
+    }
     if launch_after {
         crate::cms_patch::launch_client(target, lrhook)?;
     }
@@ -673,9 +677,12 @@ fn patch_apply_cms_cw(
         "cmsdl {VERSION}: patching region '{region}' client at '{}' up to '{version}'.",
         target.display()
     );
-    crate::cms::with_config(cms_cw::CW_CONFIG, || {
+    let outcome = crate::cms::with_config(cms_cw::CW_CONFIG, || {
         crate::cms_patch::apply_patches(target, version, allow_insecure, proxy, purge_wz_files, keep_old_wz_files)
     })?;
+    if matches!(outcome, crate::cms_patch::PatchOutcome::Updated) {
+        crate::nxoverlay::clear_nxoverlay();
+    }
     if launch_after {
         cms_cw::launch_client(target)?;
     }
@@ -740,7 +747,10 @@ fn patch_apply_tms(
         "cmsdl {VERSION}: patching region '{region}' client at '{}' up to '{version}'.",
         target.display()
     );
-    crate::tms_patch::apply_patches(target, version, allow_insecure, proxy, purge_wz_files)?;
+    let outcome = crate::tms_patch::apply_patches(target, version, allow_insecure, proxy, purge_wz_files)?;
+    if matches!(outcome, crate::tms_patch::PatchOutcome::Updated) {
+        crate::nxoverlay::clear_nxoverlay();
+    }
     Ok(())
 }
 

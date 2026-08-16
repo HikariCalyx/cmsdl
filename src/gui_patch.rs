@@ -271,6 +271,12 @@ impl Reporter for GuiReporter {
         self.set_progress(0.0);
     }
 
+    fn nxoverlay(&self) {
+        self.log("[gui-debug] Reporter::nxoverlay()");
+        self.set_label1(tr("gui-patcher-clear-nxoverlay-cache", &[]));
+        self.set_label3(String::new());
+    }
+
     fn finish(&self, msg: &str, close: bool) {
         self.log(&format!("[gui-debug] Reporter::finish(msg='{}', close={})", msg, close));
         self.set_label3(String::new());
@@ -467,7 +473,7 @@ fn run_patch_flow(
             TmsPatchOutcome::Updated => "gui-patcher-patch-successful",
             TmsPatchOutcome::AlreadyUpToDate => "gui-patcher-nopatch-successful",
         };
-        progress::finish(&tr(done_key, &[]), close_after_finishing);
+        progress::finish(&finish_message(done_key, outcome == TmsPatchOutcome::Updated), close_after_finishing);
         return Ok(());
     }
 
@@ -483,6 +489,7 @@ fn run_patch_flow(
 
     // Choose the terminal label based on whether an update was applied and
     // whether we were asked to launch the game (requirements 9 and 10).
+    let updated = outcome == PatchOutcome::Updated;
     let (done_key, launch_key) = match outcome {
         PatchOutcome::Updated => {
             ("gui-patcher-patch-successful", "gui-patcher-patch-successful-launch")
@@ -494,7 +501,7 @@ fn run_patch_flow(
 
     if launch_after {
         // Show the "launching" message, then attempt the (UAC-elevated) launch.
-        progress::finish(&tr(launch_key, &[]), false);
+        progress::finish(&finish_message(launch_key, updated), false);
         let launch_result = match region {
             Region::Cms => crate::cms_patch::launch_client(target, lrhook),
             Region::CmsCw => crate::cms_cw::launch_client(target),
@@ -514,8 +521,25 @@ fn run_patch_flow(
         }
     } else {
         // Show the final status; close automatically when requested.
-        progress::finish(&tr(done_key, &[]), close_after_finishing);
+        progress::finish(&finish_message(done_key, updated), close_after_finishing);
     }
 
     Ok(())
+}
+
+/// Compose the terminal status message for the GUI patcher.
+///
+/// When a patch was actually applied, the NxOverlay overlay caches are
+/// cleared (best-effort) and a localized note about it is appended so the
+/// cleanup step is visible on the final screen.
+fn finish_message(done_key: &str, updated: bool) -> String {
+    if updated && crate::nxoverlay::clear_nxoverlay() {
+        format!(
+            "{} · {}",
+            tr(done_key, &[]),
+            tr("gui-patcher-nxoverlay-cleared", &[])
+        )
+    } else {
+        tr(done_key, &[])
+    }
 }
