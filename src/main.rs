@@ -29,6 +29,8 @@ use clap::Parser;
 use cli::{Action, Cli, PatchAction};
 use filter::FileFilter;
 
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 /// On Windows, disable QuickEdit mode on the console so that a stray mouse
 /// click does not freeze the process (the default "QuickEdit" behaviour
 /// pauses output and blocks the application as soon as the user selects
@@ -225,6 +227,12 @@ fn main() -> Result<()> {
         Action::CreateShortcut(path) => downloader::create_shortcut(cli.region, &path, cli.lrhook, cli.no_gui, cli.close_after_finishing)?,
         Action::CreatePatch { old_dir, new_dir, out_file } => {
             patch_builder::create_patch(&old_dir, &new_dir, &out_file)?
+        }
+        Action::ClearNxOverlay => {
+            println!("cmsdl {VERSION}: clearing NxOverlay caches.");
+            nxoverlay::clear_nxoverlay();
+            #[cfg(not(windows))]
+            println!("NxOverlay cleanup is only available on Windows.");
         }
         Action::Maintenance { maint_id } => {
             let agent = net::agent(cli.allow_insecure, proxy);

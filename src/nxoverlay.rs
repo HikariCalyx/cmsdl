@@ -72,13 +72,13 @@ fn clear_nxoverlay_impl() -> bool {
 
     if removed == 0 {
         crate::plog!(
-            "no NxOverlay overlay caches found under '{}'.",
+            "no NxOverlay caches found under '{}'.",
             nexon.display()
         );
         false
     } else {
         crate::plog!(
-            "removed {} NxOverlay overlay cache(s) under '{}'.",
+            "removed {} NxOverlay cache(s) under '{}'.",
             removed,
             nexon.display()
         );

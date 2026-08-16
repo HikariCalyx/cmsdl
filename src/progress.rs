@@ -35,7 +35,7 @@ pub trait Reporter: Send + Sync {
     fn repair_progress(&self, done: usize, total: usize, rel_path: &str, downloaded: u64);
     /// Purging stray WZ files not in the latest manifest (`--purge-wz-files`).
     fn purging(&self);
-    /// Clearing stale NxOverlay overlay caches after a successful patch.
+    /// Clearing stale NxOverlay caches after a successful patch.
     fn nxoverlay(&self);
     /// Terminal state: show `msg` on label1; close the window when `close`.
     fn finish(&self, msg: &str, close: bool);

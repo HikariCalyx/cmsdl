@@ -8,7 +8,7 @@ use clap::{ArgGroup, Parser, ValueEnum};
 #[command(group(
     ArgGroup::new("action")
         .required(true)
-        .args(["check", "download", "get_bit_torrent", "patch", "patch_file", "create_shortcut", "create_patch", "maintenance"]),
+        .args(["check", "download", "get_bit_torrent", "patch", "patch_file", "create_shortcut", "create_patch", "maintenance", "clear_nxoverlay"]),
 ))]
 pub struct Cli {
     /// The region to operate on (case-insensitive).
@@ -131,6 +131,12 @@ pub struct Cli {
     /// Fetch and display the most recent maintenance notice for CMS.
     #[arg(long)]
     pub maintenance: bool,
+
+    /// Clear every NxOverlay cache directory under
+    /// `%LocalAppData%\Nexon\` (Windows only).  Only valid with the
+    /// `manual` region, e.g. `cmsdl manual --clear-nxoverlay`.
+    #[arg(long)]
+    pub clear_nxoverlay: bool,
 
     /// Use a specific maintenance notice ID (with `--download` or
     /// `--maintenance`).  Bypasses the normal latest-maintenance search.
@@ -288,6 +294,8 @@ pub enum Action {
     },
     /// Fetch and display the most recent maintenance notice.
     Maintenance { maint_id: Option<u64> },
+    /// Clear the NxOverlay cache directories (Windows only).
+    ClearNxOverlay,
     /// Apply a local `.patch` file directly (TMS format).
     PatchFile { patch_path: PathBuf, target_dir: PathBuf },
 }
@@ -367,6 +375,14 @@ impl Cli {
                 new_dir: sanitize_path(new_dir),
                 out_file: sanitize_path(out_file),
             }
+        } else if self.clear_nxoverlay {
+            if self.region != Region::Manual {
+                anyhow::bail!(
+                    "--clear-nxoverlay is only supported for region 'manual'; \
+                     use `cmsdl manual --clear-nxoverlay`"
+                );
+            }
+            Action::ClearNxOverlay
         } else if self.maintenance {
             if self.region == Region::Manual {
                 anyhow::bail!(
