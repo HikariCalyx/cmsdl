@@ -16,7 +16,7 @@ Unicode true
 !include "FileFunc.nsh"
 
 ; Version
-!define VERSION "4.227.6.2"
+!define VERSION "4.227.6.3"
 
 ; Product Info (English)
 !define PRODUCT_NAME "MapleStory CN"

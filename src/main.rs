@@ -19,6 +19,7 @@ mod nxoverlay;
 mod patch_builder;
 mod progress;
 mod resume;
+mod single_instance;
 mod taskprogress;
 mod tms;
 mod tms_patch;
@@ -175,6 +176,28 @@ fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
+    // Prevent the exact same command line from running twice at once: if
+    // another cmsdl process already holds the lock for this command, exit
+    // immediately instead of starting a second copy of the same operation.
+    // The guard keeps the lock file open (and locked) for the whole process and
+    // removes the file again once the operation finishes cleanly. `is_metered`
+    // / `is_hdd` return before this point and are therefore never affected.
+    let instance_lock = match single_instance::acquire() {
+        Ok(Some(guard)) => Some(guard),
+        Ok(None) => {
+            eprintln!(
+                "another cmsdl instance is already running this exact command; exiting."
+            );
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!(
+                "warning: could not acquire single-instance lock ({e}); continuing anyway"
+            );
+            None
+        }
+    };
+
     if cli.allow_insecure {
         eprintln!(
             "WARNING: --allow-insecure is set; TLS certificate verification is \
@@ -250,6 +273,13 @@ fn main() -> Result<()> {
             cli.allow_insecure,
             proxy,
         )?,
+    }
+
+    // Release the single-instance lock and remove its file. Only reached on a
+    // clean finish; on error paths the guard is dropped instead, which still
+    // releases the lock and leaves the file for the next run to prune.
+    if let Some(guard) = instance_lock {
+        guard.cleanup();
     }
 
     Ok(())
