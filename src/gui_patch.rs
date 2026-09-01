@@ -402,11 +402,15 @@ pub fn run_gui_patch(
     let ui_maint = Arc::clone(&ui);
     let agent_maint = crate::net::agent(allow_insecure, proxy);
     std::thread::spawn(move || {
-        if let Some((title, body, date)) = maintenance::fetch_for_gui(&agent_maint, region, maint_id) {
+        if let Some((title, body, date, estimated_end)) =
+            maintenance::fetch_for_gui(&agent_maint, region, maint_id)
+        {
             if let Ok(mut m) = ui_maint.lock() {
                 m.maintenance_title = format!("{title} ({})", maintenance::fmt_gui_date(&date));
                 m.maintenance_body = body;
-                m.maintenance_folded = false;
+                // Fold the notice once the estimated end time has passed.
+                let now = chrono::Utc::now().timestamp();
+                m.maintenance_folded = estimated_end.map(|end| now >= end).unwrap_or(false);
             }
         }
     });

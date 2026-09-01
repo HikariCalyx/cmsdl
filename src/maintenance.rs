@@ -205,12 +205,14 @@ pub fn show_maintenance(
     }
 }
 
-/// Fetch the maintenance notice for GUI display, returning `(title, body, date)`
-/// where `date` is a normalised `YYYY-MM-DD` string.
+/// Fetch the maintenance notice for GUI display, returning
+/// `(title, body, date, estimated_end)` where `date` is a normalised
+/// `YYYY-MM-DD` string and `estimated_end` is the estimated end time as a
+/// Unix timestamp (UTC+8 → Unix), if it can be parsed from the notice.
 /// If `maint_id` is set, that specific bulletin is fetched instead of
 /// searching for the latest maintenance notice.
 /// Silently returns `None` on any error.
-pub fn fetch_for_gui(agent: &ureq::Agent, region: Region, maint_id: Option<u64>) -> Option<(String, String, String)> {
+pub fn fetch_for_gui(agent: &ureq::Agent, region: Region, maint_id: Option<u64>) -> Option<(String, String, String, Option<i64>)> {
     let result = match region {
         Region::Cms => fetch_cms_for_gui(agent, maint_id),
         Region::CmsCw => fetch_cms_cw_for_gui(agent, maint_id),
@@ -220,11 +222,11 @@ pub fn fetch_for_gui(agent: &ureq::Agent, region: Region, maint_id: Option<u64>)
     result.ok()
 }
 
-fn fetch_cms_for_gui(agent: &ureq::Agent, maint_id: Option<u64>) -> Result<(String, String, String)> {
+fn fetch_cms_for_gui(agent: &ureq::Agent, maint_id: Option<u64>) -> Result<(String, String, String, Option<i64>)> {
     fetch_for_gui_inner(agent, maint_id, fetch_cms_news_list, fetch_cms_news_content)
 }
 
-fn fetch_cms_cw_for_gui(agent: &ureq::Agent, maint_id: Option<u64>) -> Result<(String, String, String)> {
+fn fetch_cms_cw_for_gui(agent: &ureq::Agent, maint_id: Option<u64>) -> Result<(String, String, String, Option<i64>)> {
     fetch_for_gui_inner(agent, maint_id, fetch_cms_cw_news_list, fetch_cms_cw_news_content)
 }
 
@@ -234,7 +236,7 @@ fn fetch_for_gui_inner(
     maint_id: Option<u64>,
     fetch_list: fn(&ureq::Agent) -> Result<Vec<NewsCategory>>,
     fetch_content: fn(&ureq::Agent, u64) -> Result<NewsContentData>,
-) -> Result<(String, String, String)> {
+) -> Result<(String, String, String, Option<i64>)> {
     let id = if let Some(mid) = maint_id {
         mid
     } else {
@@ -248,10 +250,11 @@ fn fetch_for_gui_inner(
     let body = localize_stroke_out(&body);
     let body = format!("{body}\n\n\n\n");
     let date = content.publish_date.split_whitespace().next().unwrap_or(&content.publish_date).to_string();
-    Ok((content.title, body, date))
+    let estimated_end = extract_maintenance_times(&content.title, &content.content).map(|t| t.end);
+    Ok((content.title, body, date, estimated_end))
 }
 
-fn fetch_tms_for_gui(agent: &ureq::Agent, maint_id: Option<u64>) -> Result<(String, String, String)> {
+fn fetch_tms_for_gui(agent: &ureq::Agent, maint_id: Option<u64>) -> Result<(String, String, String, Option<i64>)> {
     let csrf_token = acquire_tms_csrf(agent)?;
     let (bid, items_opt) = if let Some(mid) = maint_id {
         (mid.to_string(), None)
@@ -284,7 +287,8 @@ fn fetch_tms_for_gui(agent: &ureq::Agent, maint_id: Option<u64>) -> Result<(Stri
     let body = format!("{body}\n\n\n\n");
     // Normalise TMS date format: "2026/07/23" → "2026-07-23"
     let date = detail.start_date.replace('/', "-");
-    Ok((detail.title, body, date))
+    let estimated_end = extract_maintenance_times(&detail.title, &detail.content).map(|t| t.end);
+    Ok((detail.title, body, date, estimated_end))
 }
 
 /// Format a date string `YYYY-MM-DD` for GUI display using the current locale.
