@@ -15,6 +15,15 @@ Unicode true
 !include "nsDialogs.nsh"
 !include "FileFunc.nsh"
 
+; Window show/hide flags used to reveal the advanced-options controls
+; (guarded because one of the included headers already defines them).
+!ifndef SW_HIDE
+  !define SW_HIDE 0
+!endif
+!ifndef SW_SHOW
+  !define SW_SHOW 5
+!endif
+
 ; Version
 !define VERSION "4.227.6.3"
 
@@ -66,6 +75,20 @@ Var RadioNoLaunch
 Var RadioLaunchCMS
 Var RadioLaunchCMSCW
 Var LaunchVariant
+; Advanced CMS client options (variant page)
+Var CheckAdvOpt
+Var CheckSpecificVer
+Var RadioSpecificBuild
+Var RadioLatest
+Var EditBuildNumber
+Var CheckNoUninstaller
+Var CheckNoShortcut
+Var AdvOptFlag
+Var SpecificVerFlag
+Var BuildChoiceFlag
+Var NoUninstallerFlag
+Var NoShortcutFlag
+Var BuildNumber
 
 ; ============================================================================
 ; MUI2 Settings
@@ -139,6 +162,13 @@ LangString STR_FINISH_LAUNCH_CMS ${LANG_ENGLISH} "Launch MapleStory CN"
 LangString STR_FINISH_LAUNCH_CMS_CW ${LANG_ENGLISH} "Launch MapleStory Classic World CN"
 LangString STR_LAUNCH_PROMPT_CMS_CW ${LANG_ENGLISH} "Installation completed. Would you like to launch MapleStory Classic World CN now?"
 LangString STR_CLOSE_QIHOO_360_TOTAL_SECURITY ${LANG_ENGLISH} "Please close or uninstall 360 Total Security and click Retry. If you do not want to close it or cannot close it, click Abort to exit the installation."
+LangString STR_VARIANT_ADVANCED ${LANG_ENGLISH} "Show advanced options for CMS client"
+LangString STR_VARIANT_SPECIFIC_VER ${LANG_ENGLISH} "Install a specific version of the client"
+LangString STR_VARIANT_SPECIFIC_BUILD ${LANG_ENGLISH} "Specific build number:"
+LangString STR_VARIANT_LATEST ${LANG_ENGLISH} "Latest version"
+LangString STR_VARIANT_NO_UNINSTALLER ${LANG_ENGLISH} "Do not create uninstaller"
+LangString STR_VARIANT_NO_SHORTCUT ${LANG_ENGLISH} "Do not create shortcut"
+LangString STR_VARIANT_BUILD_INVALID ${LANG_ENGLISH} "Please enter a valid build number (digits only)."
 
 ; ============================================================================
 ; Language Strings - Simplified Chinese
@@ -186,6 +216,13 @@ LangString STR_FINISH_LAUNCH_CMS ${LANG_SIMPCHINESE} "启动冒险岛正式服"
 LangString STR_FINISH_LAUNCH_CMS_CW ${LANG_SIMPCHINESE} "启动冒险岛怀旧服"
 LangString STR_LAUNCH_PROMPT_CMS_CW ${LANG_SIMPCHINESE} "安装完成。您要立即启动冒险岛怀旧服吗？"
 LangString STR_CLOSE_QIHOO_360_TOTAL_SECURITY ${LANG_SIMPCHINESE} "请关闭或卸载 360 安全卫士后，点击重试按钮。若不愿意关闭或无法关闭，可点击中止按钮退出安装。"
+LangString STR_VARIANT_ADVANCED ${LANG_SIMPCHINESE} "为正式服客户端显示高级选项"
+LangString STR_VARIANT_SPECIFIC_VER ${LANG_SIMPCHINESE} "安装指定版本的客户端"
+LangString STR_VARIANT_SPECIFIC_BUILD ${LANG_SIMPCHINESE} "指定构建号："
+LangString STR_VARIANT_LATEST ${LANG_SIMPCHINESE} "最新版本"
+LangString STR_VARIANT_NO_UNINSTALLER ${LANG_SIMPCHINESE} "不创建卸载程序"
+LangString STR_VARIANT_NO_SHORTCUT ${LANG_SIMPCHINESE} "不创建快捷方式"
+LangString STR_VARIANT_BUILD_INVALID ${LANG_SIMPCHINESE} "请输入有效的构建号（仅限数字）。"
 
 ; ============================================================================
 ; Installer Attributes
@@ -255,24 +292,33 @@ Function .onInit
     Quit
   ${EndIf}
 
-  ; If the current date is on or before September 8, 2026, add --build 1094 to
+  ; If the current date is on or before October 20, 2026, add --build 1120 to
   ; the download command (required for a specific game build rollout).
   ${GetTime} "" "L" $0 $1 $2 $3 $4 $5 $6
   ; $2 = year (4 digits), $1 = month, $0 = day of month
   StrCpy $BuildFlag ""
   IntCmp $2 2026 yearEq beforeCutoff afterCutoff
   yearEq:
-    IntCmp $1 9 monthEq beforeCutoff afterCutoff
+    IntCmp $1 10 monthEq beforeCutoff afterCutoff
   monthEq:
-    IntCmp $0 8 beforeCutoff beforeCutoff afterCutoff
+    IntCmp $0 20 beforeCutoff beforeCutoff afterCutoff
   beforeCutoff:
-    StrCpy $BuildFlag "--build 1094"
+    StrCpy $BuildFlag "--build 1120"
   afterCutoff:
 
   ; Default game variants: install both.
   StrCpy $InstallCMS "1"
   StrCpy $InstallCMSCW "0"
   StrCpy $LaunchVariant "1"
+
+  ; Advanced CMS client options default to off; "latest version" is the
+  ; default when the specific-version sub-option is enabled.
+  StrCpy $AdvOptFlag ""
+  StrCpy $SpecificVerFlag ""
+  StrCpy $BuildChoiceFlag ""
+  StrCpy $NoUninstallerFlag ""
+  StrCpy $NoShortcutFlag ""
+  StrCpy $BuildNumber ""
 FunctionEnd
 
 ; ============================================================================
@@ -411,14 +457,61 @@ variantShow:
 
   ${NSD_CreateCheckbox} 10u 6u 95% 12u "$(STR_VARIANT_CMS)"
   Pop $CheckCMS
-  ${NSD_CreateCheckbox} 10u 24u 95% 12u "$(STR_VARIANT_CMS_CW)"
+  ${NSD_CreateCheckbox} 10u 22u 95% 12u "$(STR_VARIANT_CMS_CW)"
   Pop $CheckCMSCW
+
+  ; --- Advanced CMS client options (revealed by the checkbox below) ---
+  ${NSD_CreateCheckbox} 10u 40u 95% 12u "$(STR_VARIANT_ADVANCED)"
+  Pop $CheckAdvOpt
+  ${NSD_OnClick} $CheckAdvOpt UpdateAdvancedUI
+
+  ${NSD_CreateCheckbox} 10u 58u 95% 12u "$(STR_VARIANT_SPECIFIC_VER)"
+  Pop $CheckSpecificVer
+  ${NSD_OnClick} $CheckSpecificVer UpdateAdvancedUI
+
+  ${NSD_CreateRadioButton} 26u 76u 132u 12u "$(STR_VARIANT_SPECIFIC_BUILD)"
+  Pop $RadioSpecificBuild
+  ${NSD_AddStyle} $RadioSpecificBuild ${WS_GROUP}
+  ${NSD_OnClick} $RadioSpecificBuild UpdateAdvancedUI
+
+  ${NSD_CreateText} 164u 76u 72u 12u ""
+  Pop $EditBuildNumber
+  ${NSD_OnChange} $EditBuildNumber OnBuildTextChange
+
+  ${NSD_CreateRadioButton} 26u 94u 95% 12u "$(STR_VARIANT_LATEST)"
+  Pop $RadioLatest
+  ${NSD_OnClick} $RadioLatest UpdateAdvancedUI
+
+  ${NSD_CreateCheckbox} 10u 112u 95% 12u "$(STR_VARIANT_NO_UNINSTALLER)"
+  Pop $CheckNoUninstaller
+  ${NSD_OnClick} $CheckNoUninstaller UpdateAdvancedUI
+
+  ${NSD_CreateCheckbox} 10u 128u 95% 12u "$(STR_VARIANT_NO_SHORTCUT)"
+  Pop $CheckNoShortcut
+  ${NSD_OnClick} $CheckNoShortcut UpdateAdvancedUI
 
   ; Restore previous state if the user went back.
   StrCmp $InstallCMS "1" 0 +2
     ${NSD_Check} $CheckCMS
   StrCmp $InstallCMSCW "1" 0 +2
     ${NSD_Check} $CheckCMSCW
+  StrCmp $AdvOptFlag "1" 0 +2
+    ${NSD_Check} $CheckAdvOpt
+  StrCmp $SpecificVerFlag "1" 0 +2
+    ${NSD_Check} $CheckSpecificVer
+  ${If} $BuildChoiceFlag == "1"
+    ${NSD_Check} $RadioSpecificBuild
+    ${NSD_SetText} $EditBuildNumber "$BuildNumber"
+  ${Else}
+    ${NSD_Check} $RadioLatest
+  ${EndIf}
+  StrCmp $NoUninstallerFlag "1" 0 +2
+    ${NSD_Check} $CheckNoUninstaller
+  StrCmp $NoShortcutFlag "1" 0 +2
+    ${NSD_Check} $CheckNoShortcut
+
+  ; Apply the restored visibility / enabled state.
+  Call UpdateAdvancedUI
 
   nsDialogs::Show
   variantDone:
@@ -438,6 +531,136 @@ Function VariantSelectPageLeave
   ${EndIf}
   StrCpy $InstallCMS $0
   StrCpy $InstallCMSCW $1
+
+  ; --- Advanced CMS client options ---
+  ${NSD_GetState} $CheckAdvOpt $0
+  StrCpy $AdvOptFlag $0
+  ${NSD_GetState} $CheckNoUninstaller $0
+  StrCpy $NoUninstallerFlag $0
+  ${NSD_GetState} $CheckNoShortcut $0
+  StrCpy $NoShortcutFlag $0
+
+  ; Version selection (only meaningful for a full CMS download). An explicit
+  ; choice overrides the date-based automatic --build flag set up in .onInit.
+  ${NSD_GetState} $CheckSpecificVer $0
+  ${If} $0 == 1
+    StrCpy $SpecificVerFlag "1"
+    ${NSD_GetState} $RadioSpecificBuild $1
+    ${If} $1 == 1
+      StrCpy $BuildChoiceFlag "1"
+      ; Build number must be non-empty and digits only.
+      ${NSD_GetText} $EditBuildNumber $BuildNumber
+      Push $BuildNumber
+      Call IsDigits
+      Pop $2
+      ${If} $2 == 0
+        MessageBox MB_ICONEXCLAMATION "$(STR_VARIANT_BUILD_INVALID)"
+        Abort
+      ${EndIf}
+      StrCpy $BuildFlag "--build $BuildNumber"
+    ${Else}
+      StrCpy $BuildChoiceFlag ""
+      StrCpy $BuildNumber ""
+      ; "Latest version": drop the date-based automatic build flag.
+      StrCpy $BuildFlag ""
+    ${EndIf}
+  ${Else}
+    StrCpy $SpecificVerFlag ""
+    StrCpy $BuildChoiceFlag ""
+    StrCpy $BuildNumber ""
+    ; Leave the date-based automatic build flag untouched.
+  ${EndIf}
+FunctionEnd
+
+; Keep the last-entered build number across Back/Next navigation.
+Function OnBuildTextChange
+  ${NSD_GetText} $EditBuildNumber $BuildNumber
+FunctionEnd
+
+; Show/hide the advanced CMS client options on the variant page based on the
+; current checkbox states. The "install specific version" checkbox reveals the
+; radio group and build-number box; the build-number box is only enabled when
+; the "specific build number" radio is selected.
+Function UpdateAdvancedUI
+  ; Visibility of the whole advanced group.
+  ${NSD_GetState} $CheckAdvOpt $0
+  ${If} $0 == 1
+    System::Call "user32::ShowWindow(p $CheckSpecificVer, i ${SW_SHOW})"
+    System::Call "user32::ShowWindow(p $CheckNoUninstaller, i ${SW_SHOW})"
+    System::Call "user32::ShowWindow(p $CheckNoShortcut, i ${SW_SHOW})"
+
+    ; The "install specific version" checkbox reveals the radio group + box.
+    ${NSD_GetState} $CheckSpecificVer $1
+    ${If} $1 == 1
+      System::Call "user32::ShowWindow(p $RadioSpecificBuild, i ${SW_SHOW})"
+      System::Call "user32::ShowWindow(p $EditBuildNumber, i ${SW_SHOW})"
+      System::Call "user32::ShowWindow(p $RadioLatest, i ${SW_SHOW})"
+    ${Else}
+      System::Call "user32::ShowWindow(p $RadioSpecificBuild, i ${SW_HIDE})"
+      System::Call "user32::ShowWindow(p $EditBuildNumber, i ${SW_HIDE})"
+      System::Call "user32::ShowWindow(p $RadioLatest, i ${SW_HIDE})"
+    ${EndIf}
+  ${Else}
+    System::Call "user32::ShowWindow(p $CheckSpecificVer, i ${SW_HIDE})"
+    System::Call "user32::ShowWindow(p $RadioSpecificBuild, i ${SW_HIDE})"
+    System::Call "user32::ShowWindow(p $EditBuildNumber, i ${SW_HIDE})"
+    System::Call "user32::ShowWindow(p $RadioLatest, i ${SW_HIDE})"
+    System::Call "user32::ShowWindow(p $CheckNoUninstaller, i ${SW_HIDE})"
+    System::Call "user32::ShowWindow(p $CheckNoShortcut, i ${SW_HIDE})"
+  ${EndIf}
+
+  ; Persist the current checkbox states immediately so they survive a Back
+  ; navigation (Back skips the Leave callback). Collapsing the group only
+  ; hides the controls; their selections are preserved.
+  ${NSD_GetState} $CheckAdvOpt $0
+  StrCpy $AdvOptFlag $0
+  ${NSD_GetState} $CheckSpecificVer $0
+  StrCpy $SpecificVerFlag $0
+  ${NSD_GetState} $CheckNoUninstaller $0
+  StrCpy $NoUninstallerFlag $0
+  ${NSD_GetState} $CheckNoShortcut $0
+  StrCpy $NoShortcutFlag $0
+
+  ; Enable the build-number box only for the "specific build number" radio.
+  ${NSD_GetState} $RadioSpecificBuild $0
+  ${If} $0 == 1
+    System::Call "user32::EnableWindow(p $EditBuildNumber, i 1)"
+  ${Else}
+    System::Call "user32::EnableWindow(p $EditBuildNumber, i 0)"
+  ${EndIf}
+FunctionEnd
+
+; Returns "1" (top of stack) when the value pushed on the stack is a non-empty
+; string of ASCII digits, "0" otherwise.
+Function IsDigits
+  Exch $R0
+  StrLen $R2 $R0
+  IntCmp $R2 0 notDigits
+  StrCpy $R1 0
+digitLoop:
+  IntCmp $R1 $R2 isDigits
+  StrCpy $R3 $R0 1 $R1
+  StrCmp $R3 "0" nextDigit
+  StrCmp $R3 "1" nextDigit
+  StrCmp $R3 "2" nextDigit
+  StrCmp $R3 "3" nextDigit
+  StrCmp $R3 "4" nextDigit
+  StrCmp $R3 "5" nextDigit
+  StrCmp $R3 "6" nextDigit
+  StrCmp $R3 "7" nextDigit
+  StrCmp $R3 "8" nextDigit
+  StrCmp $R3 "9" nextDigit
+  Goto notDigits
+nextDigit:
+  IntOp $R1 $R1 + 1
+  Goto digitLoop
+isDigits:
+  StrCpy $R0 "1"
+  Goto digitsDone
+notDigits:
+  StrCpy $R0 "0"
+digitsDone:
+  Exch $R0
 FunctionEnd
 
 Function OpenTroubleshootingLink
@@ -460,6 +683,10 @@ Function WriteRegInfo
   ; Store the localized product name so the uninstaller can locate shortcuts
   WriteRegStr HKCU "Software\${REG_KEY}" "ProductName" "$(STR_PRODUCT_NAME)"
 
+  ; The Control Panel entry and Uninstall.exe are optional: skip both when
+  ; "Do not create uninstaller" was chosen on the variant page.
+  StrCmp $NoUninstallerFlag "1" noUninstallInfo
+
   ; Add uninstall information to Control Panel
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${REG_KEY}" "DisplayName" "$(STR_PRODUCT_NAME)"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${REG_KEY}" "DisplayVersion" "${VERSION}"
@@ -470,6 +697,7 @@ Function WriteRegInfo
 
   ; Write uninstaller
   WriteUninstaller "$INSTDIR\Uninstall.exe"
+  noUninstallInfo:
 FunctionEnd
 
 ; ============================================================================
@@ -755,6 +983,9 @@ Section "Install"
   ; SHARED: shortcuts
   ; ----------------------------------------------------------------------
   makeShortcuts:
+    ; "Do not create shortcut" skips both the CMS and CMS_CW shortcuts. Skip
+    ; ahead to the optional official-launcher removal.
+    StrCmp $NoShortcutFlag "1" checkOfficialLauncher
     ; Create CMS shortcut only when the regular CMS variant was installed.
     StrCmp $InstallCMS "1" 0 checkCMSCWShortcut
     nsExec::ExecToLog '"$INSTDIR\cmsdl.exe" cms --create-shortcut "$INSTDIR"$LrHookFlag$NoGuiFlag'
