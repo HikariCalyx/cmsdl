@@ -521,17 +521,17 @@ pub fn apply_patches(
         // to progressively closer versions.
         let mut patch_found = false;
         for target in (current + 1..=target_version).rev() {
-            // Try HTTPS first, then fall back to HTTP (older servers may
-            // only support plain HTTP).
+            // The TMS patch CDN only serves plain HTTP (TLS is not supported on
+            // this host), so try http:// first and only fall back to https:// in
+            // case the CDN is upgraded in the future.
             let patch_url = build_patch_url(current, target);
             let zip_name = format!("{:05}to{:05}.patch", current, target);
             let dest = patchdata.join(&zip_name);
 
             plog!("trying patch: {} -> {} ({})", current, target, patch_url);
 
-            // Probe the URL to get the file size.  Try the primary URL
-            // first; if that fails try the http:// equivalent in case the
-            // CDN has not been upgraded yet.
+            // Probe the URL to get the file size.  Try the primary (http://)
+            // URL first; if that fails try the https:// equivalent.
             let fallback_url: String;
             let (size, download_url) = match probe_file_size(&agent, &patch_url) {
                 Ok(s) if s > 0 => (s, patch_url.as_str()),
@@ -540,8 +540,8 @@ pub fn apply_patches(
                     continue;
                 }
                 Err(e) => {
-                    // Try fallback to HTTP.
-                    fallback_url = patch_url.replacen("https://", "http://", 1);
+                    // Try fallback to HTTPS.
+                    fallback_url = patch_url.replacen("http://", "https://", 1);
                     plog!("  primary URL failed: {:#}; trying {}", e, fallback_url);
                     match probe_file_size(&agent, &fallback_url) {
                         Ok(s) if s > 0 => (s, fallback_url.as_str()),
@@ -749,9 +749,12 @@ fn get_current_version(target_dir: &Path) -> Result<i16> {
 }
 
 /// Build a patch download URL from old and new version numbers.
+///
+/// The TMS patch CDN only serves plain HTTP (the official patcher uses `http://`;
+/// TLS is not supported on this host), so the URL is built as `http://`.
 fn build_patch_url(old_ver: i16, new_ver: i16) -> String {
     format!(
-        "https://tw.cdnpatch.maplestory.beanfun.com/maplestory/patch/patchdir/{:05}/{:05}to{:05}.patch",
+        "http://tw.cdnpatch.maplestory.beanfun.com/maplestory/patch/patchdir/{:05}/{:05}to{:05}.patch",
         new_ver, old_ver, new_ver
     )
 }
