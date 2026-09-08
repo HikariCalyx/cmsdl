@@ -170,7 +170,7 @@ impl Reporter for GuiReporter {
         // TMS versions are bare numbers (e.g. "280") — prepend "V".
         let cur_display = if self.is_tms { format!("V{current}") } else { current.to_string() };
         let tgt_display = if self.is_tms { format!("V{target}") } else { target.to_string() };
-        self.set_label2(tr("gui-patcher-installing-update-from", &[&cur_display, &tgt_display, "0 B/s"]));
+        self.set_label2(tr("gui-patcher-installing-update-from-nospeed", &[&cur_display, &tgt_display]));
         self.set_label3(String::new());
         self.set_progress(0.0);
         // Store display versions for the download label and label2 updates.
@@ -201,9 +201,21 @@ impl Reporter for GuiReporter {
         if total > 0 {
             self.set_progress(downloaded as f32 / total as f32);
         }
-        if self.should_update_ui() {
+        // Always render the final tick so the speed indicator is dropped the
+        // moment the download completes.
+        let finished = total > 0 && downloaded >= total;
+        if finished || self.should_update_ui() {
             self.render_download(downloaded);
         }
+    }
+
+    fn loading_patch(&self) {
+        self.log("[gui-debug] Reporter::loading_patch()");
+        // The downloaded patch is being read & decompressed before the
+        // pre-patch checksum phase begins (the short pause after the
+        // download bar reaches 100%).
+        self.set_label1(tr("gui-patcher-loading-patch", &[]));
+        self.set_label3(String::new());
     }
 
     fn extracting(&self, index: usize, count: usize) {
@@ -332,6 +344,7 @@ impl GuiReporter {
         let ctx = self.dl.lock().unwrap().clone();
         let speed = self.speed.lock().unwrap().tick(downloaded);
         let speed_str = format_speed(speed);
+        let finished = ctx.total > 0 && downloaded >= ctx.total;
         if self.is_tms {
             self.set_label1(tr(
                 "gui-patcher-downloading-update-tms",
@@ -348,11 +361,19 @@ impl GuiReporter {
                 &[&ctx.index.to_string(), &ctx.count.to_string(), &speed_str],
             ));
         }
-        // Keep label2 updated with current download speed.
-        self.set_label2(tr(
-            "gui-patcher-installing-update-from",
-            &[&ctx.cur_ver, &ctx.tgt_ver, &speed_str],
-        ));
+        // Keep label2 updated with the live download speed while the download
+        // runs; once it completes, drop the speed indicator entirely.
+        if finished {
+            self.set_label2(tr(
+                "gui-patcher-installing-update-from-nospeed",
+                &[&ctx.cur_ver, &ctx.tgt_ver],
+            ));
+        } else {
+            self.set_label2(tr(
+                "gui-patcher-installing-update-from",
+                &[&ctx.cur_ver, &ctx.tgt_ver, &speed_str],
+            ));
+        }
         // ETA: remaining bytes / current speed.
         let remaining = ctx.total.saturating_sub(downloaded);
         let eta_secs = if speed > 0.0 { remaining as f64 / speed } else { 0.0 };

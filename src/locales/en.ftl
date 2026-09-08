@@ -1,8 +1,10 @@
 gui-patcher-scanning-update = Scanning client update...
 gui-patcher-installing-update-from = Installing update from %s to %s (%s)
+gui-patcher-installing-update-from-nospeed = Installing update from %s to %s
 gui-patcher-downloading-update-tms = Downloading update from %s to %s (%s / %s)
 gui-patcher-downloading-update = Downloading update pack %s of %s (%s)
 gui-patcher-extracting-package = Extracting update package %s of %s
+gui-patcher-loading-patch = Loading patch...
 gui-patcher-applying-update = [%s/%s] Updating %s
 gui-patcher-verifying-files = Verifying client files before update...
 gui-patcher-verifying-file = [%s/%s] Verifying %s

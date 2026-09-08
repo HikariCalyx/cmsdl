@@ -22,6 +22,9 @@ pub trait Reporter: Send + Sync {
     fn begin_download(&self, index: usize, count: usize, total: u64);
     /// Report cumulative bytes downloaded for the current package.
     fn download_progress(&self, downloaded: u64);
+    /// The downloaded patch file is being read & decompressed before the
+    /// pre-patch verification phase.
+    fn loading_patch(&self);
     /// A package finished downloading and is now being extracted/applied.
     fn extracting(&self, index: usize, count: usize);
     /// Begin the pre-patch verification phase (checksumming the old files that
@@ -159,6 +162,10 @@ pub fn begin_download(index: usize, count: usize, total: u64) {
 pub fn download_progress(downloaded: u64) {
     // Too noisy to log every call — only log periodically via the reporter.
     with(|r| r.download_progress(downloaded));
+}
+pub fn loading_patch() {
+    line("[progress] loading_patch");
+    with(|r| r.loading_patch());
 }
 pub fn extracting(index: usize, count: usize) {
     line(&format!("[progress] extracting({}, {})", index, count));

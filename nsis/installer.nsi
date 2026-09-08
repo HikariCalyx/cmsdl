@@ -25,7 +25,7 @@ Unicode true
 !endif
 
 ; Version
-!define VERSION "4.228.1.0"
+!define VERSION "4.228.1.1"
 
 ; Product Info (English)
 !define PRODUCT_NAME "MapleStory CN"

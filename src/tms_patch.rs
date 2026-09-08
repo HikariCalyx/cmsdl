@@ -1278,6 +1278,9 @@ fn plan_line(line: &str) {
 /// old file's CRC-32 and reports the execution plan (files, sizes, disk space)
 /// before writing a single byte to the target directory.
 fn apply_patch_data(patch_data: &[u8], target_dir: &Path) -> Result<Vec<String>> {
+    // Reading + decompressing + parsing the patch file is the (short) pause
+    // seen before the pre-patch checksum phase — surface it on the GUI.
+    crate::progress::loading_patch();
     let patch = read_wzpatch(patch_data)?;
 
     // ── DeadPatch: pre-patch validation & execution plan ─────────────────
@@ -1638,6 +1641,13 @@ fn apply_create(
 
 /// Apply a "rebuild" patch part: follow rebuild instructions to construct the
 /// new file from the old file and patch data.
+///
+/// For KMST1125 patches the target's own old file is *optional*: a piece that
+/// is newly split in this patch (no old copy on the client) is assembled purely
+/// from other old source files, so it is rebuilt without its own old copy —
+/// exactly like the reference patcher, which only acts on the old file when it
+/// exists.  Classic rebuilds always read from their own old file, so it is
+/// required there.
 fn apply_rebuild(
     decompressed: &[u8],
     file_name: &str,
@@ -1650,35 +1660,48 @@ fn apply_rebuild(
 ) -> Result<()> {
     let old_path = target_dir.join(sanitize_path(file_name));
 
-    // Check if the old file exists and verify its checksum.
-    if !old_path.exists() {
-        bail!("old file '{}' not found", file_name);
-    }
-
-    let old_data = std::fs::read(&old_path)
-        .with_context(|| format!("failed to read old file {}", old_path.display()))?;
-    let actual_old_crc = crate::patch_builder::crc32_update(0, &old_data);
-    if actual_old_crc != old_checksum {
-        // Check if the file already matches the new checksum.
+    // Load the target's own old copy when present.  If it already matches the
+    // new checksum the file is up to date and is copied through unchanged.  A
+    // checksum mismatch is only fatal for classic patches: in KMST1125 it was
+    // already reported during pre-patch validation and the rebuild may still
+    // succeed (the reference patcher's dead-patch mode does the same).
+    let old_data: Option<Vec<u8>> = if old_path.exists() {
+        let data = std::fs::read(&old_path)
+            .with_context(|| format!("failed to read old file {}", old_path.display()))?;
+        let actual_old_crc = crate::patch_builder::crc32_update(0, &data);
         if actual_old_crc == new_checksum {
             let temp_path = temp_dir.join(sanitize_path(file_name));
             if let Some(parent) = temp_path.parent() {
                 std::fs::create_dir_all(parent)
                     .with_context(|| format!("failed to create parent dir for {}", temp_path.display()))?;
             }
-            std::fs::write(&temp_path, &old_data)
+            std::fs::write(&temp_path, &data)
                 .with_context(|| format!("failed to write {}", temp_path.display()))?;
             return Ok(());
         }
-        bail!(
-            "old CRC-32 mismatch for '{}': expected {:08X}, got {:08X}",
-            file_name, old_checksum, actual_old_crc
-        );
-    }
+        if !is_kmst1125 && actual_old_crc != old_checksum {
+            bail!(
+                "old CRC-32 mismatch for '{}': expected {:08X}, got {:08X}",
+                file_name, old_checksum, actual_old_crc
+            );
+        }
+        Some(data)
+    } else if is_kmst1125 {
+        // Newly-split piece with no old copy: rebuild purely from the source
+        // files referenced by the instructions.
+        None
+    } else {
+        bail!("old file '{}' not found", file_name);
+    };
 
-    // Cache of opened source files (KMST1125 can reference multiple).
+    // Cache of opened source files (KMST1125 can reference multiple).  When
+    // the target's own old copy is absent the cache is left without it; any
+    // instruction that actually reads from it then fails with a clear
+    // "source file not found" error below.
     let mut file_cache: HashMap<String, Vec<u8>> = HashMap::new();
-    file_cache.insert(file_name.to_string(), old_data);
+    if let Some(od) = old_data {
+        file_cache.insert(file_name.to_string(), od);
+    }
 
     // Parse instructions and compute the new file.
     let mut cursor = Cursor::new(&decompressed[inst_offset as usize..]);
@@ -2183,4 +2206,107 @@ fn download_and_verify_segmented(
 
     pb.finish_and_clear();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a KMST1125 `FromOldFile` instruction sequence that copies `len`
+    /// bytes from `offset` of another source file `from_file` (no self read).
+    fn inst_from_other(from_file: &str, offset: u32, len: u32) -> Vec<u8> {
+        let mut v = Vec::new();
+        v.extend_from_slice(&len.to_le_bytes()); // cmd: top nibble 0 → FromOldFile
+        v.extend_from_slice(&(offset as i32).to_le_bytes());
+        let name = from_file.as_bytes();
+        v.extend_from_slice(&(name.len() as i32).to_le_bytes());
+        v.extend_from_slice(name);
+        v.extend_from_slice(&0u32.to_le_bytes()); // end marker
+        v
+    }
+
+    /// Build a classic `FromOldFile` instruction sequence that copies `len`
+    /// bytes from `offset` of the part's own old file (no source name).
+    fn inst_from_self(offset: u32, len: u32) -> Vec<u8> {
+        let mut v = Vec::new();
+        v.extend_from_slice(&len.to_le_bytes());
+        v.extend_from_slice(&(offset as i32).to_le_bytes());
+        v.extend_from_slice(&0u32.to_le_bytes());
+        v
+    }
+
+    fn temp_root(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("cmsdl_apply_rebuild_{name}"));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    /// A KMST1125 Rebuild may produce a piece that has no old copy of its own
+    /// (e.g. a WZ file newly split in this patch): it is assembled purely from
+    /// other old source files.  Such a part must NOT be reported "old file not
+    /// found" (regression for the 281→282 `_Canvas_059`/`Etc_004`/… cases).
+    #[test]
+    fn kmst1125_rebuild_without_own_old_file_builds_from_source() -> Result<()> {
+        let root = temp_root("kmst_missing_own");
+        let data = root.join("Data");
+        std::fs::create_dir_all(&data)?;
+        let a = b"0123456789ABCDEF".to_vec();
+        std::fs::write(data.join("A.wz"), &a)?;
+        let temp = root.join("patch_tmp");
+        std::fs::create_dir_all(&temp)?;
+
+        // New file B = A[0..5]; B itself does not exist in the old client.
+        let expect = &a[0..5];
+        let new_crc = crate::patch_builder::crc32_update(0, expect);
+        let inst = inst_from_other("Data/A.wz", 0, 5);
+
+        apply_rebuild(&inst, "Data/B.wz", 0, 0, new_crc, &temp, &root, true)?;
+
+        let out = std::fs::read(temp.join("Data/B.wz"))?;
+        assert_eq!(&out, expect, "rebuilt file must match the new checksum");
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    /// Classic rebuilds always read from their own old file, so a missing old
+    /// file must still fail there (unchanged behaviour).
+    #[test]
+    fn classic_rebuild_still_requires_own_old_file() -> Result<()> {
+        let root = temp_root("classic_missing_own");
+        let temp = root.join("patch_tmp");
+        std::fs::create_dir_all(&temp)?;
+
+        let inst = inst_from_self(0, 5);
+        let res = apply_rebuild(&inst, "Data/B.wz", 0, 0, 0x1234_5678, &temp, &root, false);
+        let err = format!("{:#}", res.expect_err("classic rebuild without an old file must fail"));
+        assert!(err.contains("old file"), "unexpected error: {err}");
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    /// A normal classic rebuild (own old file present, correct CRC) still
+    /// builds from its own old data.
+    #[test]
+    fn classic_rebuild_with_own_old_file_builds_from_self() -> Result<()> {
+        let root = temp_root("classic_self");
+        let data = root.join("Data");
+        std::fs::create_dir_all(&data)?;
+        let old = b"HELLOworld".to_vec();
+        std::fs::write(data.join("B.wz"), &old)?;
+        let temp = root.join("patch_tmp");
+        std::fs::create_dir_all(&temp)?;
+
+        let old_crc = crate::patch_builder::crc32_update(0, &old);
+        let new = &old[0..5];
+        let new_crc = crate::patch_builder::crc32_update(0, new);
+        let inst = inst_from_self(0, 5);
+
+        apply_rebuild(&inst, "Data/B.wz", 0, old_crc, new_crc, &temp, &root, false)?;
+
+        let out = std::fs::read(temp.join("Data/B.wz"))?;
+        assert_eq!(&out, new);
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
 }
