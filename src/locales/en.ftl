@@ -6,6 +6,7 @@ gui-patcher-extracting-package = Extracting update package %s of %s
 gui-patcher-applying-update = [%s/%s] Updating %s
 gui-patcher-verifying-files = Verifying client files before update...
 gui-patcher-verifying-file = [%s/%s] Verifying %s
+gui-patcher-planning = Planning patch execution...
 gui-patcher-repairing-file = [%s/%s] Repairing %s (%s)
 gui-patcher-purge = Cleaning up stray files
 gui-patcher-patch-successful = Update complete

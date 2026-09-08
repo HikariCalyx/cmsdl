@@ -6,6 +6,7 @@ gui-patcher-extracting-package = 正在解壓第 %s 個更新檔，共 %s 個
 gui-patcher-applying-update = [%s/%s] 正在更新 %s
 gui-patcher-verifying-files = 正在校驗更新前的用戶端檔案…
 gui-patcher-verifying-file = [%s/%s] 正在校驗 %s
+gui-patcher-planning = 正在規劃補丁執行方案…
 gui-patcher-repairing-file = [%s/%s] 正在修復 %s (%s)
 gui-patcher-purge = 正在清理多餘的檔案
 gui-patcher-patch-successful = 更新完成

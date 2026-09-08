@@ -32,7 +32,7 @@
 //! The CRC-32 polynomial is `0x04C11DB7` (same as Ethernet/gzip).
 
 use std::collections::{HashMap, HashSet};
-use std::io::{Cursor, Read, Seek, SeekFrom, Write};
+use std::io::{Cursor, IsTerminal, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -1256,6 +1256,21 @@ fn collect_source_deps(
     Ok(deps)
 }
 
+/// Emit one line of the DeadPatch execution plan.  The line is written to the
+/// patch log (the GUI reporter's `cmsdl_patcher.log`, or stdout in console
+/// mode) and, when a GUI reporter is active and a real terminal is attached
+/// (i.e. the GUI was launched from one), it is also echoed to stdout so it
+/// shows up on the debug console.
+fn plan_line(line: &str) {
+    crate::plog!("{}", line);
+    // stdout() can be an invalid handle after the GUI frees its own console
+    // (Explorer/shortcut launch), where println! would panic — only echo when
+    // a genuine terminal is attached.
+    if crate::progress::active() && std::io::stdout().is_terminal() {
+        println!("{}", line);
+    }
+}
+
 /// Apply patch data (the raw bytes of a `.patch` file) to `target_dir`.
 /// Returns the list of corrupted file paths.
 ///
@@ -1337,6 +1352,11 @@ fn apply_patch_data(patch_data: &[u8], target_dir: &Path) -> Result<Vec<String>>
     let mut corrupted: Vec<String> = Vec::new();
     let temp_dir = create_temp_dir(target_dir)?;
 
+    if patch.is_kmst1125 {
+        // Signal the GUI that the patch execution plan is being computed.
+        crate::progress::planning();
+    }
+
     // ── Collect source dependencies for each Rebuild part ───────────────
     // For KMST1125 patches, FromOldFile instructions can reference different
     // source files.  We scan instructions upfront (without building) so we
@@ -1351,8 +1371,17 @@ fn apply_patch_data(patch_data: &[u8], target_dir: &Path) -> Result<Vec<String>>
         }
     }).collect();
 
-    // Build reverse index: source file → indices of parts that need it.
-    let mut needed_by: HashMap<String, Vec<usize>> = HashMap::new();
+    // ── DeadPatch execution plan (ported from WzComparerR2.CLI) ─────────
+    // A Rebuild part reads OLD copies of its source files, so a produced file
+    // must not be committed into the client while any later part may still
+    // read the OLD copy as a source.  Mirror the reference
+    // DeadPatchExecutionPlan: walk the parts in stream order and assign each
+    // file to the LAST part that reads it (its "owner").  A file that no
+    // later part reads is owned by itself and may be committed as soon as it
+    // is built.  Walking in order and overwriting naturally makes the mapping
+    // the last consumer, exactly like the reference.
+    let mut file_owner: HashMap<String, String> = HashMap::new();
+    let mut name_to_index: HashMap<String, usize> = HashMap::new();
     for (i, part) in patch.parts.iter().enumerate() {
         let file_name = match part {
             PatchPart::Create { file_name, .. } | PatchPart::Rebuild { file_name, .. } => file_name,
@@ -1360,19 +1389,72 @@ fn apply_patch_data(patch_data: &[u8], target_dir: &Path) -> Result<Vec<String>>
         };
         // Normalise to forward slashes for matching.
         let key = file_name.replace('\\', "/");
+        name_to_index.insert(key.clone(), i);
+        // A target is its own owner unless a later part reads it as a source.
+        file_owner.insert(key.clone(), key.clone());
         for dep in &deps[i] {
-            needed_by.entry(dep.clone()).or_default().push(i);
+            file_owner.insert(dep.clone(), key.clone());
         }
-        // Also register the part itself so we can track remaining dependents.
-        needed_by.entry(key).or_default();
+    }
+
+    // owner_index[i] = index of the part that must finish building before
+    // part i's temp file may be committed (i itself when nothing reads it).
+    let owner_index: Vec<usize> = patch
+        .parts
+        .iter()
+        .enumerate()
+        .map(|(i, part)| {
+            let file_name = match part {
+                PatchPart::Create { file_name, .. } | PatchPart::Rebuild { file_name, .. } => file_name,
+                PatchPart::Delete { .. } => return i,
+            };
+            let key = file_name.replace('\\', "/");
+            file_owner
+                .get(&key)
+                .and_then(|owner| name_to_index.get(owner))
+                .copied()
+                .unwrap_or(i)
+        })
+        .collect();
+
+    // Emit the DeadPatch execution plan.  KMST1125 patches merge old files, so
+    // this shows, per patch part, which produced files are committed once that
+    // part (their last consumer) has been built.  Mirrors the reference
+    // patcher's plan output; every line goes to the log and (in GUI mode) the
+    // debug console.
+    if patch.is_kmst1125 {
+        // Invert owner_index: files owned by part `o` are committed when `o`
+        // executes.
+        let mut plan_groups: HashMap<usize, Vec<usize>> = HashMap::new();
+        for (j, part) in patch.parts.iter().enumerate() {
+            if matches!(part, PatchPart::Create { .. } | PatchPart::Rebuild { .. }) {
+                plan_groups.entry(owner_index[j]).or_default().push(j);
+            }
+        }
+        plan_line("  dead-patch execution plan:");
+        for (i, part) in patch.parts.iter().enumerate() {
+            let file_name = match part {
+                PatchPart::Create { file_name, .. } | PatchPart::Rebuild { file_name, .. } => file_name,
+                PatchPart::Delete { .. } => continue,
+            };
+            if let Some(group) = plan_groups.get(&i) {
+                plan_line(&format!("    + execute {}", file_name));
+                for &j in group {
+                    if let PatchPart::Create { file_name, .. }
+                    | PatchPart::Rebuild { file_name, .. } = &patch.parts[j]
+                    {
+                        plan_line(&format!("        - apply {}", file_name));
+                    }
+                }
+            } else {
+                plan_line(&format!("    - execute {} (apply deferred)", file_name));
+            }
+        }
     }
 
     // Track which part indices are still "in-flight" (built to temp but not
-    // yet applied because later parts may reference their file as a source).
+    // yet applied because a later part may still read their old copy).
     let mut pending: Vec<usize> = Vec::new();
-    // Remaining dependent count for each part (how many later parts still
-    // reference this part's file as a source).
-    let remaining_deps: Mutex<HashMap<String, usize>> = Mutex::new(HashMap::new());
 
     // Helper: check if a file is a Base file (should be applied last).
     let is_base_file = |name: &str| -> bool {
@@ -1405,8 +1487,9 @@ fn apply_patch_data(patch_data: &[u8], target_dir: &Path) -> Result<Vec<String>>
         }
     };
 
-    // Phase 1: Build each part to temp, applying completed parts immediately
-    // when no remaining dependents need their source file.
+    // Phase 1: Build each part to temp, committing a part's temp file as soon
+    // as its owner (last consumer) part has been built, so the OLD copy stays
+    // on disk for every part that still reads it as a source.
     let total_apply = patch.parts.iter().filter(|p| !matches!(p, PatchPart::Delete { .. })).count();
     crate::progress::begin_apply(total_apply);
     let apply_done = AtomicUsize::new(0);
@@ -1435,48 +1518,24 @@ fn apply_patch_data(patch_data: &[u8], target_dir: &Path) -> Result<Vec<String>>
             continue;
         }
 
-        // This part is now built (temp file exists).  Decrement the
-        // dependent count for each source file it references.
-        let key = file_name.replace('\\', "/");
-        {
-            let mut rd = remaining_deps.lock().unwrap();
-            for dep in &deps[i] {
-                *rd.entry(dep.clone()).or_insert(0) = rd.get(dep).copied().unwrap_or(0).saturating_sub(1);
-            }
-            // Initialise this part's own dependent count.
-            if let Some(needers) = needed_by.get(&key) {
-                rd.entry(key.clone()).or_insert(needers.len());
-            }
-        }
-
-        // Add to pending.
+        // This part is now built (its temp file exists).  Add it to pending,
+        // then commit every pending part whose owner is this part: no later
+        // part reads those files' OLD copies anymore.  Base files are always
+        // deferred to the end (Phase 3).
         pending.push(i);
-
-        // Now flush: apply any pending parts whose source files are no
-        // longer needed by any remaining parts.  Skip Base files — they
-        // are always deferred to the end.
-        let mut flushed = true;
-        while flushed {
-            flushed = false;
-            let mut new_pending = Vec::new();
-            for &idx in &pending {
-                let pname = match &patch.parts[idx] {
-                    PatchPart::Create { file_name, .. } | PatchPart::Rebuild { file_name, .. } => file_name,
-                    PatchPart::Delete { .. } => continue,
-                };
-                let pkey = pname.replace('\\', "/");
-                let remaining = {
-                    remaining_deps.lock().unwrap().get(&pkey).copied().unwrap_or(0)
-                };
-                if remaining == 0 && !is_base_file(pname) {
-                    apply_pending(idx, &patch.parts, &mut corrupted, &temp_dir, target_dir);
-                    flushed = true;
-                } else {
-                    new_pending.push(idx);
-                }
+        let mut new_pending = Vec::new();
+        for &idx in &pending {
+            let pname = match &patch.parts[idx] {
+                PatchPart::Create { file_name, .. } | PatchPart::Rebuild { file_name, .. } => file_name,
+                PatchPart::Delete { .. } => continue,
+            };
+            if owner_index[idx] == i && !is_base_file(pname) {
+                apply_pending(idx, &patch.parts, &mut corrupted, &temp_dir, target_dir);
+            } else {
+                new_pending.push(idx);
             }
-            pending = new_pending;
         }
+        pending = new_pending;
     }
 
     // Phase 2: Apply deletions.

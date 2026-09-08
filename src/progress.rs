@@ -30,6 +30,9 @@ pub trait Reporter: Send + Sync {
     /// Report pre-patch verification progress: `done` of `total` files,
     /// current `rel_path` being checksummed.
     fn verify_progress(&self, done: usize, total: usize, rel_path: &str);
+    /// Computing the patch execution plan (dead-patch dependency ordering)
+    /// before any file is committed.
+    fn planning(&self);
     /// Begin applying a package's files (resets the bar; `total` files).
     fn begin_apply(&self, total: usize);
     /// Report apply progress: `done` of `total` files, current `rel_path`.
@@ -171,6 +174,10 @@ pub fn verify_progress(done: usize, total: usize, rel_path: &str) {
         line(&format!("[progress] verify_progress({}/{}, {})", done, total, rel_path));
     }
     with(|r| r.verify_progress(done, total, rel_path));
+}
+pub fn planning() {
+    line("[progress] planning");
+    with(|r| r.planning());
 }
 pub fn begin_apply(total: usize) {
     line(&format!("[progress] begin_apply({})", total));

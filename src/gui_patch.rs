@@ -243,6 +243,15 @@ impl Reporter for GuiReporter {
         }
     }
 
+    fn planning(&self) {
+        self.log("[gui-debug] Reporter::planning()");
+        // DeadPatch planning phase: show a status while the patch execution
+        // plan is computed/emitted.  The bar is left as-is; begin_apply
+        // resets it for the apply phase.
+        self.set_label1(tr("gui-patcher-planning", &[]));
+        self.set_label3(String::new());
+    }
+
     fn begin_apply(&self, _total: usize) {
         self.log(&format!("[gui-debug] Reporter::begin_apply(total={})", _total));
         // Requirement 6: reset the progress bar to 0 for the apply phase.
