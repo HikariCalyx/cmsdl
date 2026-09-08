@@ -1297,7 +1297,6 @@ fn apply_patch_data(patch_data: &[u8], target_dir: &Path) -> Result<Vec<String>>
     // authoritative pre-patch checksum list up front (the first section of the
     // decompressed stream), which also covers source files referenced by
     // rebuilds but not rebuilt themselves — so verify every entry of that list.
-    let mut pre_failures: Vec<String> = Vec::new();
     let verify_items: Vec<(String, u32, Option<u32>)> = if patch.is_kmst1125 {
         // Which files are also rebuilt by this patch (so an already-updated
         // file can be skipped instead of treated as corrupt).
@@ -1332,26 +1331,89 @@ fn apply_patch_data(patch_data: &[u8], target_dir: &Path) -> Result<Vec<String>>
             .collect()
     };
 
-    if !verify_items.is_empty() {
-        crate::progress::begin_verify(verify_items.len());
+    let total_verify = verify_items.len();
+    if total_verify > 0 {
+        crate::progress::begin_verify(total_verify);
     }
-    for (i, (file_name, old_checksum, new_checksum)) in verify_items.iter().enumerate() {
-        match validate_old_file(target_dir, file_name, *old_checksum, *new_checksum) {
-            Ok(PreValidate::Ok) => {
-                plog!("    ok {}", file_name);
+
+    // Verify old files in parallel: each worker reads a file and computes its
+    // CRC-32, which is both I/O- and CPU-bound.  On a mechanical hard drive a
+    // single worker avoids seek thrashing; on an SSD use up to a handful of
+    // threads.
+    let workers = if total_verify == 0 {
+        0
+    } else if crate::is_hdd::is_hdd(target_dir) {
+        plog!("  HDD detected — verifying files one at a time.");
+        1
+    } else {
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4)
+            .min(VERIFY_PARALLEL_SSD)
+            .min(total_verify)
+            .max(1)
+    };
+
+    if total_verify > 0 && workers > 1 {
+        let next = AtomicUsize::new(0);
+        let done = AtomicUsize::new(0);
+        let pre_failures: Mutex<Vec<String>> = Mutex::new(Vec::new());
+        std::thread::scope(|scope| {
+            for _ in 0..workers {
+                scope.spawn(|| loop {
+                    let idx = next.fetch_add(1, Ordering::Relaxed);
+                    if idx >= total_verify {
+                        break;
+                    }
+                    let (file_name, old_checksum, new_checksum) = &verify_items[idx];
+                    let result = validate_old_file(
+                        target_dir,
+                        file_name,
+                        *old_checksum,
+                        *new_checksum,
+                    );
+                    let completed = done.fetch_add(1, Ordering::Relaxed) + 1;
+                    crate::progress::verify_progress(completed, total_verify, file_name);
+                    match result {
+                        Ok(PreValidate::Ok) => {
+                            plog!("    ok {}", file_name);
+                        }
+                        Ok(PreValidate::AlreadyUpToDate) => {
+                            plog!("    skip {} (already up to date)", file_name);
+                        }
+                        Err(e) => {
+                            plog!("    pre-validate fail: {} - {}", file_name, e);
+                            pre_failures.lock().unwrap().push(file_name.clone());
+                        }
+                    }
+                });
             }
-            Ok(PreValidate::AlreadyUpToDate) => {
-                plog!("    skip {} (already up to date)", file_name);
-            }
-            Err(e) => {
-                plog!("    pre-validate fail: {} - {}", file_name, e);
-                pre_failures.push(file_name.clone());
-            }
+        });
+        let failed = pre_failures.lock().unwrap().len();
+        if failed > 0 {
+            plog!("  {} file(s) failed pre-patch validation", failed);
         }
-        crate::progress::verify_progress(i + 1, verify_items.len(), file_name);
-    }
-    if !pre_failures.is_empty() {
-        plog!("  {} file(s) failed pre-patch validation", pre_failures.len());
+    } else {
+        // Small file set (or HDD): sequential path keeps the log order stable.
+        let mut pre_failures: Vec<String> = Vec::new();
+        for (i, (file_name, old_checksum, new_checksum)) in verify_items.iter().enumerate() {
+            match validate_old_file(target_dir, file_name, *old_checksum, *new_checksum) {
+                Ok(PreValidate::Ok) => {
+                    plog!("    ok {}", file_name);
+                }
+                Ok(PreValidate::AlreadyUpToDate) => {
+                    plog!("    skip {} (already up to date)", file_name);
+                }
+                Err(e) => {
+                    plog!("    pre-validate fail: {} - {}", file_name, e);
+                    pre_failures.push(file_name.clone());
+                }
+            }
+            crate::progress::verify_progress(i + 1, total_verify, file_name);
+        }
+        if !pre_failures.is_empty() {
+            plog!("  {} file(s) failed pre-patch validation", pre_failures.len());
+        }
     }
     // ─────────────────────────────────────────────────────────────────────
 
@@ -1936,6 +1998,9 @@ const TMS_REPAIR_SENTINEL: &str = "Data/.incomplete";
 const REPAIR_PARALLEL_SSD: usize = 10;
 /// Maximum number of files repaired concurrently on HDD.
 const REPAIR_PARALLEL_HDD: usize = 1;
+/// Maximum number of files checksum-verified concurrently on SSD during the
+/// pre-patch validation phase.
+const VERIFY_PARALLEL_SSD: usize = 8;
 
 /// Download specific files from the TMS full client manifest to repair
 /// corrupted files.  Each file is downloaded with up to 5 parallel segments;
