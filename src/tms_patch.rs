@@ -134,6 +134,9 @@ struct WzPatch {
     /// Whether this patch uses KMST1125 format (file hash list at start,
     /// no old_checksum in Rebuild parts, FromOldFile carries source path).
     is_kmst1125: bool,
+    /// Old-file CRC-32 map from the leading KMST1125 file-hash list
+    /// (file name -> pre-patch checksum).  Empty for classic patches.
+    old_file_hashes: HashMap<String, u32>,
 }
 
 /// Try to locate and extract the WzPatch block from a `.patch` file.
@@ -176,9 +179,9 @@ fn read_wzpatch(data: &[u8]) -> Result<WzPatch> {
     };
 
     // Parse patch parts (handles KMST1125 hash list if present).
-    let (parts, is_kmst1125, _old_file_hashes) = parse_patch_parts(&decompressed)?;
+    let (parts, is_kmst1125, old_file_hashes) = parse_patch_parts(&decompressed)?;
 
-    Ok(WzPatch { parts, decompressed, is_kmst1125 })
+    Ok(WzPatch { parts, decompressed, is_kmst1125, old_file_hashes })
 }
 
 /// Extract the WzPatch data block from a raw `.patch` file.
@@ -577,8 +580,8 @@ pub fn apply_patches(
                 .with_context(|| format!("failed to read downloaded patch {}", dest.display()))?;
             let _ = std::fs::remove_file(&dest);
 
-            // Apply the patch with progress reporting.
-            crate::progress::begin_apply(0); // total parts determined inside apply_patch_data
+            // Apply the patch with progress reporting (the apply phase is
+            // reported from inside apply_patch_data once its totals are known).
             let corrupted = apply_patch_data(&patch_data, target_dir)
                 .with_context(|| format!("failed to apply patch {} -> {}", current, target))?;
 
@@ -1179,13 +1182,15 @@ fn pre_patch_report(patch: &WzPatch) -> (usize, usize, usize, u64) {
 ///
 /// Returns:
 /// - `Ok(PreValidate::Ok)` if the file exists and matches `old_checksum`.
-/// - `Ok(PreValidate::AlreadyUpToDate)` if the file already matches `new_checksum`.
+/// - `Ok(PreValidate::AlreadyUpToDate)` if the file already matches
+///   `new_checksum` (only relevant when the file is itself rebuilt by this
+///   patch; source-only KMST1125 files pass `None`).
 /// - `Err(...)` if the file is missing or has an unexpected checksum.
 fn validate_old_file(
     target_dir: &Path,
     file_name: &str,
     old_checksum: u32,
-    new_checksum: u32,
+    new_checksum: Option<u32>,
 ) -> Result<PreValidate> {
     let old_path = target_dir.join(sanitize_path(file_name));
     if !old_path.exists() {
@@ -1195,7 +1200,7 @@ fn validate_old_file(
         .with_context(|| format!("failed to read {}", old_path.display()))?;
     let actual_crc = crate::patch_builder::crc32_update(0, &old_data);
 
-    if actual_crc == new_checksum {
+    if new_checksum == Some(actual_crc) {
         return Ok(PreValidate::AlreadyUpToDate);
     }
     if actual_crc != old_checksum {
@@ -1266,23 +1271,63 @@ fn apply_patch_data(patch_data: &[u8], target_dir: &Path) -> Result<Vec<String>>
         create_count, rebuild_count, delete_count,
         crate::progress::format_size(total_bytes));
 
-    // Validate old files for every Rebuild part before touching anything.
+    // Validate old files before touching anything.  Classic patches embed an
+    // old_checksum in each Rebuild part.  KMST1125 patches instead carry the
+    // authoritative pre-patch checksum list up front (the first section of the
+    // decompressed stream), which also covers source files referenced by
+    // rebuilds but not rebuilt themselves — so verify every entry of that list.
     let mut pre_failures: Vec<String> = Vec::new();
-    for part in &patch.parts {
-        if let PatchPart::Rebuild { file_name, old_checksum, new_checksum, .. } = part {
-            match validate_old_file(target_dir, file_name, *old_checksum, *new_checksum) {
-                Ok(PreValidate::Ok) => {
-                    plog!("    ok {}", file_name);
+    let verify_items: Vec<(String, u32, Option<u32>)> = if patch.is_kmst1125 {
+        // Which files are also rebuilt by this patch (so an already-updated
+        // file can be skipped instead of treated as corrupt).
+        let new_by_name: HashMap<&str, u32> = patch
+            .parts
+            .iter()
+            .filter_map(|p| match p {
+                PatchPart::Rebuild { file_name, new_checksum, .. } => {
+                    Some((file_name.as_str(), *new_checksum))
                 }
-                Ok(PreValidate::AlreadyUpToDate) => {
-                    plog!("    skip {} (already up to date)", file_name);
+                _ => None,
+            })
+            .collect();
+        let mut items: Vec<(String, u32, Option<u32>)> = patch
+            .old_file_hashes
+            .iter()
+            .map(|(name, old_crc)| (name.clone(), *old_crc, new_by_name.get(name.as_str()).copied()))
+            .collect();
+        // Stable order for progress/log output (a HashMap is unordered).
+        items.sort_by(|a, b| a.0.cmp(&b.0));
+        items
+    } else {
+        patch
+            .parts
+            .iter()
+            .filter_map(|p| match p {
+                PatchPart::Rebuild { file_name, old_checksum, new_checksum, .. } => {
+                    Some((file_name.clone(), *old_checksum, Some(*new_checksum)))
                 }
-                Err(e) => {
-                    plog!("    pre-validate fail: {} - {}", file_name, e);
-                    pre_failures.push(file_name.clone());
-                }
+                _ => None,
+            })
+            .collect()
+    };
+
+    if !verify_items.is_empty() {
+        crate::progress::begin_verify(verify_items.len());
+    }
+    for (i, (file_name, old_checksum, new_checksum)) in verify_items.iter().enumerate() {
+        match validate_old_file(target_dir, file_name, *old_checksum, *new_checksum) {
+            Ok(PreValidate::Ok) => {
+                plog!("    ok {}", file_name);
+            }
+            Ok(PreValidate::AlreadyUpToDate) => {
+                plog!("    skip {} (already up to date)", file_name);
+            }
+            Err(e) => {
+                plog!("    pre-validate fail: {} - {}", file_name, e);
+                pre_failures.push(file_name.clone());
             }
         }
+        crate::progress::verify_progress(i + 1, verify_items.len(), file_name);
     }
     if !pre_failures.is_empty() {
         plog!("  {} file(s) failed pre-patch validation", pre_failures.len());
@@ -1363,6 +1408,7 @@ fn apply_patch_data(patch_data: &[u8], target_dir: &Path) -> Result<Vec<String>>
     // Phase 1: Build each part to temp, applying completed parts immediately
     // when no remaining dependents need their source file.
     let total_apply = patch.parts.iter().filter(|p| !matches!(p, PatchPart::Delete { .. })).count();
+    crate::progress::begin_apply(total_apply);
     let apply_done = AtomicUsize::new(0);
     for (i, part) in patch.parts.iter().enumerate() {
         let file_name = match part {

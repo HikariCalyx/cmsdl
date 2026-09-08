@@ -218,6 +218,31 @@ impl Reporter for GuiReporter {
         ));
     }
 
+    fn begin_verify(&self, total: usize) {
+        self.log(&format!("[gui-debug] Reporter::begin_verify(total={})", total));
+        // Pre-patch verification phase (DeadPatch checksum check): reset the
+        // bar and switch the label away from the download state.  Per-file
+        // labels then follow via verify_progress.
+        self.set_label1(tr("gui-patcher-verifying-files", &[]));
+        self.set_label3(String::new());
+        self.set_progress(0.0);
+    }
+
+    fn verify_progress(&self, done: usize, total: usize, rel_path: &str) {
+        if total > 0 {
+            self.set_progress(done as f32 / total as f32);
+        }
+        // Update immediately on the first and last file so the bar/label move
+        // away from the download state without waiting for the ~100ms throttle.
+        if done == 1 || done == total || self.should_update_ui() {
+            self.log(&format!("[gui-debug] Reporter::verify_progress({}/{}, {})", done, total, rel_path));
+            self.set_label1(tr(
+                "gui-patcher-verifying-file",
+                &[&done.to_string(), &total.to_string(), rel_path],
+            ));
+        }
+    }
+
     fn begin_apply(&self, _total: usize) {
         self.log(&format!("[gui-debug] Reporter::begin_apply(total={})", _total));
         // Requirement 6: reset the progress bar to 0 for the apply phase.

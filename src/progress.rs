@@ -24,6 +24,12 @@ pub trait Reporter: Send + Sync {
     fn download_progress(&self, downloaded: u64);
     /// A package finished downloading and is now being extracted/applied.
     fn extracting(&self, index: usize, count: usize);
+    /// Begin the pre-patch verification phase (checksumming the old files that
+    /// the patch will read). `total` files will be verified before applying.
+    fn begin_verify(&self, total: usize);
+    /// Report pre-patch verification progress: `done` of `total` files,
+    /// current `rel_path` being checksummed.
+    fn verify_progress(&self, done: usize, total: usize, rel_path: &str);
     /// Begin applying a package's files (resets the bar; `total` files).
     fn begin_apply(&self, total: usize);
     /// Report apply progress: `done` of `total` files, current `rel_path`.
@@ -154,6 +160,17 @@ pub fn download_progress(downloaded: u64) {
 pub fn extracting(index: usize, count: usize) {
     line(&format!("[progress] extracting({}, {})", index, count));
     with(|r| r.extracting(index, count));
+}
+pub fn begin_verify(total: usize) {
+    line(&format!("[progress] begin_verify({})", total));
+    with(|r| r.begin_verify(total));
+}
+pub fn verify_progress(done: usize, total: usize, rel_path: &str) {
+    // Log only at boundaries to avoid flooding.
+    if done == 1 || done == total || done % 100 == 0 {
+        line(&format!("[progress] verify_progress({}/{}, {})", done, total, rel_path));
+    }
+    with(|r| r.verify_progress(done, total, rel_path));
 }
 pub fn begin_apply(total: usize) {
     line(&format!("[progress] begin_apply({})", total));
