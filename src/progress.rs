@@ -26,8 +26,12 @@ pub trait Reporter: Send + Sync {
     /// pre-patch verification phase.
     fn loading_patch(&self);
     /// Downloading the standalone executable hotfix (ExePatch.dat) after the
-    /// client is up to date.
-    fn minor_patch(&self);
+    /// client is up to date. `version` is the display version (e.g. `V282`)
+    /// and `total` the expected byte size.
+    fn minor_patch(&self, version: &str, total: u64);
+    /// Progress of the standalone executable hotfix download: cumulative
+    /// `downloaded` of `total` bytes (drives the bar and speed/ETA labels).
+    fn minor_patch_progress(&self, downloaded: u64, total: u64);
     /// A package finished downloading and is now being extracted/applied.
     fn extracting(&self, index: usize, count: usize);
     /// Begin the pre-patch verification phase (checksumming the old files that
@@ -170,9 +174,14 @@ pub fn loading_patch() {
     line("[progress] loading_patch");
     with(|r| r.loading_patch());
 }
-pub fn minor_patch() {
-    line("[progress] minor_patch");
-    with(|r| r.minor_patch());
+pub fn minor_patch(version: &str, total: u64) {
+    line(&format!("[progress] minor_patch({version}, total={total})"));
+    with(|r| r.minor_patch(version, total));
+}
+pub fn minor_patch_progress(downloaded: u64, total: u64) {
+    // Too noisy to log every call — the GUI reports via the reporter; the
+    // console progress bar is driven separately by the caller.
+    with(|r| r.minor_patch_progress(downloaded, total));
 }
 pub fn extracting(index: usize, count: usize) {
     line(&format!("[progress] extracting({}, {})", index, count));

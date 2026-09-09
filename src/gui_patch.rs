@@ -218,12 +218,68 @@ impl Reporter for GuiReporter {
         self.set_label3(String::new());
     }
 
-    fn minor_patch(&self) {
-        self.log("[gui-debug] Reporter::minor_patch()");
+    fn minor_patch(&self, version: &str, total: u64) {
+        self.log(&format!(
+            "[gui-debug] Reporter::minor_patch({version}, total={total})"
+        ));
         // After the client is up to date, a standalone executable hotfix
-        // (ExePatch.dat → MapleStory.exe) is fetched.
-        self.set_label1(tr("gui-patcher-minor-patch", &[]));
+        // (ExePatch.dat → MapleStory.exe) is fetched. Reset the speed
+        // estimator and the bar so the download progress renders fresh. The
+        // version is kept for the title line while it downloads.
+        {
+            let mut dl = self.dl.lock().unwrap();
+            dl.cur_ver = version.to_string();
+        }
+        *self.speed.lock().unwrap() = SpeedState::reset();
+        self.set_label2(tr("gui-patcher-minor-patch-title", &[version]));
+        self.set_label1(tr(
+            "gui-patcher-minor-patch-progress",
+            &[&progress::format_size(0), &progress::format_size(total)],
+        ));
         self.set_label3(String::new());
+        self.set_progress(0.0);
+    }
+
+    fn minor_patch_progress(&self, downloaded: u64, total: u64) {
+        if total > 0 {
+            self.set_progress(downloaded as f32 / total as f32);
+        }
+        let speed = self.speed.lock().unwrap().tick(downloaded);
+        let finished = total > 0 && downloaded >= total;
+        // Update immediately on the final tick so the speed indicator is
+        // dropped the moment the download completes; otherwise throttle.
+        if finished || self.should_update_ui() {
+            self.log(&format!(
+                "[gui-debug] Reporter::minor_patch_progress({}/{})",
+                downloaded, total
+            ));
+            let ctx = self.dl.lock().unwrap().clone();
+            let speed_str = format_speed(speed);
+            // Title row carries the live speed, mirroring the normal
+            // "Installing update from X to Y (speed)" label; once finished
+            // the speed is dropped.
+            if finished {
+                self.set_label2(tr("gui-patcher-minor-patch-title", &[&ctx.cur_ver]));
+            } else {
+                self.set_label2(tr(
+                    "gui-patcher-minor-patch-title-speed",
+                    &[&ctx.cur_ver, &speed_str],
+                ));
+            }
+            self.set_label1(tr(
+                "gui-patcher-minor-patch-progress",
+                &[&progress::format_size(downloaded), &progress::format_size(total)],
+            ));
+            // ETA: remaining bytes / current speed.
+            let remaining = total.saturating_sub(downloaded);
+            let eta_secs = if speed > 0.0 { remaining as f64 / speed } else { 0.0 };
+            let eta_text = if eta_secs > 1.0 {
+                format_eta(eta_secs)
+            } else {
+                String::new()
+            };
+            self.set_label3(eta_text);
+        }
     }
 
     fn extracting(&self, index: usize, count: usize) {

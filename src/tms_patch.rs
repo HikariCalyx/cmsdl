@@ -820,13 +820,18 @@ fn build_exe_patch_url(version: i16) -> String {
 /// Download one byte range `[start, end]` (inclusive) of `url` into `dest`,
 /// which must already be pre-allocated.  A plain range write with **no resume
 /// sidecar**; a truncated range is retried (from where it stopped) up to
-/// `HTTP_RETRIES` times.
+/// `HTTP_RETRIES` times.  Progress is reported through `pb` (console bar) and
+/// the `minor_patch_progress` reporter phase (GUI), using the shared
+/// cumulative `dl_progress` counter.
 fn download_exe_range(
     agent: &ureq::Agent,
     url: &str,
     dest: &Path,
     start: u64,
     end: u64,
+    size: u64,
+    pb: &ProgressBar,
+    dl_progress: &AtomicUsize,
 ) -> Result<()> {
     let mut from = start;
     for attempt in 0..HTTP_RETRIES {
@@ -855,6 +860,13 @@ fn download_exe_range(
             let take = (n as u64).min(remaining) as usize;
             file.write_all(&buf[..take])?;
             pos += take as u64;
+            pb.inc(take as u64);
+            if crate::progress::active() {
+                // GUI mode: the bar is hidden, so drive the on-screen
+                // progress/speed through the reporter phase instead.
+                let total = dl_progress.fetch_add(take, Ordering::Relaxed) + take;
+                crate::progress::minor_patch_progress(total as u64, size);
+            }
             if take < n {
                 break;
             }
@@ -873,7 +885,9 @@ fn download_exe_range(
 }
 
 /// Download `url` (of `size` bytes) into `dest` using up to `SEGMENTS_PER_FILE`
-/// (5) parallel byte-range segments and **no** resume sidecar.
+/// (5) parallel byte-range segments and **no** resume sidecar.  Progress is
+/// shown via an indicatif bar (console) or the `minor_patch_progress` reporter
+/// phase (GUI) with live transfer speed.
 fn download_exe_segments(agent: &ureq::Agent, url: &str, dest: &Path, size: u64) -> Result<()> {
     if size == 0 {
         return Ok(());
@@ -886,6 +900,22 @@ fn download_exe_segments(agent: &ureq::Agent, url: &str, dest: &Path, size: u64)
         let file = std::fs::File::create(dest)?;
         file.set_len(size)?;
     }
+
+    let pb = if crate::progress::active() {
+        ProgressBar::hidden()
+    } else {
+        ProgressBar::new(size)
+    };
+    pb.set_style(
+        ProgressStyle::with_template(
+            "    [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({binary_bytes_per_sec}, ETA {eta})",
+        )
+        .unwrap()
+        .progress_chars("=>-"),
+    );
+    pb.enable_steady_tick(Duration::from_millis(120));
+
+    let dl_progress = Arc::new(AtomicUsize::new(0));
     let segments = effective_segments(size, SEGMENTS_PER_FILE).max(1);
     let ranges = compute_ranges(size, segments);
 
@@ -893,8 +923,12 @@ fn download_exe_segments(agent: &ureq::Agent, url: &str, dest: &Path, size: u64)
     let err_slot = &first_err;
     std::thread::scope(|scope| {
         for &(start, end) in &ranges {
+            let pb = &pb;
+            let dl_progress = &dl_progress;
             scope.spawn(move || {
-                if let Err(e) = download_exe_range(agent, url, dest, start, end) {
+                if let Err(e) =
+                    download_exe_range(agent, url, dest, start, end, size, pb, dl_progress)
+                {
                     let mut g = err_slot.lock().unwrap();
                     if g.is_none() {
                         *g = Some(e);
@@ -904,9 +938,12 @@ fn download_exe_segments(agent: &ureq::Agent, url: &str, dest: &Path, size: u64)
         }
     });
 
+    pb.finish_and_clear();
     if let Some(e) = first_err.into_inner().unwrap() {
         return Err(e);
     }
+    // Final render so the GUI drops the live speed indicator.
+    crate::progress::minor_patch_progress(size, size);
     Ok(())
 }
 
@@ -938,6 +975,10 @@ fn download_minor_patch(
     };
 
     let tmp = target_dir.join("patchdata").join("ExePatch.dat");
+    // A real download is about to start: switch the UI to the minor-patch
+    // phase (fresh speed/bar).  When no file is published we never reach here,
+    // so the previous progress state is left untouched.
+    crate::progress::minor_patch(&format!("V{version}"), size);
     if let Err(e) = download_exe_segments(&agent, &url, &tmp, size) {
         let _ = std::fs::remove_file(&tmp);
         return Err(e);
@@ -957,8 +998,7 @@ fn ensure_latest_minor_patch(
     allow_insecure: bool,
     proxy: Option<&str>,
 ) {
-    crate::progress::minor_patch();
-    plog!("Downloading latest minor patch for version {version}...");
+    plog!("Update Minor Patch (V{version}): downloading ExePatch.dat...");
     match download_minor_patch(target_dir, version, allow_insecure, proxy) {
         Ok(true) => plog!("  MapleStory.exe updated to the latest minor patch."),
         Ok(false) => plog!("  no minor patch available for version {version}."),
