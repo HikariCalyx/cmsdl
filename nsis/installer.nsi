@@ -46,6 +46,9 @@ Unicode true
 !define MUI_ICON "icon.ico"
 !define MUI_UNICON "icon.ico"
 
+; Welcome/Finish page bitmap (left-side image)
+!define MUI_WELCOMEFINISHPAGE_BITMAP "cms_inst.bmp"
+
 ; ============================================================================
 ; Variables
 ; ============================================================================
