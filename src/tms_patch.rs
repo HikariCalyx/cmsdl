@@ -436,6 +436,9 @@ fn skip_rebuild_instructions<R: Read + Seek>(reader: &mut R, is_kmst1125: bool) 
 pub enum PatchOutcome {
     /// One or more patches were applied.
     Updated,
+    /// No version patches were needed, but the standalone executable hotfix
+    /// (ExePatch.dat → MapleStory.exe) was downloaded and installed.
+    MinorPatchApplied,
     /// The client was already at the requested version; nothing to do.
     AlreadyUpToDate,
 }
@@ -487,9 +490,13 @@ pub fn apply_patches(
     crate::progress::scanning();
 
     if current_version == target_version {
+        // Already at the target version — still keep MapleStory.exe current by
+        // fetching the standalone executable hotfix (ExePatch.dat), if any is
+        // published for this version.
+        if ensure_latest_minor_patch(target_dir, target_version, allow_insecure, proxy) {
+            return Ok(PatchOutcome::MinorPatchApplied);
+        }
         plog!("client is already at version {}; nothing to do.", target_version);
-        // Already up to date — still fetch the standalone executable hotfix.
-        ensure_latest_minor_patch(target_dir, target_version, allow_insecure, proxy);
         return Ok(PatchOutcome::AlreadyUpToDate);
     }
 
@@ -817,10 +824,64 @@ fn build_exe_patch_url(version: i16) -> String {
     )
 }
 
+/// Stream a bounded range request from `*pos` to `end` (inclusive) into
+/// `dest` at `*pos`.  Errors (a dropped/stalled connection) are returned to
+/// the caller so it can retry — bytes already written are preserved, and the
+/// next attempt resumes from where the stream stopped.
+fn stream_exe_bounded(
+    agent: &ureq::Agent,
+    url: &str,
+    dest: &Path,
+    pos: &mut u64,
+    end: u64,
+    size: u64,
+    pb: &ProgressBar,
+    dl_progress: &AtomicUsize,
+) -> Result<()> {
+    let resp = agent
+        .get(url)
+        .set("Range", &format!("bytes={}-{}", *pos, end))
+        .call()
+        .map_err(|e| anyhow!("minor patch range request failed: {e}"))?;
+    let mut reader = resp.into_reader();
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(dest)
+        .with_context(|| format!("failed to open {}", dest.display()))?;
+    file.seek(SeekFrom::Start(*pos))?;
+
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = reader.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        let remaining = (end + 1).saturating_sub(*pos) as usize;
+        if remaining == 0 {
+            break;
+        }
+        let take = n.min(remaining);
+        file.write_all(&buf[..take])?;
+        *pos += take as u64;
+        pb.inc(take as u64);
+        if crate::progress::active() {
+            // GUI mode: the bar is hidden, so drive the on-screen
+            // progress/speed through the reporter phase instead.
+            let total = dl_progress.fetch_add(take, Ordering::Relaxed) + take;
+            crate::progress::minor_patch_progress(total as u64, size);
+        }
+        if take < n {
+            break;
+        }
+    }
+    Ok(())
+}
+
 /// Download one byte range `[start, end]` (inclusive) of `url` into `dest`,
 /// which must already be pre-allocated.  A plain range write with **no resume
-/// sidecar**; a truncated range is retried (from where it stopped) up to
-/// `HTTP_RETRIES` times.  Progress is reported through `pb` (console bar) and
+/// sidecar**; transient failures (a dropped/stalled connection) are retried
+/// from where the stream stopped, up to `MAX_STALL_RETRIES` consecutive
+/// no-progress attempts.  Progress is reported through `pb` (console bar) and
 /// the `minor_patch_progress` reporter phase (GUI), using the shared
 /// cumulative `dl_progress` counter.
 fn download_exe_range(
@@ -833,55 +894,31 @@ fn download_exe_range(
     pb: &ProgressBar,
     dl_progress: &AtomicUsize,
 ) -> Result<()> {
-    let mut from = start;
-    for attempt in 0..HTTP_RETRIES {
-        let resp = agent
-            .get(url)
-            .set("Range", &format!("bytes={}-{}", from, end))
-            .call()
-            .map_err(|e| anyhow!("minor patch range request failed: {e}"))?;
-        let mut reader = resp.into_reader();
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .open(dest)
-            .with_context(|| format!("failed to open {}", dest.display()))?;
-        file.seek(SeekFrom::Start(from))?;
-        let mut pos = from;
-        let mut buf = [0u8; 64 * 1024];
-        loop {
-            let n = reader.read(&mut buf)?;
-            if n == 0 {
-                break;
-            }
-            let remaining = (end + 1).saturating_sub(pos);
-            if remaining == 0 {
-                break;
-            }
-            let take = (n as u64).min(remaining) as usize;
-            file.write_all(&buf[..take])?;
-            pos += take as u64;
-            pb.inc(take as u64);
-            if crate::progress::active() {
-                // GUI mode: the bar is hidden, so drive the on-screen
-                // progress/speed through the reporter phase instead.
-                let total = dl_progress.fetch_add(take, Ordering::Relaxed) + take;
-                crate::progress::minor_patch_progress(total as u64, size);
-            }
-            if take < n {
-                break;
-            }
-        }
+    let mut pos = start;
+    let mut stalls = 0usize;
+    while pos <= end {
+        let before = pos;
+        // Best-effort stream of the remainder of this range.  Errors are
+        // handled here rather than propagated: if any progress was made the
+        // stall counter resets, otherwise we retry after a short backoff.
+        // Only `MAX_STALL_RETRIES` consecutive stalled attempts give up.
+        let _ = stream_exe_bounded(agent, url, dest, &mut pos, end, size, pb, dl_progress);
         if pos > end {
             return Ok(());
         }
-        if attempt + 1 < HTTP_RETRIES {
-            std::thread::sleep(RESUME_BACKOFF);
-            from = pos;
+        if pos > before {
+            stalls = 0;
         } else {
-            bail!("minor patch download truncated: range {start}-{end} stopped at {pos}");
+            stalls += 1;
+            if stalls > MAX_STALL_RETRIES {
+                bail!(
+                    "minor patch download stalled after {MAX_STALL_RETRIES} retries (range {start}-{end})"
+                );
+            }
         }
+        std::thread::sleep(RESUME_BACKOFF);
     }
-    unreachable!()
+    Ok(())
 }
 
 /// Download `url` (of `size` bytes) into `dest` using up to `SEGMENTS_PER_FILE`
@@ -947,11 +984,18 @@ fn download_exe_segments(agent: &ureq::Agent, url: &str, dest: &Path, size: u64)
     Ok(())
 }
 
-/// Download the standalone executable hotfix for `version` and install it as
-/// `MapleStory.exe` (the `ExePatch.dat` is renamed on success).
+/// Download the standalone executable hotfix for `version` into `target_dir`
+/// and install it as `MapleStory.exe`.
 ///
-/// Returns `true` when a minor patch was downloaded and installed, `false` when
-/// none is published for this version (HTTP 404 / no reported size).
+/// Order of operations (mirrors the official patcher):
+///   1. `ExePatch.dat` is downloaded to the client root (`target_dir`),
+///      directly next to `MapleStory.exe` so the rename stays on one volume.
+///   2. Once the download finishes, the existing `MapleStory.exe` is deleted
+///      (the read-only attribute is cleared first, if any).
+///   3. `ExePatch.dat` is renamed to `MapleStory.exe`.
+///
+/// Returns `true` when a minor patch was installed, `false` when none is
+/// published for this version (HTTP 404 / no reported size).
 fn download_minor_patch(
     target_dir: &Path,
     version: i16,
@@ -974,35 +1018,76 @@ fn download_minor_patch(
         Err(e) => return Err(e),
     };
 
-    let tmp = target_dir.join("patchdata").join("ExePatch.dat");
-    // A real download is about to start: switch the UI to the minor-patch
-    // phase (fresh speed/bar).  When no file is published we never reach here,
-    // so the previous progress state is left untouched.
-    crate::progress::minor_patch(&format!("V{version}"), size);
-    if let Err(e) = download_exe_segments(&agent, &url, &tmp, size) {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(e);
+    let exe_patch = target_dir.join("ExePatch.dat");
+
+    // 1. Download ExePatch.dat into the client root. If a complete copy from a
+    // previous interrupted install is already there, reuse it and skip the
+    // download; otherwise clear the stale/partial file and fetch it fresh.
+    let already_have = exe_patch.exists()
+        && exe_patch.metadata().map_or(false, |m| m.len() == size);
+    if !already_have {
+        remove_readonly_file(&exe_patch);
+        let _ = std::fs::remove_file(&exe_patch);
+        // A real download is about to start: switch the UI to the minor-patch
+        // phase (fresh speed/bar).  When no file is published we never reach
+        // here, so the previous progress state is left untouched.
+        crate::progress::minor_patch(&format!("V{version}"), size);
+        if let Err(e) = download_exe_segments(&agent, &url, &exe_patch, size) {
+            let _ = std::fs::remove_file(&exe_patch);
+            return Err(e);
+        }
+    } else {
+        plog!("  ExePatch.dat already downloaded; installing...");
     }
 
+    // 2. Delete the existing MapleStory.exe (clear read-only first).
     let exe_path = target_dir.join("MapleStory.exe");
-    replace_file(&tmp, &exe_path)?;
+    if exe_path.exists() {
+        remove_readonly_file(&exe_path);
+        std::fs::remove_file(&exe_path).with_context(|| {
+            format!(
+                "failed to remove existing {} (is the game currently running?)",
+                exe_path.display()
+            )
+        })?;
+    }
+
+    // 3. Rename ExePatch.dat → MapleStory.exe (same directory → atomic).
+    std::fs::rename(&exe_patch, &exe_path).with_context(|| {
+        format!(
+            "failed to rename {} to {}",
+            exe_patch.display(),
+            exe_path.display()
+        )
+    })?;
     Ok(true)
 }
 
-/// Best-effort wrapper: shows the GUI/console status and installs the latest
-/// minor executable patch for `version`.  Failures are logged, never fatal to
-/// the patch procedure itself.
+/// Best-effort wrapper: downloads and installs the latest minor executable
+/// patch (`ExePatch.dat` → `MapleStory.exe`) for `version` at `target_dir`.
+/// Failures are logged, never fatal to the patch procedure itself.
+///
+/// Returns `true` when `MapleStory.exe` was actually replaced.
 fn ensure_latest_minor_patch(
     target_dir: &Path,
     version: i16,
     allow_insecure: bool,
     proxy: Option<&str>,
-) {
-    plog!("Update Minor Patch (V{version}): downloading ExePatch.dat...");
+) -> bool {
+    plog!("Update Minor Patch (V{version}): checking for ExePatch.dat...");
     match download_minor_patch(target_dir, version, allow_insecure, proxy) {
-        Ok(true) => plog!("  MapleStory.exe updated to the latest minor patch."),
-        Ok(false) => plog!("  no minor patch available for version {version}."),
-        Err(e) => plog!("  warning: failed to download latest minor patch: {e:#}"),
+        Ok(true) => {
+            plog!("Update Minor Patch (V{version}): MapleStory.exe updated.");
+            true
+        }
+        Ok(false) => {
+            plog!("Update Minor Patch (V{version}): no minor patch available.");
+            false
+        }
+        Err(e) => {
+            plog!("Update Minor Patch (V{version}): warning: {e:#}");
+            false
+        }
     }
 }
 

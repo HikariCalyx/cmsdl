@@ -592,11 +592,19 @@ fn run_patch_flow(
         let outcome = crate::tms_patch::apply_patches(
             target, version, allow_insecure, proxy, purge_wz_files,
         )?;
+        // A minor-patch executable hotfix counts as an update: it should end on
+        // "Update complete" (and close with --close-after-finishing), not the
+        // misleading "No update found".
         let done_key = match outcome {
-            TmsPatchOutcome::Updated => "gui-patcher-patch-successful",
+            TmsPatchOutcome::Updated | TmsPatchOutcome::MinorPatchApplied => {
+                "gui-patcher-patch-successful"
+            }
             TmsPatchOutcome::AlreadyUpToDate => "gui-patcher-nopatch-successful",
         };
-        progress::finish(&finish_message(done_key, outcome == TmsPatchOutcome::Updated), close_after_finishing);
+        // NxOverlay caches only change when WZ files are patched, so don't
+        // advertise an overlay clear for a mere executable hotfix.
+        let overlay_clear = matches!(outcome, TmsPatchOutcome::Updated);
+        progress::finish(&finish_message(done_key, overlay_clear), close_after_finishing);
         return Ok(());
     }
 
