@@ -488,6 +488,8 @@ pub fn apply_patches(
 
     if current_version == target_version {
         plog!("client is already at version {}; nothing to do.", target_version);
+        // Already up to date — still fetch the standalone executable hotfix.
+        ensure_latest_minor_patch(target_dir, target_version, allow_insecure, proxy);
         return Ok(PatchOutcome::AlreadyUpToDate);
     }
 
@@ -631,6 +633,11 @@ pub fn apply_patches(
         plog!("all corrupted files were repaired.");
     }
 
+    if current == target_version {
+        // All patch files applied — fetch the standalone executable hotfix for
+        // the version the client is now on.
+        ensure_latest_minor_patch(target_dir, target_version, allow_insecure, proxy);
+    }
     plog!("patching successful: now at version {}.", current);
     Ok(PatchOutcome::Updated)
 }
@@ -799,6 +806,163 @@ fn probe_file_size(agent: &ureq::Agent, url: &str) -> Result<u64> {
         }
         Err(ureq::Error::Status(404, _)) => Err(anyhow!("patch not found (404)")),
         Err(e) => Err(e.into()),
+    }
+}
+
+/// Build the standalone executable hotfix ("minor patch") URL for `version`.
+fn build_exe_patch_url(version: i16) -> String {
+    format!(
+        "http://tw.cdnpatch.maplestory.beanfun.com/maplestory/patch/patchdir/{:05}/ExePatch.dat",
+        version
+    )
+}
+
+/// Download one byte range `[start, end]` (inclusive) of `url` into `dest`,
+/// which must already be pre-allocated.  A plain range write with **no resume
+/// sidecar**; a truncated range is retried (from where it stopped) up to
+/// `HTTP_RETRIES` times.
+fn download_exe_range(
+    agent: &ureq::Agent,
+    url: &str,
+    dest: &Path,
+    start: u64,
+    end: u64,
+) -> Result<()> {
+    let mut from = start;
+    for attempt in 0..HTTP_RETRIES {
+        let resp = agent
+            .get(url)
+            .set("Range", &format!("bytes={}-{}", from, end))
+            .call()
+            .map_err(|e| anyhow!("minor patch range request failed: {e}"))?;
+        let mut reader = resp.into_reader();
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(dest)
+            .with_context(|| format!("failed to open {}", dest.display()))?;
+        file.seek(SeekFrom::Start(from))?;
+        let mut pos = from;
+        let mut buf = [0u8; 64 * 1024];
+        loop {
+            let n = reader.read(&mut buf)?;
+            if n == 0 {
+                break;
+            }
+            let remaining = (end + 1).saturating_sub(pos);
+            if remaining == 0 {
+                break;
+            }
+            let take = (n as u64).min(remaining) as usize;
+            file.write_all(&buf[..take])?;
+            pos += take as u64;
+            if take < n {
+                break;
+            }
+        }
+        if pos > end {
+            return Ok(());
+        }
+        if attempt + 1 < HTTP_RETRIES {
+            std::thread::sleep(RESUME_BACKOFF);
+            from = pos;
+        } else {
+            bail!("minor patch download truncated: range {start}-{end} stopped at {pos}");
+        }
+    }
+    unreachable!()
+}
+
+/// Download `url` (of `size` bytes) into `dest` using up to `SEGMENTS_PER_FILE`
+/// (5) parallel byte-range segments and **no** resume sidecar.
+fn download_exe_segments(agent: &ureq::Agent, url: &str, dest: &Path, size: u64) -> Result<()> {
+    if size == 0 {
+        return Ok(());
+    }
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    {
+        let file = std::fs::File::create(dest)?;
+        file.set_len(size)?;
+    }
+    let segments = effective_segments(size, SEGMENTS_PER_FILE).max(1);
+    let ranges = compute_ranges(size, segments);
+
+    let first_err: Mutex<Option<anyhow::Error>> = Mutex::new(None);
+    let err_slot = &first_err;
+    std::thread::scope(|scope| {
+        for &(start, end) in &ranges {
+            scope.spawn(move || {
+                if let Err(e) = download_exe_range(agent, url, dest, start, end) {
+                    let mut g = err_slot.lock().unwrap();
+                    if g.is_none() {
+                        *g = Some(e);
+                    }
+                }
+            });
+        }
+    });
+
+    if let Some(e) = first_err.into_inner().unwrap() {
+        return Err(e);
+    }
+    Ok(())
+}
+
+/// Download the standalone executable hotfix for `version` and install it as
+/// `MapleStory.exe` (the `ExePatch.dat` is renamed on success).
+///
+/// Returns `true` when a minor patch was downloaded and installed, `false` when
+/// none is published for this version (HTTP 404 / no reported size).
+fn download_minor_patch(
+    target_dir: &Path,
+    version: i16,
+    allow_insecure: bool,
+    proxy: Option<&str>,
+) -> Result<bool> {
+    let agent = crate::net::agent_builder(allow_insecure, proxy)
+        .timeout_connect(CONNECT_TIMEOUT)
+        .timeout_read(READ_TIMEOUT)
+        .build();
+    let url = build_exe_patch_url(version);
+
+    let size = match probe_file_size(&agent, &url) {
+        Ok(s) if s > 0 => s,
+        Ok(_) => return Ok(false), // no Content-Length → treat as absent
+        Err(e) if format!("{e:#}").contains("404") => {
+            plog!("  ExePatch.dat for version {version} not found (404); no minor patch.");
+            return Ok(false);
+        }
+        Err(e) => return Err(e),
+    };
+
+    let tmp = target_dir.join("patchdata").join("ExePatch.dat");
+    if let Err(e) = download_exe_segments(&agent, &url, &tmp, size) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+
+    let exe_path = target_dir.join("MapleStory.exe");
+    replace_file(&tmp, &exe_path)?;
+    Ok(true)
+}
+
+/// Best-effort wrapper: shows the GUI/console status and installs the latest
+/// minor executable patch for `version`.  Failures are logged, never fatal to
+/// the patch procedure itself.
+fn ensure_latest_minor_patch(
+    target_dir: &Path,
+    version: i16,
+    allow_insecure: bool,
+    proxy: Option<&str>,
+) {
+    crate::progress::minor_patch();
+    plog!("Downloading latest minor patch for version {version}...");
+    match download_minor_patch(target_dir, version, allow_insecure, proxy) {
+        Ok(true) => plog!("  MapleStory.exe updated to the latest minor patch."),
+        Ok(false) => plog!("  no minor patch available for version {version}."),
+        Err(e) => plog!("  warning: failed to download latest minor patch: {e:#}"),
     }
 }
 

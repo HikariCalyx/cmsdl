@@ -25,6 +25,9 @@ pub trait Reporter: Send + Sync {
     /// The downloaded patch file is being read & decompressed before the
     /// pre-patch verification phase.
     fn loading_patch(&self);
+    /// Downloading the standalone executable hotfix (ExePatch.dat) after the
+    /// client is up to date.
+    fn minor_patch(&self);
     /// A package finished downloading and is now being extracted/applied.
     fn extracting(&self, index: usize, count: usize);
     /// Begin the pre-patch verification phase (checksumming the old files that
@@ -166,6 +169,10 @@ pub fn download_progress(downloaded: u64) {
 pub fn loading_patch() {
     line("[progress] loading_patch");
     with(|r| r.loading_patch());
+}
+pub fn minor_patch() {
+    line("[progress] minor_patch");
+    with(|r| r.minor_patch());
 }
 pub fn extracting(index: usize, count: usize) {
     line(&format!("[progress] extracting({}, {})", index, count));

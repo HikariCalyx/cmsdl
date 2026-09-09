@@ -218,6 +218,14 @@ impl Reporter for GuiReporter {
         self.set_label3(String::new());
     }
 
+    fn minor_patch(&self) {
+        self.log("[gui-debug] Reporter::minor_patch()");
+        // After the client is up to date, a standalone executable hotfix
+        // (ExePatch.dat → MapleStory.exe) is fetched.
+        self.set_label1(tr("gui-patcher-minor-patch", &[]));
+        self.set_label3(String::new());
+    }
+
     fn extracting(&self, index: usize, count: usize) {
         self.log(&format!("[gui-debug] Reporter::extracting({}, {})", index, count));
         // Shown between download and apply; for a package that is a single huge
