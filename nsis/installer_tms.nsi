@@ -15,7 +15,7 @@ Unicode true
 !include "nsDialogs.nsh"
 
 ; Version
-!define VERSION "6.282.1.0"
+!define VERSION "6.282.1.1"
 
 ; Product Info (English)
 !define PRODUCT_NAME "MapleStory TW"
@@ -329,11 +329,11 @@ Function ModeSelectPageLeave
     ${EndIf}
 FunctionEnd
 
-; Skip the directory page for modes that don't need an install path.
+; Skip the directory page only for modes that don't need an install path.
+; MSVC mode (4) installs to a temp folder. Update CMSDL (3) must still let the
+; user pick the directory so the updated cmsdl.exe lands in the game folder.
 Function DirectoryPagePre
   StrCmp $InstallMode "4" 0 +2
-    Abort
-  StrCmp $InstallMode "3" 0 +2
     Abort
 FunctionEnd
 

@@ -25,7 +25,7 @@ Unicode true
 !endif
 
 ; Version
-!define VERSION "4.228.1.1"
+!define VERSION "4.228.1.2"
 
 ; Product Info (English)
 !define PRODUCT_NAME "MapleStory CN"
@@ -292,19 +292,8 @@ Function .onInit
     Quit
   ${EndIf}
 
-  ; If the current date is on or before October 20, 2026, add --build 1120 to
-  ; the download command (required for a specific game build rollout).
-  ${GetTime} "" "L" $0 $1 $2 $3 $4 $5 $6
-  ; $2 = year (4 digits), $1 = month, $0 = day of month
-  StrCpy $BuildFlag ""
-  IntCmp $2 2026 yearEq beforeCutoff afterCutoff
-  yearEq:
-    IntCmp $1 10 monthEq beforeCutoff afterCutoff
-  monthEq:
-    IntCmp $0 20 beforeCutoff beforeCutoff afterCutoff
-  beforeCutoff:
-    StrCpy $BuildFlag "--build 1120"
-  afterCutoff:
+  ; Set the automatic build flag used for a full install.
+  Call SetDefaultBuildFlag
 
   ; Default game variants: install both.
   StrCpy $InstallCMS "1"
@@ -319,6 +308,26 @@ Function .onInit
   StrCpy $NoUninstallerFlag ""
   StrCpy $NoShortcutFlag ""
   StrCpy $BuildNumber ""
+FunctionEnd
+
+; ============================================================================
+; Helper: automatic build flag for a full install
+; ============================================================================
+
+; If the current date is on or before October 20, 2026, add --build 1120 to
+; the download command (required for a specific game build rollout).
+Function SetDefaultBuildFlag
+  ${GetTime} "" "L" $0 $1 $2 $3 $4 $5 $6
+  ; $2 = year (4 digits), $1 = month, $0 = day of month
+  StrCpy $BuildFlag ""
+  IntCmp $2 2026 yearEq beforeCutoff afterCutoff
+  yearEq:
+    IntCmp $1 10 monthEq beforeCutoff afterCutoff
+  monthEq:
+    IntCmp $0 20 beforeCutoff beforeCutoff afterCutoff
+  beforeCutoff:
+    StrCpy $BuildFlag "--build 1120"
+  afterCutoff:
 FunctionEnd
 
 ; ============================================================================
@@ -460,58 +469,64 @@ variantShow:
   ${NSD_CreateCheckbox} 10u 22u 95% 12u "$(STR_VARIANT_CMS_CW)"
   Pop $CheckCMSCW
 
-  ; --- Advanced CMS client options (revealed by the checkbox below) ---
-  ${NSD_CreateCheckbox} 10u 40u 95% 12u "$(STR_VARIANT_ADVANCED)"
-  Pop $CheckAdvOpt
-  ${NSD_OnClick} $CheckAdvOpt UpdateAdvancedUI
-
-  ${NSD_CreateCheckbox} 10u 58u 95% 12u "$(STR_VARIANT_SPECIFIC_VER)"
-  Pop $CheckSpecificVer
-  ${NSD_OnClick} $CheckSpecificVer UpdateAdvancedUI
-
-  ${NSD_CreateRadioButton} 26u 76u 132u 12u "$(STR_VARIANT_SPECIFIC_BUILD)"
-  Pop $RadioSpecificBuild
-  ${NSD_AddStyle} $RadioSpecificBuild ${WS_GROUP}
-  ${NSD_OnClick} $RadioSpecificBuild UpdateAdvancedUI
-
-  ${NSD_CreateText} 164u 76u 72u 12u ""
-  Pop $EditBuildNumber
-  ${NSD_OnChange} $EditBuildNumber OnBuildTextChange
-
-  ${NSD_CreateRadioButton} 26u 94u 95% 12u "$(STR_VARIANT_LATEST)"
-  Pop $RadioLatest
-  ${NSD_OnClick} $RadioLatest UpdateAdvancedUI
-
-  ${NSD_CreateCheckbox} 10u 112u 95% 12u "$(STR_VARIANT_NO_UNINSTALLER)"
-  Pop $CheckNoUninstaller
-  ${NSD_OnClick} $CheckNoUninstaller UpdateAdvancedUI
-
-  ${NSD_CreateCheckbox} 10u 128u 95% 12u "$(STR_VARIANT_NO_SHORTCUT)"
-  Pop $CheckNoShortcut
-  ${NSD_OnClick} $CheckNoShortcut UpdateAdvancedUI
-
-  ; Restore previous state if the user went back.
+  ; Restore previous variant selection if the user went back.
   StrCmp $InstallCMS "1" 0 +2
     ${NSD_Check} $CheckCMS
   StrCmp $InstallCMSCW "1" 0 +2
     ${NSD_Check} $CheckCMSCW
-  StrCmp $AdvOptFlag "1" 0 +2
-    ${NSD_Check} $CheckAdvOpt
-  StrCmp $SpecificVerFlag "1" 0 +2
-    ${NSD_Check} $CheckSpecificVer
-  ${If} $BuildChoiceFlag == "1"
-    ${NSD_Check} $RadioSpecificBuild
-    ${NSD_SetText} $EditBuildNumber "$BuildNumber"
-  ${Else}
-    ${NSD_Check} $RadioLatest
-  ${EndIf}
-  StrCmp $NoUninstallerFlag "1" 0 +2
-    ${NSD_Check} $CheckNoUninstaller
-  StrCmp $NoShortcutFlag "1" 0 +2
-    ${NSD_Check} $CheckNoShortcut
 
-  ; Apply the restored visibility / enabled state.
-  Call UpdateAdvancedUI
+  ; Advanced CMS client options are only offered for a fresh install. In
+  ; Update mode these controls are not created, so the checkbox is hidden.
+  ${If} $InstallMode == 1
+    ; --- Advanced CMS client options (revealed by the checkbox below) ---
+    ${NSD_CreateCheckbox} 10u 40u 95% 12u "$(STR_VARIANT_ADVANCED)"
+    Pop $CheckAdvOpt
+    ${NSD_OnClick} $CheckAdvOpt UpdateAdvancedUI
+
+    ${NSD_CreateCheckbox} 10u 58u 95% 12u "$(STR_VARIANT_SPECIFIC_VER)"
+    Pop $CheckSpecificVer
+    ${NSD_OnClick} $CheckSpecificVer UpdateAdvancedUI
+
+    ${NSD_CreateRadioButton} 26u 76u 132u 12u "$(STR_VARIANT_SPECIFIC_BUILD)"
+    Pop $RadioSpecificBuild
+    ${NSD_AddStyle} $RadioSpecificBuild ${WS_GROUP}
+    ${NSD_OnClick} $RadioSpecificBuild UpdateAdvancedUI
+
+    ${NSD_CreateText} 164u 76u 72u 12u ""
+    Pop $EditBuildNumber
+    ${NSD_OnChange} $EditBuildNumber OnBuildTextChange
+
+    ${NSD_CreateRadioButton} 26u 94u 95% 12u "$(STR_VARIANT_LATEST)"
+    Pop $RadioLatest
+    ${NSD_OnClick} $RadioLatest UpdateAdvancedUI
+
+    ${NSD_CreateCheckbox} 10u 112u 95% 12u "$(STR_VARIANT_NO_UNINSTALLER)"
+    Pop $CheckNoUninstaller
+    ${NSD_OnClick} $CheckNoUninstaller UpdateAdvancedUI
+
+    ${NSD_CreateCheckbox} 10u 128u 95% 12u "$(STR_VARIANT_NO_SHORTCUT)"
+    Pop $CheckNoShortcut
+    ${NSD_OnClick} $CheckNoShortcut UpdateAdvancedUI
+
+    ; Restore previous advanced state if the user went back.
+    StrCmp $AdvOptFlag "1" 0 +2
+      ${NSD_Check} $CheckAdvOpt
+    StrCmp $SpecificVerFlag "1" 0 +2
+      ${NSD_Check} $CheckSpecificVer
+    ${If} $BuildChoiceFlag == "1"
+      ${NSD_Check} $RadioSpecificBuild
+      ${NSD_SetText} $EditBuildNumber "$BuildNumber"
+    ${Else}
+      ${NSD_Check} $RadioLatest
+    ${EndIf}
+    StrCmp $NoUninstallerFlag "1" 0 +2
+      ${NSD_Check} $CheckNoUninstaller
+    StrCmp $NoShortcutFlag "1" 0 +2
+      ${NSD_Check} $CheckNoShortcut
+
+    ; Apply the restored visibility / enabled state.
+    Call UpdateAdvancedUI
+  ${EndIf}
 
   nsDialogs::Show
   variantDone:
@@ -532,43 +547,56 @@ Function VariantSelectPageLeave
   StrCpy $InstallCMS $0
   StrCpy $InstallCMSCW $1
 
-  ; --- Advanced CMS client options ---
-  ${NSD_GetState} $CheckAdvOpt $0
-  StrCpy $AdvOptFlag $0
-  ${NSD_GetState} $CheckNoUninstaller $0
-  StrCpy $NoUninstallerFlag $0
-  ${NSD_GetState} $CheckNoShortcut $0
-  StrCpy $NoShortcutFlag $0
+  ; --- Advanced CMS client options (Install mode only) ---
+  ${If} $InstallMode == 1
+    ${NSD_GetState} $CheckAdvOpt $0
+    StrCpy $AdvOptFlag $0
+    ${NSD_GetState} $CheckNoUninstaller $0
+    StrCpy $NoUninstallerFlag $0
+    ${NSD_GetState} $CheckNoShortcut $0
+    StrCpy $NoShortcutFlag $0
 
-  ; Version selection (only meaningful for a full CMS download). An explicit
-  ; choice overrides the date-based automatic --build flag set up in .onInit.
-  ${NSD_GetState} $CheckSpecificVer $0
-  ${If} $0 == 1
-    StrCpy $SpecificVerFlag "1"
-    ${NSD_GetState} $RadioSpecificBuild $1
-    ${If} $1 == 1
-      StrCpy $BuildChoiceFlag "1"
-      ; Build number must be non-empty and digits only.
-      ${NSD_GetText} $EditBuildNumber $BuildNumber
-      Push $BuildNumber
-      Call IsDigits
-      Pop $2
-      ${If} $2 == 0
-        MessageBox MB_ICONEXCLAMATION "$(STR_VARIANT_BUILD_INVALID)"
-        Abort
+    ; Version selection (only meaningful for a full CMS download). An explicit
+    ; choice overrides the automatic (date-based) --build flag.
+    ${NSD_GetState} $CheckSpecificVer $0
+    ${If} $0 == 1
+      StrCpy $SpecificVerFlag "1"
+      ${NSD_GetState} $RadioSpecificBuild $1
+      ${If} $1 == 1
+        StrCpy $BuildChoiceFlag "1"
+        ; Build number must be non-empty and digits only.
+        ${NSD_GetText} $EditBuildNumber $BuildNumber
+        Push $BuildNumber
+        Call IsDigits
+        Pop $2
+        ${If} $2 == 0
+          MessageBox MB_ICONEXCLAMATION "$(STR_VARIANT_BUILD_INVALID)"
+          Abort
+        ${EndIf}
+        StrCpy $BuildFlag "--build $BuildNumber"
+      ${Else}
+        StrCpy $BuildChoiceFlag ""
+        StrCpy $BuildNumber ""
+        ; "Latest version": drop the automatic build flag.
+        StrCpy $BuildFlag ""
       ${EndIf}
-      StrCpy $BuildFlag "--build $BuildNumber"
     ${Else}
+      StrCpy $SpecificVerFlag ""
       StrCpy $BuildChoiceFlag ""
       StrCpy $BuildNumber ""
-      ; "Latest version": drop the date-based automatic build flag.
-      StrCpy $BuildFlag ""
+      ; Leave the automatic (date-based) build flag untouched.
     ${EndIf}
   ${Else}
+    ; Update mode does not offer advanced options. Reset everything so a
+    ; previous Install-mode selection cannot leak in, and restore the
+    ; automatic build flag for any later full install.
+    StrCpy $AdvOptFlag ""
     StrCpy $SpecificVerFlag ""
     StrCpy $BuildChoiceFlag ""
+    StrCpy $NoUninstallerFlag ""
+    StrCpy $NoShortcutFlag ""
     StrCpy $BuildNumber ""
-    ; Leave the date-based automatic build flag untouched.
+    Call SetDefaultBuildFlag
   ${EndIf}
 FunctionEnd
 
