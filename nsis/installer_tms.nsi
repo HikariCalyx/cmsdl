@@ -15,7 +15,7 @@ Unicode true
 !include "nsDialogs.nsh"
 
 ; Version
-!define VERSION "6.282.2.1"
+!define VERSION "6.282.2.2"
 
 ; Product Info (English)
 !define PRODUCT_NAME "MapleStory TW"
@@ -110,6 +110,7 @@ LangString STR_GAMING_VPN_MODE ${LANG_ENGLISH} "Gaming VPN Mode (e.g. WTFast, Ex
 LangString STR_SYSTEM_PROXY_MODE ${LANG_ENGLISH} "Use System Proxy"
 LangString STR_PORTABLE_MODE ${LANG_ENGLISH} "Portable mode (do not create uninstaller)"
 LangString STR_CLOSE_QIHOO_360_TOTAL_SECURITY ${LANG_ENGLISH} "Please close or uninstall 360 Total Security and click Retry. If you do not want to close it or cannot close it, click Abort to exit the installation."
+LangString STR_CLOSE_RIOT_VANGUARD ${LANG_ENGLISH} "Please close Riot Vanguard (the anti-cheat program used by League of Legends) and click Retry. If you do not want to close it or cannot close it, click Abort to exit the installation."
 
 ; ============================================================================
 ; Language Strings - Traditional Chinese
@@ -139,6 +140,7 @@ LangString STR_GAMING_VPN_MODE ${LANG_TRADCHINESE} "遊戲 VPN / 加速器模式
 LangString STR_SYSTEM_PROXY_MODE ${LANG_TRADCHINESE} "使用系統代理"
 LangString STR_PORTABLE_MODE ${LANG_TRADCHINESE} "可攜式模式（不產生反安裝程式）"
 LangString STR_CLOSE_QIHOO_360_TOTAL_SECURITY ${LANG_TRADCHINESE} "請先關閉或解除安裝 360 Total Security，然後按「重試」。若不願關閉或無法關閉，可按「中止」結束安裝。"
+LangString STR_CLOSE_RIOT_VANGUARD ${LANG_TRADCHINESE} "請先關閉 Riot Vanguard （即英雄聯盟使用的反作弊程式），然後按「重試」。若不願關閉或無法關閉，可按「中止」結束安裝。"
 
 ; ============================================================================
 ; Installer Attributes
@@ -385,6 +387,27 @@ Function CheckQihoo360
 FunctionEnd
 
 ; ============================================================================
+; 360 Total Security detection
+; ============================================================================
+
+Function CheckRiotVanguard
+  ; Detect Riot Vanguard tray process.
+  ; tasklist enumerates running processes; findstr exits with 0 when it
+  ; matches RiotClientServices.exe, and 1 when it is not running.
+  checkVanguardLoop:
+  nsExec::ExecToStack 'cmd /C tasklist /FO CSV /NH | findstr /I /C:$\"vgtray.exe$\"'
+  Pop $R0   ; exit code: 0 = running, 1 = not running
+  Pop $R1   ; stdout (discard)
+  StrCmp $R0 "0" vanguardRunning vanguardDone
+
+  vanguardRunning:
+  MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "$(STR_CLOSE_RIOT_VANGUARD)" IDRETRY checkVanguardLoop
+  ; The user cannot close it — abort the installation.
+  Abort
+
+  vanguardDone:
+FunctionEnd
+; ============================================================================
 ; Installer Section
 ; ============================================================================
 
@@ -398,6 +421,13 @@ Section "Install"
   doQihooCheck:
     Call CheckQihoo360
   qihooOk:
+
+  StrCmp $InstallMode "1" doVanguardCheck
+  StrCmp $InstallMode "2" doVanguardCheck
+  Goto vanguardOk
+  doVanguardCheck:
+    Call CheckRiotVanguard
+  vanguardOk:
 
   SetOutPath "$INSTDIR"
 
