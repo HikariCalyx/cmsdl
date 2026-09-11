@@ -458,20 +458,33 @@ FunctionEnd
 Function CheckInstallDirWritable
   ; The installer is not elevated (RequestExecutionLevel user), so a target
   ; such as C:\Program Files cannot be written to without Administrator
-  ; rights. Probe $INSTDIR with a temporary file and abort with a clear
-  ; message. MSVC repair (4) and the network-reset fix (5) don't use $INSTDIR.
+  ; rights. MSVC repair (4) and the network-reset fix (5) don't use $INSTDIR.
   StrCmp $InstallMode "4" writableDone
   StrCmp $InstallMode "5" writableDone
 
+  ; 1) The folder must exist and accept new files.
   ClearErrors
   CreateDirectory "$INSTDIR"
-  FileOpen $0 "$INSTDIR\.cmsdl_write_test" w
-  ${If} ${Errors}
-    MessageBox MB_ICONSTOP "$(STR_NO_WRITE_PERMISSION)"
-    Abort
-  ${EndIf}
+  FileOpen $0 "$INSTDIR\cmsdl_write_test" w
+  IfErrors writableFail 0
   FileClose $0
-  Delete "$INSTDIR\.cmsdl_write_test"
+  Delete "$INSTDIR\cmsdl_write_test"
+
+  ; 2) An existing target file must be replaceable too. Near C:\Program Files
+  ;    a folder often allows creating new files while denying changes to
+  ;    existing ones, so probing a new file alone misses an earlier cmsdl.exe
+  ;    that cannot be overwritten. Opening for append checks the write
+  ;    permission without modifying the file.
+  IfFileExists "$INSTDIR\cmsdl.exe" 0 writableDone
+  ClearErrors
+  FileOpen $0 "$INSTDIR\cmsdl.exe" a
+  IfErrors writableFail 0
+  FileClose $0
+  Goto writableDone
+
+  writableFail:
+  MessageBox MB_ICONSTOP "$(STR_NO_WRITE_PERMISSION)"
+  Abort
 
   writableDone:
 FunctionEnd
