@@ -1040,26 +1040,40 @@ fn download_minor_patch(
         plog!("  ExePatch.dat already downloaded; installing...");
     }
 
-    // 2. Delete the existing MapleStory.exe (clear read-only first).
+    // 2. Delete the existing MapleStory.exe if present (clear read-only first).
+    //    A missing file is fine: treat "not found" as success, so a stale
+    //    existence check or an already-deleted executable never blocks the
+    //    install. Only a genuine failure (e.g. the file is locked because the
+    //    game is running) is reported.
     let exe_path = target_dir.join("MapleStory.exe");
-    if exe_path.exists() {
+    remove_readonly_file(&exe_path);
+    match std::fs::remove_file(&exe_path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            return Err(e).with_context(|| {
+                format!(
+                    "failed to remove existing {} (is the game running, or does cmsdl need administrator rights here?)",
+                    exe_path.display()
+                )
+            });
+        }
+    }
+
+    // 3. Rename ExePatch.dat → MapleStory.exe (same directory → atomic). If the
+    //    destination is somehow still occupied (e.g. an existence/delete
+    //    mismatch), clear it and retry once before giving up.
+    if std::fs::rename(&exe_patch, &exe_path).is_err() {
         remove_readonly_file(&exe_path);
-        std::fs::remove_file(&exe_path).with_context(|| {
+        let _ = std::fs::remove_file(&exe_path);
+        std::fs::rename(&exe_patch, &exe_path).with_context(|| {
             format!(
-                "failed to remove existing {} (is the game currently running?)",
+                "failed to rename {} to {} (is the game running, or does cmsdl need administrator rights here?)",
+                exe_patch.display(),
                 exe_path.display()
             )
         })?;
     }
-
-    // 3. Rename ExePatch.dat → MapleStory.exe (same directory → atomic).
-    std::fs::rename(&exe_patch, &exe_path).with_context(|| {
-        format!(
-            "failed to rename {} to {}",
-            exe_patch.display(),
-            exe_path.display()
-        )
-    })?;
     Ok(true)
 }
 
