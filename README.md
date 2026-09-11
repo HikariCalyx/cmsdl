@@ -1,9 +1,10 @@
 # cmsdl
 [简体中文](https://github.com/HikariCalyx/cmsdl/tree/main/README.zh-CN.md)
+[繁體中文](https://github.com/HikariCalyx/cmsdl/tree/main/README.zh-TW.md)
 
 A downloader designed for Greater China region mushroom game.
 
-*This project is not officially supported or endorsed by SQ Games*
+*This project is not officially supported or endorsed by SQ Games and Black Orange Games*
 
 ## Why create this?
 I don't want to use the bloated launcher developed by SQ Games at all.
@@ -98,6 +99,11 @@ If the download was interrupted, you can rerun and it will continue to download.
 - Download only files from all paths that do not end with .wz and do not start with "Maple" to /path/to/tms/client:
 ```bash
 ./cmsdl tms --download /path/to/tms/client --filter-regex=".wz$":"^Maple" --invert-filter
+```
+
+- Patch TMS client to latest version, as well as minor patches:
+```bash
+./cmsdl tms --patch latest /path/to/tms/client
 ```
 
 ### Extra Tips
