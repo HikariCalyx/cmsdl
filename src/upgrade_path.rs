@@ -360,7 +360,7 @@ fn run_tms(
     let check_client = version_arg.eq_ignore_ascii_case("latest");
 
     // ── 2. Target version ─────────────────────────────────────────────────
-    let mut target: i16 = if check_client {
+    let target: i16 = if check_client {
         match retry(NETWORK_RETRIES, || tms_patch::get_latest_version(&agent)) {
             Ok(v) => v,
             Err(e) => {
@@ -396,20 +396,24 @@ fn run_tms(
     let chain = plan.chain;
 
     // The full client can be published before the patch that reaches it. When
-    // that happens for `latest`, fall back to the last version that is actually
-    // reachable through the patch server.
-    if plan.reached < target {
-        if !check_client {
+    // that happens for `latest` (and at least one patch is available), fall back
+    // to the last version actually reachable through the patch server. When no
+    // patch at all leaves the current version — e.g. a client that is not a TMS
+    // client — there is no upgrade path.
+    let target = match resolve_tms_target(check_client, current, target, plan.reached) {
+        TmsTarget::Reached => target,
+        TmsTarget::Fallback(reached) => {
+            eprintln!(
+                "warning: version {target} is not yet available on the patch server; \
+                 falling back to the last available version {reached}."
+            );
+            reached
+        }
+        TmsTarget::NoPatch => {
             println!("error: no applicable patch can be found");
             return Ok(EXIT_NO_PATCH);
         }
-        eprintln!(
-            "warning: version {target} is not yet available on the patch server; \
-             falling back to the last available version {}.",
-            plan.reached
-        );
-        target = plan.reached;
-    }
+    };
     let major_sum: u64 = chain.iter().map(|p| p.size).sum();
 
     // ── 4. Full client size for the target version (only for `latest`) ────
@@ -571,6 +575,33 @@ struct TmsPlan {
     /// The version the chain reaches. Equals the requested target when fully
     /// reachable, otherwise the last version the patch server can reach.
     reached: i16,
+}
+
+/// What to do with the requested TMS target after the chain search.
+#[derive(Debug, PartialEq, Eq)]
+enum TmsTarget {
+    /// The requested target is reachable as-is.
+    Reached,
+    /// Fall back to the last reachable version.
+    Fallback(i16),
+    /// No applicable patch chain exists.
+    NoPatch,
+}
+
+/// Decide the effective TMS target from the chain search result.
+///
+/// A partial chain is only acceptable for `latest`, where the full client may
+/// be published before its patch. Falling back requires that at least one patch
+/// was found (`reached > current`); an explicit unreachable target, or a client
+/// with no patch leaving its current version, has no upgrade path.
+fn resolve_tms_target(check_client: bool, current: i16, target: i16, reached: i16) -> TmsTarget {
+    if reached >= target {
+        TmsTarget::Reached
+    } else if check_client && reached > current {
+        TmsTarget::Fallback(reached)
+    } else {
+        TmsTarget::NoPatch
+    }
 }
 
 /// Discover the TMS patch chain from `current` up to `target`.
@@ -1031,6 +1062,24 @@ mod tests {
                 TmsPatch { from: 281, to: 282, size: 9 },
             ]
         );
+    }
+
+    #[test]
+    fn tms_target_keeps_reachable_target() {
+        assert_eq!(resolve_tms_target(true, 280, 282, 282), TmsTarget::Reached);
+        assert_eq!(resolve_tms_target(false, 280, 281, 281), TmsTarget::Reached);
+    }
+
+    #[test]
+    fn tms_target_falls_back_only_for_latest_with_progress() {
+        assert_eq!(
+            resolve_tms_target(true, 280, 283, 282),
+            TmsTarget::Fallback(282)
+        );
+        // No patch at all leaves the current version (e.g. not a TMS client).
+        assert_eq!(resolve_tms_target(true, 253, 282, 253), TmsTarget::NoPatch);
+        // An explicit unreachable target has no path.
+        assert_eq!(resolve_tms_target(false, 280, 285, 282), TmsTarget::NoPatch);
     }
 
     #[test]
