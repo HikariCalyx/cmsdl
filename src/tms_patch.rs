@@ -701,7 +701,7 @@ pub fn apply_patch_file(
 
 /// Get the latest version number by downloading Base.wz from the TMS product
 /// manifest and reading its version with miniwzlib.
-fn get_latest_version(agent: &ureq::Agent) -> Result<i16> {
+pub(crate) fn get_latest_version(agent: &ureq::Agent) -> Result<i16> {
     let info = crate::tms::get_product_info(agent)
         .context("failed to fetch TMS product manifest")?;
 
@@ -766,7 +766,7 @@ fn get_current_version(target_dir: &Path) -> Result<i16> {
 ///
 /// The TMS patch CDN only serves plain HTTP (the official patcher uses `http://`;
 /// TLS is not supported on this host), so the URL is built as `http://`.
-fn build_patch_url(old_ver: i16, new_ver: i16) -> String {
+pub(crate) fn build_patch_url(old_ver: i16, new_ver: i16) -> String {
     format!(
         "http://tw.cdnpatch.maplestory.beanfun.com/maplestory/patch/patchdir/{:05}/{:05}to{:05}.patch",
         new_ver, old_ver, new_ver
@@ -817,7 +817,7 @@ fn probe_file_size(agent: &ureq::Agent, url: &str) -> Result<u64> {
 }
 
 /// Build the standalone executable hotfix ("minor patch") URL for `version`.
-fn build_exe_patch_url(version: i16) -> String {
+pub(crate) fn build_exe_patch_url(version: i16) -> String {
     format!(
         "http://tw.cdnpatch.maplestory.beanfun.com/maplestory/patch/patchdir/{:05}/ExePatch.dat",
         version

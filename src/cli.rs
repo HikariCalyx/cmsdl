@@ -50,12 +50,14 @@ pub struct Cli {
     /// Check whether the incremental patches needed to reach a target version
     /// are smaller than downloading the target version's full client.
     ///
-    /// Only supported for `cms` and `cms_cw`. Pass a target version
-    /// (e.g. `0.0.0.22`) or `latest`, followed by the client directory.
+    /// Supported for `cms`, `cms_cw`, and `tms`. Pass a target version
+    /// (`0.0.0.22`-style for CMS, an integer like `285` for TMS) or `latest`,
+    /// followed by the client directory.
     ///
     /// Exit codes: 0 = patch is same size or smaller, 1 = no applicable patch,
     /// 2 = patches are larger than the full client, 3 = current client version
-    /// cannot be read, 100 = patch server cannot be accessed.
+    /// cannot be read, 4 = target version is older than the current client,
+    /// 100 = patch server cannot be accessed.
     #[arg(long, value_name = "VERSION|latest")]
     pub upgrade_path_check: Option<String>,
 
@@ -368,9 +370,9 @@ impl Cli {
             }
             Action::CreateShortcut(sanitize_path(path))
         } else if let Some(version) = &self.upgrade_path_check {
-            if self.region != Region::Cms && self.region != Region::CmsCw {
+            if !matches!(self.region, Region::Cms | Region::CmsCw | Region::Tms) {
                 anyhow::bail!(
-                    "--upgrade-path-check is only supported for region 'cms' (or 'cms_cw')"
+                    "--upgrade-path-check is only supported for region 'cms', 'cms_cw', or 'tms'"
                 );
             }
             let target = self.patch_target.as_deref().ok_or_else(|| {

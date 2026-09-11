@@ -4,9 +4,11 @@
 //! target version against the size of the full client for that version, so the
 //! caller can decide whether patching is cheaper than re-downloading.
 //!
-//! Only CMS and CMS_CW publish incremental patches. Because the result is a
-//! diagnostic, expected failures are reported through a process exit code
-//! (see the `EXIT_*` constants) rather than a Rust error.
+//! CMS and CMS_CW publish a patch manifest, so the chain is derived from it;
+//! TMS publishes individual `.patch` files, so its chain is discovered by
+//! probing the patch server. Because the result is a diagnostic, expected
+//! failures are reported through a process exit code (see the `EXIT_*`
+//! constants) rather than a Rust error.
 
 use std::path::Path;
 use std::time::Duration;
@@ -17,6 +19,9 @@ use crate::cli::Region;
 use crate::cms;
 use crate::cms_cw;
 use crate::cms_patch;
+use crate::progress::format_size;
+use crate::tms;
+use crate::tms_patch;
 
 /// Exit code: the patch chain is the same size as, or smaller than, the full
 /// client for the target version.
@@ -27,6 +32,8 @@ pub const EXIT_NO_PATCH: i32 = 1;
 pub const EXIT_TOO_LARGE: i32 = 2;
 /// Exit code: the current client version could not be read.
 pub const EXIT_NO_VERSION: i32 = 3;
+/// Exit code: the requested target version is older than the installed client.
+pub const EXIT_TARGET_OLDER: i32 = 4;
 /// Exit code: the patch server could not be reached after retrying.
 pub const EXIT_SERVER: i32 = 100;
 
@@ -51,13 +58,19 @@ pub fn run(
     proxy: Option<&str>,
     verbose: bool,
 ) -> Result<i32> {
+    // Echo the requested target verbatim (so `latest` stays `latest`).
+    println!(
+        "cmsdl {VERSION}: checking upgrade path for region '{region}' to version {version}."
+    );
+
     match region {
         Region::Cms => run_inner(region, version, target_dir, allow_insecure, proxy, verbose),
         Region::CmsCw => cms::with_config(cms_cw::CW_CONFIG, || {
             run_inner(region, version, target_dir, allow_insecure, proxy, verbose)
         }),
-        Region::Tms | Region::Manual => {
-            bail!("--upgrade-path-check is only supported for region 'cms' (or 'cms_cw')")
+        Region::Tms => run_tms(version, target_dir, allow_insecure, proxy, verbose),
+        Region::Manual => {
+            bail!("--upgrade-path-check is only supported for region 'cms', 'cms_cw', or 'tms'")
         }
     }
 }
@@ -89,11 +102,6 @@ fn run_inner(
     proxy: Option<&str>,
     verbose: bool,
 ) -> Result<i32> {
-    // Echo the requested target verbatim (so `latest` stays `latest`).
-    println!(
-        "cmsdl {VERSION}: checking upgrade path for region '{region}' to version {version_arg}."
-    );
-
     // ── 1. Current client version ──────────────────────────────────────────
     let installed = match detect_installed_version(region, target_dir) {
         Some(v) => v,
@@ -106,7 +114,8 @@ fn run_inner(
     // ── 2. Resolve the patch chain to the target version ───────────────────
     let data = match retry(NETWORK_RETRIES, || cms::get_patch_data(allow_insecure, proxy)) {
         Ok(d) => d,
-        Err(_) => {
+        Err(e) => {
+            debug_net("fetching patch metadata", &e);
             println!("error: patch server cannot be accessed");
             return Ok(EXIT_SERVER);
         }
@@ -133,8 +142,12 @@ fn run_inner(
     };
 
     let plan = match plan_patches(&data.packages, &current, version_arg) {
-        Some(p) => p,
-        None => {
+        Ok(p) => p,
+        Err(PlanError::TargetOlder) => {
+            println!("error: target client version is older than current client version");
+            return Ok(EXIT_TARGET_OLDER);
+        }
+        Err(PlanError::NoPatch) => {
             println!("error: no applicable patch can be found");
             return Ok(EXIT_NO_PATCH);
         }
@@ -150,7 +163,8 @@ fn run_inner(
     let agent = crate::net::agent(allow_insecure, proxy);
     let challenge = match retry(NETWORK_RETRIES, || cms::get_challenge_key(&agent)) {
         Ok(c) => c,
-        Err(_) => {
+        Err(e) => {
+            debug_net("obtaining challenge key", &e);
             println!("error: patch server cannot be accessed");
             return Ok(EXIT_SERVER);
         }
@@ -163,7 +177,8 @@ fn run_inner(
             cms::get_patch_file_sizes(&agent, &challenge, &data.base_url, &pkg.file_list_url)
         }) {
             Ok(p) => p,
-            Err(_) => {
+            Err(e) => {
+                debug_net("fetching patch file sizes", &e);
                 println!("error: patch server cannot be accessed");
                 return Ok(EXIT_SERVER);
             }
@@ -180,7 +195,8 @@ fn run_inner(
         cms::client_size_for_version(&agent, &challenge, &target_version)
     }) {
         Ok(c) => c,
-        Err(_) => {
+        Err(e) => {
+            debug_net("locating the target full client", &e);
             println!("error: patch server cannot be accessed");
             return Ok(EXIT_SERVER);
         }
@@ -300,6 +316,389 @@ fn run_inner(
     }
 }
 
+// ── TMS ─────────────────────────────────────────────────────────────────────
+
+/// A single TMS `.patch` file in the upgrade chain.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TmsPatch {
+    from: i16,
+    to: i16,
+    size: u64,
+}
+
+impl TmsPatch {
+    /// The CDN file name for this patch (e.g. `00280to00285.patch`).
+    fn file_name(&self) -> String {
+        format!("{:05}to{:05}.patch", self.from, self.to)
+    }
+}
+
+/// Upgrade-path check for the TMS region.
+///
+/// TMS publishes individual `.patch` files (one per version hop) rather than a
+/// patch manifest, so the chain is discovered by probing the patch server for
+/// the largest available jump at each step.
+fn run_tms(
+    version_arg: &str,
+    target_dir: &Path,
+    allow_insecure: bool,
+    proxy: Option<&str>,
+    verbose: bool,
+) -> Result<i32> {
+    // ── 1. Current client version (Data/Base/Base.wz) ─────────────────────
+    let current = match read_tms_base_version(target_dir) {
+        Some(v) => v,
+        None => {
+            println!("error: current client version cannot be read");
+            return Ok(EXIT_NO_VERSION);
+        }
+    };
+
+    let agent = crate::net::agent(allow_insecure, proxy);
+    // The full-client manifest (and therefore the client check) is only used
+    // when the target was requested as `latest`.
+    let check_client = version_arg.eq_ignore_ascii_case("latest");
+
+    // ── 2. Target version ─────────────────────────────────────────────────
+    let mut target: i16 = if check_client {
+        match retry(NETWORK_RETRIES, || tms_patch::get_latest_version(&agent)) {
+            Ok(v) => v,
+            Err(e) => {
+                debug_net("resolving the latest TMS version", &e);
+                println!("error: patch server cannot be accessed");
+                return Ok(EXIT_SERVER);
+            }
+        }
+    } else {
+        match version_arg.parse::<i16>() {
+            Ok(v) if v > 0 => v,
+            _ => {
+                println!("error: no applicable patch can be found");
+                return Ok(EXIT_NO_PATCH);
+            }
+        }
+    };
+
+    if current > target {
+        println!("error: target client version is older than current client version");
+        return Ok(EXIT_TARGET_OLDER);
+    }
+
+    // ── 3. Required patch chain ───────────────────────────────────────────
+    let plan = match plan_tms_chain(&agent, current, target) {
+        Ok(plan) => plan,
+        Err(e) => {
+            debug_net("discovering the TMS patch chain", &e);
+            println!("error: patch server cannot be accessed");
+            return Ok(EXIT_SERVER);
+        }
+    };
+    let chain = plan.chain;
+
+    // The full client can be published before the patch that reaches it. When
+    // that happens for `latest`, fall back to the last version that is actually
+    // reachable through the patch server.
+    if plan.reached < target {
+        if !check_client {
+            println!("error: no applicable patch can be found");
+            return Ok(EXIT_NO_PATCH);
+        }
+        eprintln!(
+            "warning: version {target} is not yet available on the patch server; \
+             falling back to the last available version {}.",
+            plan.reached
+        );
+        target = plan.reached;
+    }
+    let major_sum: u64 = chain.iter().map(|p| p.size).sum();
+
+    // ── 4. Full client size for the target version (only for `latest`) ────
+    // The TMS download server only publishes the latest client manifest, so an
+    // explicit (typically older) target has nothing meaningful to compare
+    // against. In that case the client check is skipped entirely.
+    let check_client = version_arg.eq_ignore_ascii_case("latest");
+    let mut client_size: u64 = 0;
+    let mut client_version = String::new();
+    let mut exact = false;
+    let mut minor: Option<u64> = None;
+
+    if check_client {
+        let info = match retry(NETWORK_RETRIES, || tms::get_product_info(&agent)) {
+            Ok(i) => i,
+            Err(e) => {
+                debug_net("fetching the TMS product manifest", &e);
+                println!("error: patch server cannot be accessed");
+                return Ok(EXIT_SERVER);
+            }
+        };
+        client_size = info.files.iter().map(|f| f.size_in_bytes).sum();
+        exact = parse_tms_version_number(&info.version) == Some(target);
+        client_version = info.version;
+
+        // When the client is already on the latest major version the patcher
+        // still fetches the standalone executable hotfix (`ExePatch.dat`), so
+        // its size counts towards the patch route.
+        if exact && current == target {
+            minor = probe_exe_patch_size(&agent, target);
+        }
+    }
+    let patch_sum = major_sum + minor.unwrap_or(0);
+
+    // ── 5. Human-readable summary ─────────────────────────────────────────
+    println!("current version: {current}");
+    println!("target version:  {target}");
+    println!(
+        "patches needed:  {} ({})",
+        chain.len(),
+        format_size(major_sum)
+    );
+    if let Some(size) = minor {
+        println!(
+            "minor patch:     V{target} ExePatch.dat ({})",
+            format_size(size)
+        );
+    }
+    if check_client {
+        let note = if exact {
+            String::new()
+        } else {
+            " [fallback: target full client not available]".to_string()
+        };
+        println!(
+            "full client:     version {client_version} ({}){}",
+            format_size(client_size),
+            note
+        );
+    } else {
+        println!(
+            "full client:     (skipped: TMS only publishes the latest manifest for an explicit target)"
+        );
+    }
+
+    // ── 5b. Detailed upgrade path (--verbose) ─────────────────────────────
+    if verbose {
+        if chain.is_empty() && minor.is_none() {
+            println!("upgrade path:     (already at the target version; no patches needed)");
+        } else {
+            println!("upgrade path:");
+            for p in &chain {
+                println!(
+                    "  {:05} -> {:05}: {} (1 file(s))",
+                    p.from,
+                    p.to,
+                    format_size(p.size)
+                );
+                println!("      {}: {}", p.file_name(), format_size(p.size));
+            }
+            if let Some(size) = minor {
+                println!(
+                    "  minor patch (V{target}): {} (1 file(s))",
+                    format_size(size)
+                );
+                println!("      ExePatch.dat: {}", format_size(size));
+            }
+        }
+    }
+
+    // ── 6. Comparison and exit code ───────────────────────────────────────
+    let command = format!(
+        "{} {} --patch {target} {}",
+        process_name(),
+        Region::Tms.code(),
+        target_dir.display()
+    );
+
+    if !check_client {
+        // Explicit target: the server only publishes the latest manifest, so
+        // there is nothing meaningful to compare against.
+        println!("you may apply the patch with {command}");
+        return Ok(EXIT_OK);
+    }
+
+    if exact {
+        let code = decide(patch_sum, client_size, true);
+        if code == EXIT_TOO_LARGE {
+            println!(
+                "warning: required patches to {target} version are larger than \
+                 the {target} client itself"
+            );
+        } else {
+            println!("you may apply the patch with {command}");
+        }
+        Ok(code)
+    } else {
+        eprintln!(
+            "warning: no full client found for version {target}; \
+             compared against version {client_version} instead."
+        );
+        if patch_sum > client_size {
+            eprintln!(
+                "warning: required patches to {target} version are larger than \
+                 the {client_version} client itself"
+            );
+        }
+        println!("you may apply the patch with {command}");
+        Ok(EXIT_OK)
+    }
+}
+
+/// Read the client version from `<target_dir>/Data/Base/Base.wz`.
+fn read_tms_base_version(target_dir: &Path) -> Option<i16> {
+    let wz_path = target_dir.join("Data").join("Base").join("Base.wz");
+    let wz = crate::miniwzlib::get_wz_version(&wz_path).ok()?;
+    if wz.version == 0 {
+        None
+    } else {
+        Some(wz.version)
+    }
+}
+
+/// Parse the numeric version out of a TMS product version string
+/// (e.g. `"V280"` → `280`).
+fn parse_tms_version_number(version: &str) -> Option<i16> {
+    let start = version.find(|c: char| c.is_ascii_digit())?;
+    let tail = &version[start..];
+    let end = tail
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(tail.len());
+    tail[..end].parse::<i16>().ok()
+}
+
+/// A resolved TMS upgrade path.
+struct TmsPlan {
+    /// The patches to apply, in order.
+    chain: Vec<TmsPatch>,
+    /// The version the chain reaches. Equals the requested target when fully
+    /// reachable, otherwise the last version the patch server can reach.
+    reached: i16,
+}
+
+/// Discover the TMS patch chain from `current` up to `target`.
+///
+/// Mirrors the patcher's greedy strategy: at each step, probe from the target
+/// version downwards and take the first (largest) patch that exists. The search
+/// stops at the last reachable version; `Err` is returned only when the patch
+/// server cannot be reached at all.
+fn plan_tms_chain(agent: &ureq::Agent, current: i16, target: i16) -> Result<TmsPlan> {
+    plan_tms_chain_with(current, target, |from, to| probe_tms_patch(agent, from, to))
+}
+
+/// Testable core of [`plan_tms_chain`] with an injectable probe.
+///
+/// A probe error (`Err`) is treated as a transient failure for that candidate
+/// and skipped, mirroring the patcher's retry-with-closer-target behaviour. The
+/// search stops when no patch leaves a version; `Err` is returned only when no
+/// probe ever received a response (the server is unreachable).
+fn plan_tms_chain_with<F>(
+    current: i16,
+    target: i16,
+    mut probe: F,
+) -> Result<TmsPlan>
+where
+    F: FnMut(i16, i16) -> Result<Option<u64>>,
+{
+    let mut chain = Vec::new();
+    let mut cur = current;
+    let mut any_response = false;
+    while cur < target {
+        let mut found: Option<(i16, u64)> = None;
+        for candidate in (cur + 1..=target).rev() {
+            match probe(cur, candidate) {
+                Ok(Some(size)) => {
+                    any_response = true;
+                    found = Some((candidate, size));
+                    break;
+                }
+                Ok(None) => any_response = true,
+                Err(e) => debug_net(&format!("probe {cur:05}->{candidate:05}"), &e),
+            }
+        }
+        match found {
+            Some((to, size)) => {
+                chain.push(TmsPatch { from: cur, to, size });
+                cur = to;
+            }
+            None if any_response => break,
+            None => return Err(anyhow::anyhow!("patch server cannot be accessed")),
+        }
+    }
+    Ok(TmsPlan { chain, reached: cur })
+}
+
+/// Probe the TMS patch server for the patch from `from` to `to`.
+fn probe_tms_patch(agent: &ureq::Agent, from: i16, to: i16) -> Result<Option<u64>> {
+    probe_with_https_fallback(agent, &tms_patch::build_patch_url(from, to))
+}
+
+/// Probe `http_url`, falling back to the HTTPS equivalent only when the plain
+/// HTTP request fails at the transport level.
+///
+/// A definitive answer from either scheme (`Ok(Some)` / `Ok(None)`) is
+/// returned as-is; `Err` means both schemes failed to connect.
+fn probe_with_https_fallback(agent: &ureq::Agent, http_url: &str) -> Result<Option<u64>> {
+    match probe_tms_file(agent, http_url) {
+        Ok(found) => Ok(found),
+        Err(primary) => {
+            let https = http_url.replacen("http://", "https://", 1);
+            match probe_tms_file(agent, &https) {
+                Ok(found) => Ok(found),
+                Err(_) => Err(primary),
+            }
+        }
+    }
+}
+
+/// Probe a single TMS patch URL for its size.
+fn probe_tms_file(agent: &ureq::Agent, url: &str) -> Result<Option<u64>> {
+    let head = match agent.head(url).call() {
+        Ok(resp) => resp,
+        Err(ureq::Error::Status(_, _)) => return Ok(None),
+        Err(ureq::Error::Transport(t)) => {
+            return Err(anyhow::anyhow!("transport error: {t}"))
+        }
+    };
+    if let Some(n) = head
+        .header("Content-Length")
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|n| *n > 0)
+    {
+        return Ok(Some(n));
+    }
+
+    // Some servers omit Content-Length on HEAD; fall back to a ranged GET.
+    match agent.get(url).set("Range", "bytes=0-0").call() {
+        Ok(resp) => Ok(probe_response_size(&resp)),
+        Err(ureq::Error::Status(_, _)) => Ok(None),
+        Err(ureq::Error::Transport(t)) => Err(anyhow::anyhow!("transport error: {t}")),
+    }
+}
+
+/// Extract the total file size from a ranged-GET response.
+fn probe_response_size(resp: &ureq::Response) -> Option<u64> {
+    if let Some(range) = resp.header("Content-Range") {
+        if let Some(total) = range.split('/').nth(1) {
+            if let Ok(n) = total.parse::<u64>() {
+                if n > 0 {
+                    return Some(n);
+                }
+            }
+        }
+    }
+    resp.header("Content-Length")
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|n| *n > 0)
+}
+
+/// Probe the standalone executable hotfix (`ExePatch.dat`) size for `version`.
+///
+/// Best-effort: any failure (including a transport error) is treated as "no
+/// minor patch", matching the patcher's non-fatal handling.
+fn probe_exe_patch_size(agent: &ureq::Agent, version: i16) -> Option<u64> {
+    probe_with_https_fallback(agent, &tms_patch::build_exe_patch_url(version))
+        .ok()
+        .flatten()
+}
+
 /// Read the installed client version from `target_dir`.
 ///
 /// For CMS, a missing or corrupt `LocalVersion3.xml` falls back to the WZ major
@@ -327,42 +726,60 @@ fn detect_installed_version(region: Region, target_dir: &Path) -> Option<Install
     Some(InstalledVersion::FromWz(wz.version))
 }
 
+/// Why [`plan_patches`] could not produce a plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlanError {
+    /// No applicable patch chain exists for the requested version.
+    NoPatch,
+    /// The requested target is older than the installed client version.
+    TargetOlder,
+}
+
 /// Resolve the patch chain from `current` to the requested `version_arg`
 /// (a concrete version or `latest`).
 ///
-/// Returns `None` when no applicable chain exists: unknown target version, an
-/// empty patch list, an unknown starting point, or a requested downgrade.
+/// Returns [`PlanError::TargetOlder`] when the target predates the installed
+/// version, and [`PlanError::NoPatch`] for any other missing chain (unknown
+/// target, empty patch list, unknown starting point).
 fn plan_patches(
     packages: &[cms::PatchPackage],
     current: &str,
     version_arg: &str,
-) -> Option<Plan> {
+) -> std::result::Result<Plan, PlanError> {
     let target_version = if version_arg.eq_ignore_ascii_case("latest") {
-        packages.last()?.to.clone()
+        packages.last().ok_or(PlanError::NoPatch)?.to.clone()
     } else {
         version_arg.to_owned()
     };
-    let end = packages.iter().position(|p| p.to == target_version)?;
+
+    // A downgrade is not a valid upgrade path. Checked before the target
+    // lookup so an older-but-unpublished version still reports a downgrade.
+    if cms_patch::version_newer_than(current, &target_version) {
+        return Err(PlanError::TargetOlder);
+    }
+
+    let end = packages
+        .iter()
+        .position(|p| p.to == target_version)
+        .ok_or(PlanError::NoPatch)?;
 
     // Already at the target: an empty patch range.
     if current == target_version {
-        return Some(Plan {
+        return Ok(Plan {
             target_version,
             start: end + 1,
             end,
         });
     }
 
-    // A downgrade is not a valid upgrade path.
-    if cms_patch::version_newer_than(current, &target_version) {
-        return None;
-    }
-
-    let start = packages.iter().position(|p| p.from == current)?;
+    let start = packages
+        .iter()
+        .position(|p| p.from == current)
+        .ok_or(PlanError::NoPatch)?;
     if start > end {
-        return None;
+        return Err(PlanError::NoPatch);
     }
-    Some(Plan {
+    Ok(Plan {
         target_version,
         start,
         end,
@@ -376,6 +793,16 @@ fn decide(patch_sum: u64, client_size: u64, exact: bool) -> i32 {
         EXIT_TOO_LARGE
     } else {
         EXIT_OK
+    }
+}
+
+/// Print a diagnostic for a failed network operation on debug builds only.
+///
+/// Release builds stay quiet so the exit-code contract is unaffected; debug
+/// builds (`cargo run` / `cargo build`) show the underlying error chain.
+fn debug_net(context: &str, err: &anyhow::Error) {
+    if cfg!(debug_assertions) {
+        eprintln!("debug: {context}: {err:#}");
     }
 }
 
@@ -458,22 +885,44 @@ mod tests {
 
     #[test]
     fn plan_rejects_unknown_target() {
-        assert!(plan_patches(&chain(), "0.0.0.15", "9.9.9.9").is_none());
+        assert_eq!(
+            plan_patches(&chain(), "0.0.0.15", "9.9.9.9"),
+            Err(PlanError::NoPatch)
+        );
     }
 
     #[test]
     fn plan_rejects_unknown_start() {
-        assert!(plan_patches(&chain(), "0.0.0.99", "latest").is_none());
+        // A non-standard version older than the target is not a known start.
+        assert_eq!(
+            plan_patches(&chain(), "0.0.0.15.5", "latest"),
+            Err(PlanError::NoPatch)
+        );
     }
 
     #[test]
     fn plan_rejects_downgrade() {
-        assert!(plan_patches(&chain(), "0.0.0.17", "0.0.0.15").is_none());
+        assert_eq!(
+            plan_patches(&chain(), "0.0.0.17", "0.0.0.15"),
+            Err(PlanError::TargetOlder)
+        );
+    }
+
+    #[test]
+    fn plan_rejects_older_unknown_target_as_downgrade() {
+        // 0.0.0.5 is not a published patch target, but it predates the client.
+        assert_eq!(
+            plan_patches(&chain(), "0.0.0.15", "0.0.0.5"),
+            Err(PlanError::TargetOlder)
+        );
     }
 
     #[test]
     fn plan_rejects_empty_patch_list() {
-        assert!(plan_patches(&[], "0.0.0.15", "latest").is_none());
+        assert_eq!(
+            plan_patches(&[], "0.0.0.15", "latest"),
+            Err(PlanError::NoPatch)
+        );
     }
 
     #[test]
@@ -504,5 +953,97 @@ mod tests {
         });
         assert!(out.is_err());
         assert_eq!(attempts, 4); // initial attempt + 3 retries
+    }
+
+    #[test]
+    fn tms_chain_picks_largest_jump() {
+        let available = [(280, 285), (285, 290)];
+        let plan = plan_tms_chain_with(280, 290, |from, to| {
+            Ok(available.contains(&(from, to)).then_some(to as u64))
+        })
+        .unwrap();
+        assert_eq!(plan.reached, 290);
+        assert_eq!(
+            plan.chain,
+            vec![
+                TmsPatch { from: 280, to: 285, size: 285 },
+                TmsPatch { from: 285, to: 290, size: 290 },
+            ]
+        );
+    }
+
+    #[test]
+    fn tms_chain_stops_before_unreachable_target() {
+        let available = [(280, 281)];
+        let plan = plan_tms_chain_with(280, 285, |from, to| {
+            Ok(available.contains(&(from, to)).then_some(1))
+        })
+        .unwrap();
+        assert_eq!(plan.reached, 281);
+        assert_eq!(plan.chain, vec![TmsPatch { from: 280, to: 281, size: 1 }]);
+    }
+
+    #[test]
+    fn tms_chain_empty_when_at_target() {
+        let plan = plan_tms_chain_with(285, 285, |_, _| Ok(Some(1))).unwrap();
+        assert!(plan.chain.is_empty());
+        assert_eq!(plan.reached, 285);
+    }
+
+    #[test]
+    fn tms_chain_mirrors_greedy_patcher() {
+        // The largest available jump (280 -> 286) leads to a dead end, so the
+        // chain stops there even though 280 -> 285 -> 290 exists.
+        let available = [(280, 286), (280, 285), (285, 290)];
+        let plan = plan_tms_chain_with(280, 290, |from, to| {
+            Ok(available.contains(&(from, to)).then_some(1))
+        })
+        .unwrap();
+        assert_eq!(plan.reached, 286);
+        assert_eq!(plan.chain, vec![TmsPatch { from: 280, to: 286, size: 1 }]);
+    }
+
+    #[test]
+    fn tms_chain_falls_back_to_last_reachable_version() {
+        // 283 (the published full client) has no patch yet, but 282 does.
+        let available = [(280, 282)];
+        let plan = plan_tms_chain_with(280, 283, |from, to| {
+            Ok(available.contains(&(from, to)).then_some(11))
+        })
+        .unwrap();
+        assert_eq!(plan.reached, 282);
+        assert_eq!(plan.chain, vec![TmsPatch { from: 280, to: 282, size: 11 }]);
+    }
+
+    #[test]
+    fn tms_chain_tolerates_transient_probe_errors() {
+        let plan = plan_tms_chain_with(280, 282, |from, to| match (from, to) {
+            (280, 281) => Ok(Some(7)),
+            (281, 282) => Ok(Some(9)),
+            _ => anyhow::bail!("timeout"),
+        })
+        .unwrap();
+        assert_eq!(plan.reached, 282);
+        assert_eq!(
+            plan.chain,
+            vec![
+                TmsPatch { from: 280, to: 281, size: 7 },
+                TmsPatch { from: 281, to: 282, size: 9 },
+            ]
+        );
+    }
+
+    #[test]
+    fn tms_chain_errors_when_server_unreachable() {
+        let out = plan_tms_chain_with(280, 285, |_, _| anyhow::bail!("unreachable"));
+        assert!(out.is_err());
+    }
+
+    #[test]
+    fn parses_tms_version_number() {
+        assert_eq!(parse_tms_version_number("V280"), Some(280));
+        assert_eq!(parse_tms_version_number("280"), Some(280));
+        assert_eq!(parse_tms_version_number(""), None);
+        assert_eq!(parse_tms_version_number("V"), None);
     }
 }
