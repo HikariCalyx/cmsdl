@@ -50,6 +50,7 @@ Var RadioInstall
 Var RadioUpdate
 Var RadioUpdateCMSDL
 Var RadioMSVC
+Var RadioFixLogin
 Var CheckConsole
 Var NoGuiFlag
 Var CloseFlag
@@ -102,6 +103,10 @@ LangString STR_MODE_INSTALL ${LANG_ENGLISH} "Install or repair (download the ful
 LangString STR_MODE_UPDATE ${LANG_ENGLISH} "Update (update an existing game installation)"
 LangString STR_MODE_UPDATE_CMSDL ${LANG_ENGLISH} "Update CMSDL"
 LangString STR_MODE_MSVC ${LANG_ENGLISH} "Repair Runtime (VCRUNTIME140.dll missing, etc)"
+LangString STR_MODE_FIX_LOGIN ${LANG_ENGLISH} "Fix 'unable to login to server'"
+LangString STR_FIX_LOGIN_WARNING ${LANG_ENGLISH} "Doing this will cause your Internet connection on your PC being interrupted briefly. Proceed anyway?"
+LangString STR_FIX_LOGIN_OK ${LANG_ENGLISH} "Please restart PC to take effect"
+LangString STR_FIX_LOGIN_FAILED ${LANG_ENGLISH} "Fix failed. Please check if you have denied UAC prompt."
 LangString STR_LINK_TROUBLESHOOTING ${LANG_ENGLISH} "Troubleshooting (Traditional Chinese only)"
 LangString STR_USE_CONSOLE_TYPE ${LANG_ENGLISH} "Use the console-type CMSDL interface"
 LangString STR_UPDATE_ABORT ${LANG_ENGLISH} "No existing game installation was found in the selected directory. Update cannot continue."
@@ -132,6 +137,10 @@ LangString STR_MODE_INSTALL ${LANG_TRADCHINESE} "安裝或修復（下載完整�
 LangString STR_MODE_UPDATE ${LANG_TRADCHINESE} "更新（更新現有遊戲）"
 LangString STR_MODE_UPDATE_CMSDL ${LANG_TRADCHINESE} "升級 CMSDL"
 LangString STR_MODE_MSVC ${LANG_TRADCHINESE} "修復運行時（VCRUNTIME140.dll 丟失等錯誤）"
+LangString STR_MODE_FIX_LOGIN ${LANG_TRADCHINESE} "修復「無法登入伺服器」"
+LangString STR_FIX_LOGIN_WARNING ${LANG_TRADCHINESE} "此操作將使您電腦的網際網路連線短暫中斷。仍要繼續嗎？"
+LangString STR_FIX_LOGIN_OK ${LANG_TRADCHINESE} "請重新啟動電腦以使其生效。"
+LangString STR_FIX_LOGIN_FAILED ${LANG_TRADCHINESE} "修復失敗。請檢查您是否拒絕了 UAC 提示。"
 LangString STR_LINK_TROUBLESHOOTING ${LANG_TRADCHINESE} "使用遇到問題了？點擊查看幫助"
 LangString STR_USE_CONSOLE_TYPE ${LANG_TRADCHINESE} "使用指令樣式的CMSDL介面"
 LangString STR_UPDATE_ABORT ${LANG_TRADCHINESE} "在所選目錄中未找到現有的遊戲安裝。無法繼續更新。"
@@ -221,19 +230,23 @@ Function ModeSelectPage
   Pop $Dialog
   StrCmp $Dialog "error" modeDone
 
-  ${NSD_CreateRadioButton} 10u 10u 95% 12u "$(STR_MODE_INSTALL)"
+  ${NSD_CreateRadioButton} 10u 4u 95% 12u "$(STR_MODE_INSTALL)"
   Pop $RadioInstall
-  ${NSD_CreateRadioButton} 10u 28u 95% 12u "$(STR_MODE_UPDATE)"
+  ${NSD_CreateRadioButton} 10u 20u 95% 12u "$(STR_MODE_UPDATE)"
   Pop $RadioUpdate
-  ${NSD_CreateRadioButton} 10u 46u 95% 12u "$(STR_MODE_UPDATE_CMSDL)"
+  ${NSD_CreateRadioButton} 10u 36u 95% 12u "$(STR_MODE_UPDATE_CMSDL)"
   Pop $RadioUpdateCMSDL
-  ${NSD_CreateRadioButton} 10u 64u 95% 12u "$(STR_MODE_MSVC)"
+  ${NSD_CreateRadioButton} 10u 52u 95% 12u "$(STR_MODE_MSVC)"
   Pop $RadioMSVC
+  ; Network reset for "unable to login to server" errors. Calls
+  ; reset_network.ps1, which needs Administrator rights (UAC prompt).
+  ${NSD_CreateRadioButton} 10u 68u 95% 12u "$(STR_MODE_FIX_LOGIN)"
+  Pop $RadioFixLogin
 
   ; Console-mode opt-in checkbox (always available). When checked, the created
   ; shortcut and the post-install launch pass --no-gui so the patcher runs in
   ; the console instead of the graphical window.
-  ${NSD_CreateCheckbox} 10u 82u 95% 12u "$(STR_USE_CONSOLE_TYPE)"
+  ${NSD_CreateCheckbox} 10u 84u 95% 12u "$(STR_USE_CONSOLE_TYPE)"
   Pop $CheckConsole
   ; Restore previous state if the user went back.
   StrCmp $NoGuiFlag " --no-gui" 0 +2
@@ -248,14 +261,14 @@ Function ModeSelectPage
 
   ; System Proxy Mode checkbox. When checked, --proxy is added to the
   ; command line so cmsdl uses the configured system proxy.
-  ${NSD_CreateCheckbox} 10u 114u 95% 12u "$(STR_SYSTEM_PROXY_MODE)"
+  ${NSD_CreateCheckbox} 10u 112u 95% 12u "$(STR_SYSTEM_PROXY_MODE)"
   Pop $CheckSystemProxy
   StrCmp $ProxyFlag " --proxy" 0 +2
     ${NSD_Check} $CheckSystemProxy
 
   ; Portable Mode checkbox. When checked, no uninstaller or registry entries
   ; are created — the game directory can be moved or deleted freely.
-  ${NSD_CreateCheckbox} 10u 130u 95% 12u "$(STR_PORTABLE_MODE)"
+  ${NSD_CreateCheckbox} 10u 126u 95% 12u "$(STR_PORTABLE_MODE)"
   Pop $CheckPortable
   StrCmp $PortableFlag "1" 0 +2
     ${NSD_Check} $CheckPortable
@@ -264,6 +277,7 @@ Function ModeSelectPage
   StrCmp $InstallMode "2" selUpdate
   StrCmp $InstallMode "3" selUpdateCMSDL
   StrCmp $InstallMode "4" selMSVC
+  StrCmp $InstallMode "5" selFixLogin
     ${NSD_Check} $RadioInstall
     Goto modeShow
   selUpdate:
@@ -274,6 +288,9 @@ Function ModeSelectPage
     Goto modeShow
   selMSVC:
     ${NSD_Check} $RadioMSVC
+    Goto modeShow
+  selFixLogin:
+    ${NSD_Check} $RadioFixLogin
 
   modeShow:
   nsDialogs::Show
@@ -287,6 +304,8 @@ Function ModeSelectPageLeave
   StrCmp $0 "1" setUpdateCMSDL
   ${NSD_GetState} $RadioMSVC $0
   StrCmp $0 "1" setMSVC
+  ${NSD_GetState} $RadioFixLogin $0
+  StrCmp $0 "1" setFixLogin
     StrCpy $InstallMode "1"
     Goto leaveDone
   setUpdate:
@@ -297,6 +316,9 @@ Function ModeSelectPageLeave
     Goto leaveDone
   setMSVC:
     StrCpy $InstallMode "4"
+    Goto leaveDone
+  setFixLogin:
+    StrCpy $InstallMode "5"
   leaveDone:
     ; Console-mode checkbox: set the --no-gui flag when checked. In GUI mode
     ; also request auto-close after patching; omit it when --no-gui is set.
@@ -338,7 +360,10 @@ FunctionEnd
 ; MSVC mode (4) installs to a temp folder. Update CMSDL (3) must still let the
 ; user pick the directory so the updated cmsdl.exe lands in the game folder.
 Function DirectoryPagePre
+  ; MSVC repair (4) and the network-reset fix (5) need no install path.
   StrCmp $InstallMode "4" 0 +2
+    Abort
+  StrCmp $InstallMode "5" 0 +2
     Abort
 FunctionEnd
 
@@ -435,6 +460,7 @@ Section "Install"
   StrCmp $InstallMode "2" modeUpdate
   StrCmp $InstallMode "3" modeUpdateCMSDL
   StrCmp $InstallMode "4" modeMSVC
+  StrCmp $InstallMode "5" modeFixLogin
   Goto modeInstall
 
   ; ----------------------------------------------------------------------
@@ -533,6 +559,29 @@ Section "Install"
       Abort
 
   ; ----------------------------------------------------------------------
+  ; FIX LOGIN MODE (network reset)
+  ; ----------------------------------------------------------------------
+  modeFixLogin:
+    ; Warn that the connection drops briefly. Default answer is No.
+    MessageBox MB_YESNO|MB_ICONEXCLAMATION "$(STR_FIX_LOGIN_WARNING)" /SD IDNO IDYES fixLoginGo
+    Goto sectionDone
+
+  fixLoginGo:
+    SetOutPath "$TEMP"
+    File "..\nsis\reset_network.ps1"
+    ; Elevated through UAC. If the user denies the prompt, ExecWait returns
+    ; a non-zero code and we report the failure below.
+    ${DisableX64FSRedirection}
+    ExecWait 'powershell.exe -ExecutionPolicy Bypass -Command "Start-Process powershell -Verb RunAs -Wait -ArgumentList @(\"-NoProfile\",\"-ExecutionPolicy\",\"Bypass\",\"-File\",\"$TEMP\reset_network.ps1\")' $0
+    ${EnableX64FSRedirection}
+    StrCmp $0 "0" fixLoginOk
+      MessageBox MB_ICONSTOP "$(STR_FIX_LOGIN_FAILED)"
+      Goto sectionDone
+    fixLoginOk:
+      MessageBox MB_ICONINFORMATION "$(STR_FIX_LOGIN_OK)"
+    Goto sectionDone
+
+  ; ----------------------------------------------------------------------
   ; SHARED: shortcuts
   ; ----------------------------------------------------------------------
   makeShortcuts:
@@ -563,6 +612,7 @@ Function .onInstSuccess
   StrCmp $InstallMode "2" done
   StrCmp $InstallMode "3" done
   StrCmp $InstallMode "4" done
+  StrCmp $InstallMode "5" done
   MessageBox MB_YESNO|MB_ICONQUESTION "$(STR_LAUNCH_PROMPT)" /SD IDYES IDNO done
   ExecShell "open" "$INSTDIR\MapleStory.exe"
   done:
