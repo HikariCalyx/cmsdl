@@ -13,6 +13,7 @@ Unicode true
 !include "WinVer.nsh"
 !include "LogicLib.nsh"
 !include "nsDialogs.nsh"
+!include "FileFunc.nsh"
 
 ; Version
 !define VERSION "6.282.2.2"
@@ -25,6 +26,11 @@ Unicode true
 
 ; Registry key (no spaces)
 !define REG_KEY "MapleStoryTW"
+
+; Official (Gamania) launcher registry key. Its REG_SZ "Path" value is the
+; full path to the game executable (e.g. N:\MapleStoryTW\MapleStory.exe);
+; .onInit uses the containing folder as the default install directory.
+!define OFFICIAL_REG_KEY "Software\Gamania\MapleStory"
 
 !define PRODUCT_PUBLISHER "Hikari Calyx Tech"
 !define PRODUCT_WEB_SITE "https://github.com/HikariCalyx/cmsdl"
@@ -175,15 +181,25 @@ BrandingText "Powered by CMSDL"
 ; ============================================================================
 
 Function .onInit
-  ; Resolve the install directory to the actual system drive (e.g. D:) when
-  ; no previous installation path is stored in the registry. This cannot be
-  ; done at compile time because $%SystemDrive% is a Windows-only env var.
-  ReadRegStr $R0 HKCU "Software\${REG_KEY}" "InstallDir"
+  ; Resolve the default installation directory, in order of preference:
+  ;   1. the folder holding the executable recorded by an existing official
+  ;      (Gamania) install — its "Path" value is a full exe path such as
+  ;      N:\MapleStoryTW\MapleStory.exe, so the parent folder is used,
+  ;   2. our own previous installation path,
+  ;   3. the actual system drive (e.g. D:), which cannot be resolved at
+  ;      compile time because $%SystemDrive% is a Windows-only env var.
+  ReadRegStr $R0 HKCU "${OFFICIAL_REG_KEY}" "Path"
+  ${If} $R0 != ""
+    ${GetParent} "$R0" $R0
+  ${EndIf}
   ${If} $R0 == ""
-    ReadEnvStr $R0 SystemDrive
-    ${If} $R0 != ""
-      StrCpy $INSTDIR $R0
+    ReadRegStr $R0 HKCU "Software\${REG_KEY}" "InstallDir"
+    ${If} $R0 == ""
+      ReadEnvStr $R0 SystemDrive
     ${EndIf}
+  ${EndIf}
+  ${If} $R0 != ""
+    StrCpy $INSTDIR $R0
   ${EndIf}
 
   ; Default operation mode is Install
