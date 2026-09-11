@@ -110,6 +110,7 @@ LangString STR_FIX_LOGIN_FAILED ${LANG_ENGLISH} "Fix failed. Please check if you
 LangString STR_LINK_TROUBLESHOOTING ${LANG_ENGLISH} "Troubleshooting (Traditional Chinese only)"
 LangString STR_USE_CONSOLE_TYPE ${LANG_ENGLISH} "Use the console-type CMSDL interface"
 LangString STR_UPDATE_ABORT ${LANG_ENGLISH} "No existing game installation was found in the selected directory. Update cannot continue."
+LangString STR_NO_WRITE_PERMISSION ${LANG_ENGLISH} "The target folder cannot be written to.$\nPlease run this installer with Administrator privileges."
 LangString STR_METERED_WARNING ${LANG_ENGLISH} "Your network connection is metered.$\nDownloading the game may incur additional costs.$\n$\nDo you want to continue?"
 LangString STR_GAMING_VPN_MODE ${LANG_ENGLISH} "Gaming VPN Mode (e.g. WTFast, ExitLag, Mudfish, etc.)"
 LangString STR_SYSTEM_PROXY_MODE ${LANG_ENGLISH} "Use System Proxy"
@@ -144,6 +145,7 @@ LangString STR_FIX_LOGIN_FAILED ${LANG_TRADCHINESE} "修復失敗。請檢查您
 LangString STR_LINK_TROUBLESHOOTING ${LANG_TRADCHINESE} "使用遇到問題了？點擊查看幫助"
 LangString STR_USE_CONSOLE_TYPE ${LANG_TRADCHINESE} "使用指令樣式的CMSDL介面"
 LangString STR_UPDATE_ABORT ${LANG_TRADCHINESE} "在所選目錄中未找到現有的遊戲安裝。無法繼續更新。"
+LangString STR_NO_WRITE_PERMISSION ${LANG_TRADCHINESE} "無法寫入目標資料夾。$\n請以系統管理員身分執行此安裝程式。"
 LangString STR_METERED_WARNING ${LANG_TRADCHINESE} "您的網路連線為按流量計費的連線。$\n下載遊戲可能會產生額外費用。$\n$\n您是否要繼續？"
 LangString STR_GAMING_VPN_MODE ${LANG_TRADCHINESE} "遊戲 VPN / 加速器模式 (例如 WTFast, ExitLag, Mudfish 等)"
 LangString STR_SYSTEM_PROXY_MODE ${LANG_TRADCHINESE} "使用系統代理"
@@ -432,6 +434,32 @@ Function CheckRiotVanguard
 
   vanguardDone:
 FunctionEnd
+
+; ============================================================================
+; Install directory write-permission check
+; ============================================================================
+
+Function CheckInstallDirWritable
+  ; The installer is not elevated (RequestExecutionLevel user), so a target
+  ; such as C:\Program Files cannot be written to without Administrator
+  ; rights. Probe $INSTDIR with a temporary file and abort with a clear
+  ; message. MSVC repair (4) and the network-reset fix (5) don't use $INSTDIR.
+  StrCmp $InstallMode "4" writableDone
+  StrCmp $InstallMode "5" writableDone
+
+  ClearErrors
+  CreateDirectory "$INSTDIR"
+  FileOpen $0 "$INSTDIR\.cmsdl_write_test" w
+  ${If} ${Errors}
+    MessageBox MB_ICONSTOP "$(STR_NO_WRITE_PERMISSION)"
+    Abort
+  ${EndIf}
+  FileClose $0
+  Delete "$INSTDIR\.cmsdl_write_test"
+
+  writableDone:
+FunctionEnd
+
 ; ============================================================================
 ; Installer Section
 ; ============================================================================
@@ -453,6 +481,8 @@ Section "Install"
   doVanguardCheck:
     Call CheckRiotVanguard
   vanguardOk:
+
+  Call CheckInstallDirWritable
 
   SetOutPath "$INSTDIR"
 

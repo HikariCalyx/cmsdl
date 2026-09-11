@@ -147,6 +147,7 @@ LangString STR_FIX_SDOLOGIN_UAC_FIREWALL ${LANG_ENGLISH} "The SDOLogin fix requi
 LangString STR_FIX_SDOLOGIN_UAC_RETRY ${LANG_ENGLISH} "Firewall rules could not be added (administrator privileges required). Would you like to retry?"
 LangString STR_LINK_TROUBLESHOOTING ${LANG_ENGLISH} "Troubleshooting (Simplified Chinese only)"
 LangString STR_UPDATE_ABORT ${LANG_ENGLISH} "No existing game installation was found in the selected directory. Update cannot continue."
+LangString STR_NO_WRITE_PERMISSION ${LANG_ENGLISH} "The target folder cannot be written to.$\nPlease run this installer with Administrator privileges."
 LangString STR_DO_NOT_INCLUDE_LR ${LANG_ENGLISH} "Do not include Locale Remulator"
 LangString STR_USE_CONSOLE_TYPE ${LANG_ENGLISH} "Use the console-type CMSDL interface"
 LangString STR_REMOVE_OFFICIAL_LAUNCHER ${LANG_ENGLISH} "Would you like to remove the official game launcher? Removing it does not affect game launching."
@@ -201,6 +202,7 @@ LangString STR_FIX_SDOLOGIN_UAC_FIREWALL ${LANG_SIMPCHINESE} "登录器修复需
 LangString STR_FIX_SDOLOGIN_UAC_RETRY ${LANG_SIMPCHINESE} "无法添加防火墙规则（需要管理员权限）。您要重试吗？"
 LangString STR_LINK_TROUBLESHOOTING ${LANG_SIMPCHINESE} "使用遇到问题了？点击查看帮助"
 LangString STR_UPDATE_ABORT ${LANG_SIMPCHINESE} "在所选目录中未找到现有的游戏安装。无法继续更新。"
+LangString STR_NO_WRITE_PERMISSION ${LANG_SIMPCHINESE} "无法写入目标文件夹。$\n请以管理员身份运行此安装程序。"
 LangString STR_DO_NOT_INCLUDE_LR ${LANG_SIMPCHINESE} "你不应该看到这个选项"
 LangString STR_USE_CONSOLE_TYPE ${LANG_SIMPCHINESE} "使用命令行样式的CMSDL界面"
 LangString STR_REMOVE_OFFICIAL_LAUNCHER ${LANG_SIMPCHINESE} "您想要移除官方游戏启动器吗？移除该启动器不会影响启动游戏。"
@@ -754,6 +756,30 @@ Function CheckQihoo360
 FunctionEnd
 
 ; ============================================================================
+; Install directory write-permission check
+; ============================================================================
+
+Function CheckInstallDirWritable
+  ; The installer is not elevated (RequestExecutionLevel user), so a target
+  ; such as C:\Program Files cannot be written to without Administrator
+  ; rights. Probe $INSTDIR with a temporary file and abort with a clear
+  ; message. MSVC repair (4) doesn't use $INSTDIR.
+  StrCmp $InstallMode "4" writableDone
+
+  ClearErrors
+  CreateDirectory "$INSTDIR"
+  FileOpen $0 "$INSTDIR\.cmsdl_write_test" w
+  ${If} ${Errors}
+    MessageBox MB_ICONSTOP "$(STR_NO_WRITE_PERMISSION)"
+    Abort
+  ${EndIf}
+  FileClose $0
+  Delete "$INSTDIR\.cmsdl_write_test"
+
+  writableDone:
+FunctionEnd
+
+; ============================================================================
 ; Installer Section
 ; ============================================================================
 
@@ -767,6 +793,8 @@ Section "Install"
   doQihooCheck:
     Call CheckQihoo360
   qihooOk:
+
+  Call CheckInstallDirWritable
 
   SetOutPath "$INSTDIR"
 
