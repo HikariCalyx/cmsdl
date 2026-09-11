@@ -68,6 +68,7 @@ Var LrHookFlag
 Var NoGuiFlag
 Var CloseFlag
 Var BuildFlag
+Var BuildFlagCW
 ; Game variant selection
 Var CheckCMS
 Var CheckCMSCW
@@ -319,12 +320,14 @@ FunctionEnd
 ; Helper: automatic build flag for a full install
 ; ============================================================================
 
-; If the current date is on or before October 20, 2026, add --build 1120 to
-; the download command (required for a specific game build rollout).
+; If the current date is on or before October 20, 2026, add --build 1120 (CMS)
+; and --build 1126 (CMS CW) to the download commands (required for specific
+; game build rollouts).
 Function SetDefaultBuildFlag
   ${GetTime} "" "L" $0 $1 $2 $3 $4 $5 $6
   ; $2 = year (4 digits), $1 = month, $0 = day of month
   StrCpy $BuildFlag ""
+  StrCpy $BuildFlagCW ""
   IntCmp $2 2026 yearEq beforeCutoff afterCutoff
   yearEq:
     IntCmp $1 10 monthEq beforeCutoff afterCutoff
@@ -332,6 +335,7 @@ Function SetDefaultBuildFlag
     IntCmp $0 20 beforeCutoff beforeCutoff afterCutoff
   beforeCutoff:
     StrCpy $BuildFlag "--build 1120"
+    StrCpy $BuildFlagCW "--build 1126"
   afterCutoff:
 FunctionEnd
 
@@ -975,7 +979,7 @@ Section "Install"
     ; Download CMS_CW if selected.
     StrCmp $InstallCMSCW "1" 0 skipCMSCWDownload
       DetailPrint "$(STR_DOWNLOADING_CMS_CW)"
-      ExecWait '"$INSTDIR\cmsdl.exe" cms_cw --download "$INSTDIR" $NoGuiFlag$CloseFlag' $0
+      ExecWait '"$INSTDIR\cmsdl.exe" cms_cw --download "$INSTDIR" $BuildFlagCW$NoGuiFlag$CloseFlag' $0
       StrCmp $0 "0" skipCMSCWDownload
         MessageBox MB_ICONSTOP "$(STR_DOWNLOAD_CMS_CW_FAILED)"
         Abort
