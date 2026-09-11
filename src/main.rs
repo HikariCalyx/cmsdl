@@ -23,6 +23,7 @@ mod single_instance;
 mod taskprogress;
 mod tms;
 mod tms_patch;
+mod upgrade_path;
 
 use anyhow::Result;
 use clap::Parser;
@@ -182,7 +183,7 @@ fn main() -> Result<()> {
     // The guard keeps the lock file open (and locked) for the whole process and
     // removes the file again once the operation finishes cleanly. `is_metered`
     // / `is_hdd` return before this point and are therefore never affected.
-    let instance_lock = match single_instance::acquire() {
+    let mut instance_lock = match single_instance::acquire() {
         Ok(Some(guard)) => Some(guard),
         Ok(None) => {
             eprintln!(
@@ -229,6 +230,22 @@ fn main() -> Result<()> {
         )?,
         Action::GetBitTorrent(output) => {
             downloader::get_bit_torrent(cli.region, output.as_deref(), cli.allow_insecure, proxy)?
+        }
+        Action::UpgradePathCheck { version, target } => {
+            let code = crate::upgrade_path::run(
+                cli.region,
+                &version,
+                &target,
+                cli.allow_insecure,
+                proxy,
+                verbose,
+            )?;
+            // Release the single-instance lock before terminating with the
+            // check's own status code.
+            if let Some(guard) = instance_lock.take() {
+                guard.cleanup();
+            }
+            std::process::exit(code);
         }
         Action::Patch(PatchAction::List) => {
             downloader::patch_list(cli.region, cli.allow_insecure, proxy, cli.json)?

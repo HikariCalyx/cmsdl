@@ -392,6 +392,24 @@ pub fn get_patch_total_size(
     base_url: &str,
     file_list_url: &str,
 ) -> Result<u64> {
+    Ok(get_patch_file_sizes(agent, challenge_code, base_url, file_list_url)?
+        .iter()
+        .map(|(_, size)| *size)
+        .sum())
+}
+
+/// Fetch a patch's `FileList.dat` (signed) and return each zip part as a
+/// `(url, size_in_bytes)` pair.
+///
+/// `base_url` and `file_list_url` come from [`PatchData`] and [`PatchPackage`]
+/// respectively.  The download host is stripped from `base_url` and the
+/// resulting path is signed with `challenge_code` before fetching.
+pub fn get_patch_file_sizes(
+    agent: &ureq::Agent,
+    challenge_code: &str,
+    base_url: &str,
+    file_list_url: &str,
+) -> Result<Vec<(String, u64)>> {
     let base_path = strip_download_host(base_url);
     let path = format!("{base_path}{file_list_url}");
     let t = get_current_utc8_time();
@@ -400,12 +418,11 @@ pub fn get_patch_total_size(
         http_get_text(agent, &url).context("failed to fetch patch FileList.dat for sizing")?;
     let fl: crate::cms_patch::PatchFileList =
         serde_json::from_str(&json).context("failed to parse patch FileList.dat for sizing")?;
-    let total: u64 = fl
+    Ok(fl
         .file_list
         .iter()
-        .filter_map(|z| z.size.parse::<u64>().ok())
-        .sum();
-    Ok(total)
+        .map(|z| (z.url.clone(), z.size.parse::<u64>().unwrap_or(0)))
+        .collect())
 }
 
 /// Strip the leading download host from a full URL, returning the path portion
@@ -836,9 +853,19 @@ fn find_build_for_version(
     challenge: &str,
     target_version: &str,
 ) -> Result<Option<u32>> {
-    const FIND_BUILD_SEARCH_WINDOW: u32 = 320;
-
     let latest = discover_latest_client_number_with(agent, challenge)?;
+    find_build_for_version_from(agent, challenge, target_version, latest)
+}
+
+/// Like [`find_build_for_version`] but reuses an already-discovered `latest`
+/// build number instead of running the exhaustive search again.
+fn find_build_for_version_from(
+    agent: &ureq::Agent,
+    challenge: &str,
+    target_version: &str,
+    latest: u32,
+) -> Result<Option<u32>> {
+    const FIND_BUILD_SEARCH_WINDOW: u32 = 320;
 
     // Check the latest first — it's the most likely match.
     if let Some((contents, _)) = fetch_client_file_list_for(agent, challenge, latest)? {
@@ -907,6 +934,56 @@ fn find_build_for_version(
         return Err(e);
     }
     Ok(found.into_inner().unwrap())
+}
+
+/// Size summary of a published full client, used by the upgrade-path check.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ClientSize {
+    /// Build number the size was taken from.
+    pub(crate) build: u32,
+    /// Client version recorded in the build's file-list header.
+    pub(crate) version: String,
+    /// Sum of all file sizes in the build, in bytes.
+    pub(crate) total_size: u64,
+    /// `true` when `version` matched the requested target version exactly;
+    /// `false` when the latest available full client was used as a fallback.
+    pub(crate) exact: bool,
+}
+
+/// Locate the full client whose file-list header version equals `version` and
+/// return its size.
+///
+/// When no exact match is published yet (e.g. patches for a version are
+/// released before that version's full client), the most recent available full
+/// client is returned with `exact == false` instead.
+pub(crate) fn client_size_for_version(
+    agent: &ureq::Agent,
+    challenge: &str,
+    version: &str,
+) -> Result<Option<ClientSize>> {
+    let latest = discover_latest_client_number_with(agent, challenge)?;
+
+    if let Some(number) = find_build_for_version_from(agent, challenge, version, latest)? {
+        if let Some((contents, _)) = fetch_client_file_list_for(agent, challenge, number)? {
+            return Ok(Some(ClientSize {
+                build: number,
+                version: extract_version_from_header(&contents).unwrap_or_default(),
+                total_size: parse_total_size_from_file_list(&contents),
+                exact: true,
+            }));
+        }
+    }
+
+    // Fallback: the most recent available full client.
+    match fetch_client_file_list_for(agent, challenge, latest)? {
+        Some((contents, _)) => Ok(Some(ClientSize {
+            build: latest,
+            version: extract_version_from_header(&contents).unwrap_or_default(),
+            total_size: parse_total_size_from_file_list(&contents),
+            exact: false,
+        })),
+        None => Ok(None),
+    }
 }
 
 /// Read the highest build number recorded in [`LAST_CLIENT_VERSION_FILE`].

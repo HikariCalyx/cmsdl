@@ -8,7 +8,7 @@ use clap::{ArgGroup, Parser, ValueEnum};
 #[command(group(
     ArgGroup::new("action")
         .required(true)
-        .args(["check", "download", "get_bit_torrent", "patch", "patch_file", "create_shortcut", "create_patch", "maintenance", "clear_nxoverlay"]),
+        .args(["check", "download", "get_bit_torrent", "patch", "patch_file", "create_shortcut", "create_patch", "maintenance", "clear_nxoverlay", "upgrade_path_check"]),
 ))]
 pub struct Cli {
     /// The region to operate on (case-insensitive).
@@ -46,6 +46,18 @@ pub struct Cli {
     /// Client directory to download or patch (used with `--download`, or `--patch <version>`).
     #[arg(value_name = "CLIENT_DIR")]
     pub patch_target: Option<PathBuf>,
+
+    /// Check whether the incremental patches needed to reach a target version
+    /// are smaller than downloading the target version's full client.
+    ///
+    /// Only supported for `cms` and `cms_cw`. Pass a target version
+    /// (e.g. `0.0.0.22`) or `latest`, followed by the client directory.
+    ///
+    /// Exit codes: 0 = patch is same size or smaller, 1 = no applicable patch,
+    /// 2 = patches are larger than the full client, 3 = current client version
+    /// cannot be read, 100 = patch server cannot be accessed.
+    #[arg(long, value_name = "VERSION|latest")]
+    pub upgrade_path_check: Option<String>,
 
     /// Launch game after patching finishes.
     #[arg(long)]
@@ -264,6 +276,19 @@ impl std::fmt::Display for Region {
     }
 }
 
+impl Region {
+    /// Lowercase region token as accepted on the command line
+    /// (e.g. `cms`, `cms_cw`, `tms`, `manual`).
+    pub fn code(self) -> &'static str {
+        match self {
+            Region::Cms => "cms",
+            Region::CmsCw => "cms_cw",
+            Region::Tms => "tms",
+            Region::Manual => "manual",
+        }
+    }
+}
+
 /// The patch sub-action selected by `--patch`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PatchAction {
@@ -298,6 +323,9 @@ pub enum Action {
     ClearNxOverlay,
     /// Apply a local `.patch` file directly (TMS format).
     PatchFile { patch_path: PathBuf, target_dir: PathBuf },
+    /// Compare the total size of the incremental patch chain to a target
+    /// version against the full client for that version (CMS / CMS_CW only).
+    UpgradePathCheck { version: String, target: PathBuf },
 }
 
 impl Cli {
@@ -339,6 +367,22 @@ impl Cli {
                 );
             }
             Action::CreateShortcut(sanitize_path(path))
+        } else if let Some(version) = &self.upgrade_path_check {
+            if self.region != Region::Cms && self.region != Region::CmsCw {
+                anyhow::bail!(
+                    "--upgrade-path-check is only supported for region 'cms' (or 'cms_cw')"
+                );
+            }
+            let target = self.patch_target.as_deref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "--upgrade-path-check requires a client directory, e.g. \
+                     `cmsdl cms --upgrade-path-check {version} /path/to/client`"
+                )
+            })?;
+            Action::UpgradePathCheck {
+                version: version.clone(),
+                target: sanitize_path(target),
+            }
         } else if let Some(patch) = &self.patch {
             if patch.eq_ignore_ascii_case("list") {
                 Action::Patch(PatchAction::List)

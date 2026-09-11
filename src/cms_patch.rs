@@ -688,7 +688,7 @@ fn read_installed_version(target_dir: &Path) -> Option<String> {
 }
 
 /// Parse the installed version from `<target>/mxd/LocalVersion3.xml`, if any.
-fn read_version_from_local_xml(target_dir: &Path) -> Option<String> {
+pub(crate) fn read_version_from_local_xml(target_dir: &Path) -> Option<String> {
     let dd = crate::cms::data_dir();
     let path = target_dir.join(dd).join("LocalVersion3.xml");
     let contents = std::fs::read_to_string(path).ok()?;
@@ -926,7 +926,7 @@ fn parse_version_view_number(s: &str) -> Option<(i16, usize)> {
 /// Check whether `version_view` corresponds to the given WZ version.
 ///
 /// Accepts `V225.1` and `V225`; rejects internal/test builds like `V225_2G`.
-fn version_view_matches(version_view: &str, wz_version: i16) -> bool {
+pub(crate) fn version_view_matches(version_view: &str, wz_version: i16) -> bool {
     if let Some((num, end)) = parse_version_view_number(version_view) {
         if num != wz_version {
             return false;
@@ -946,7 +946,7 @@ fn version_view_matches(version_view: &str, wz_version: i16) -> bool {
 ///
 /// Each component is compared numerically; missing or non-numeric components
 /// are treated as `0`.  Two identical versions are not "newer".
-fn version_newer_than(a: &str, b: &str) -> bool {
+pub(crate) fn version_newer_than(a: &str, b: &str) -> bool {
     let parse = |v: &str| -> Vec<u32> {
         v.split('.').map(|s| s.parse::<u32>().unwrap_or(0)).collect()
     };
