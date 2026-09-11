@@ -1589,14 +1589,46 @@ fn append_completed_zip(path: &Path, zip_name: &str) -> Result<()> {
 }
 
 /// GET a signed `path` and return its body as text.
+///
+/// Retries up to [`DOWNLOAD_SIGNED_TEXT_RETRIES`] times on transient failures
+/// (connection errors, timeouts, read errors).  The URL is re-signed on every
+/// attempt because it embeds a timestamp.  The last error is returned when all
+/// attempts fail.
 fn download_signed_text(agent: &ureq::Agent, challenge: &str, path: &str) -> Result<String> {
-    let t = cms::get_current_utc8_time();
-    let url = cms::build_signed_url(challenge, t, path);
-    let resp = agent.get(&url).call().context("HTTP request failed")?;
-    let mut reader = resp.into_reader();
-    let mut buf = Vec::new();
-    reader.read_to_end(&mut buf).context("failed to read response body")?;
-    Ok(String::from_utf8_lossy(&buf).into_owned())
+    const DOWNLOAD_SIGNED_TEXT_RETRIES: usize = 5;
+
+    let mut last_err = anyhow!("no attempts made");
+
+    for attempt in 0..=DOWNLOAD_SIGNED_TEXT_RETRIES {
+        let t = cms::get_current_utc8_time();
+        let url = cms::build_signed_url(challenge, t, path);
+
+        let resp = match agent.get(&url).call().context("HTTP request failed") {
+            Ok(r) => r,
+            Err(e) => {
+                last_err = e;
+                if attempt < DOWNLOAD_SIGNED_TEXT_RETRIES {
+                    std::thread::sleep(Duration::from_millis(500));
+                }
+                continue;
+            }
+        };
+
+        let mut reader = resp.into_reader();
+        let mut buf = Vec::new();
+        match reader.read_to_end(&mut buf).context("failed to read response body") {
+            Ok(_) => return Ok(String::from_utf8_lossy(&buf).into_owned()),
+            Err(e) => {
+                last_err = e;
+                if attempt < DOWNLOAD_SIGNED_TEXT_RETRIES {
+                    std::thread::sleep(Duration::from_millis(500));
+                }
+                continue;
+            }
+        }
+    }
+
+    Err(last_err)
 }
 
 /// Download a signed `path` to `dest` using up to [`SEGMENTS_PER_FILE`] parallel
