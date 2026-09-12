@@ -25,7 +25,7 @@ Unicode true
 !endif
 
 ; Version
-!define VERSION "4.228.1.2"
+!define VERSION "4.228.1.3"
 
 ; Product Info (English)
 !define PRODUCT_NAME "MapleStory CN"
@@ -93,6 +93,10 @@ Var BuildChoiceFlag
 Var NoUninstallerFlag
 Var NoShortcutFlag
 Var BuildNumber
+; Result of the upgrade-path check: "patch", "reinstall" or "abort".
+Var UpgradeAction
+; Heading prefix (client name + newline) for client-specific dialogs.
+Var UpgradeHeading
 
 ; ============================================================================
 ; MUI2 Settings
@@ -159,6 +163,8 @@ LangString STR_VARIANT_TITLE ${LANG_ENGLISH} "Choose Game Variant"
 LangString STR_VARIANT_SUBTITLE ${LANG_ENGLISH} "Select which game variants to install."
 LangString STR_VARIANT_CMS ${LANG_ENGLISH} "MapleStory CN (CMS)"
 LangString STR_VARIANT_CMS_CW ${LANG_ENGLISH} "MapleStory Classic World CN (cms_cw)"
+LangString STR_CLIENT_CMS ${LANG_ENGLISH} "MapleStory CN"
+LangString STR_CLIENT_CMS_CW ${LANG_ENGLISH} "MapleStory Classic World CN"
 LangString STR_VARIANT_ERROR ${LANG_ENGLISH} "You must select at least one game variant to install."
 LangString STR_DOWNLOADING_CMS_CW ${LANG_ENGLISH} "Downloading MapleStory Classic World CN game files..."
 LangString STR_DOWNLOAD_CMS_CW_FAILED ${LANG_ENGLISH} "MapleStory Classic World CN download failed with error code $0."
@@ -174,6 +180,11 @@ LangString STR_VARIANT_LATEST ${LANG_ENGLISH} "Latest version"
 LangString STR_VARIANT_NO_UNINSTALLER ${LANG_ENGLISH} "Do not create uninstaller"
 LangString STR_VARIANT_NO_SHORTCUT ${LANG_ENGLISH} "Do not create shortcut"
 LangString STR_VARIANT_BUILD_INVALID ${LANG_ENGLISH} "Please enter a valid build number (digits only)."
+LangString STR_CHECKING_UPGRADE ${LANG_ENGLISH} "Checking if upgrade path is applicable..."
+LangString STR_UPGRADE_NO_PATCH ${LANG_ENGLISH} "No patches cannot be found. Would you like to reinstall the latest version of game? "
+LangString STR_UPGRADE_TOO_LARGE ${LANG_ENGLISH} "Patch files required to latest version are larger than latest client, we recommend a reinstallation. Would you like to reinstall? "
+LangString STR_UPGRADE_NO_CLIENT ${LANG_ENGLISH} "No valid client data can be found. Would you like to reinstall the latest version of game? "
+LangString STR_UPGRADE_RETRY ${LANG_ENGLISH} "Unable to get latest patch info. Would you like to retry?"
 
 ; ============================================================================
 ; Language Strings - Simplified Chinese
@@ -214,6 +225,8 @@ LangString STR_VARIANT_TITLE ${LANG_SIMPCHINESE} "选择游戏版本"
 LangString STR_VARIANT_SUBTITLE ${LANG_SIMPCHINESE} "选择要安装的游戏版本。"
 LangString STR_VARIANT_CMS ${LANG_SIMPCHINESE} "冒险岛正式服"
 LangString STR_VARIANT_CMS_CW ${LANG_SIMPCHINESE} "冒险岛怀旧服"
+LangString STR_CLIENT_CMS ${LANG_SIMPCHINESE} "冒险岛正式服"
+LangString STR_CLIENT_CMS_CW ${LANG_SIMPCHINESE} "冒险岛怀旧服"
 LangString STR_VARIANT_ERROR ${LANG_SIMPCHINESE} "您必须至少选择一个游戏版本。"
 LangString STR_DOWNLOADING_CMS_CW ${LANG_SIMPCHINESE} "正在下载冒险岛怀旧服游戏文件..."
 LangString STR_DOWNLOAD_CMS_CW_FAILED ${LANG_SIMPCHINESE} "冒险岛怀旧服下载失败，错误代码：$0。"
@@ -229,6 +242,11 @@ LangString STR_VARIANT_LATEST ${LANG_SIMPCHINESE} "最新版本"
 LangString STR_VARIANT_NO_UNINSTALLER ${LANG_SIMPCHINESE} "不创建卸载程序"
 LangString STR_VARIANT_NO_SHORTCUT ${LANG_SIMPCHINESE} "不创建快捷方式"
 LangString STR_VARIANT_BUILD_INVALID ${LANG_SIMPCHINESE} "请输入有效的构建号（仅限数字）。"
+LangString STR_CHECKING_UPGRADE ${LANG_SIMPCHINESE} "正在检查升级路径是否可用..."
+LangString STR_UPGRADE_NO_PATCH ${LANG_SIMPCHINESE} "未找到可用的补丁。是否要重新安装最新版本的游戏？"
+LangString STR_UPGRADE_TOO_LARGE ${LANG_SIMPCHINESE} "升级到最新版本所需的补丁文件比最新客户端更大，我们建议重新安装。是否要重新安装？"
+LangString STR_UPGRADE_NO_CLIENT ${LANG_SIMPCHINESE} "未找到有效的客户端数据。是否要重新安装最新版本的游戏？"
+LangString STR_UPGRADE_RETRY ${LANG_SIMPCHINESE} "无法获取最新的补丁信息。是否要重试？"
 
 ; ============================================================================
 ; Installer Attributes
@@ -797,6 +815,104 @@ Function CheckInstallDirWritable
 FunctionEnd
 
 ; ============================================================================
+; Upgrade path check and reinstallation (GUI update mode)
+; ============================================================================
+
+; Run `--upgrade-path-check latest` for the current client and decide how to
+; proceed. $R0 selects the variant ("cms" or "cms_cw"); the outcome is stored
+; in $UpgradeAction:
+;   "patch"     - apply patches normally (also the fallback for errorlevel 0)
+;   "reinstall" - the caller should reinstall the full client
+;   "abort"     - stop the installation
+; Errorlevel 100 keeps asking the user to retry until it succeeds or is cancelled.
+; Build the "$UpgradeHeading" prefix (client name + newline) from $R0
+; ("cms" or "cms_cw") so client-specific dialogs identify the client.
+Function SetUpgradeHeading
+  StrCmp $R0 "cms_cw" suhCW
+  StrCpy $UpgradeHeading "$(STR_CLIENT_CMS)$\r$\n"
+  Return
+  suhCW:
+  StrCpy $UpgradeHeading "$(STR_CLIENT_CMS_CW)$\r$\n"
+FunctionEnd
+
+Function CheckUpgradePath
+  Call SetUpgradeHeading
+  cupRetry:
+    DetailPrint "$(STR_CHECKING_UPGRADE)"
+    ExecWait '"$INSTDIR\cmsdl.exe" $R0 --upgrade-path-check latest "$INSTDIR"' $0
+    StrCmp $0 "0" cupPatch 0
+    StrCmp $0 "1" cupNoPatch 0
+    StrCmp $0 "2" cupTooLarge 0
+    StrCmp $0 "3" cupNoClient 0
+    StrCmp $0 "100" cupNeedRetry 0
+    ; Unknown exit code: keep the previous behaviour (just patch).
+    Goto cupPatch
+
+  cupPatch:
+    StrCpy $UpgradeAction "patch"
+    Return
+
+  cupReinstall:
+    StrCpy $UpgradeAction "reinstall"
+    Return
+
+  cupAbort:
+    StrCpy $UpgradeAction "abort"
+    Return
+
+  cupNoPatch:
+    MessageBox MB_YESNO|MB_ICONEXCLAMATION "$UpgradeHeading$(STR_UPGRADE_NO_PATCH)" IDYES cupReinstall IDNO cupAbort
+    Goto cupAbort
+
+  cupNoClient:
+    MessageBox MB_YESNO|MB_ICONEXCLAMATION "$UpgradeHeading$(STR_UPGRADE_NO_CLIENT)" IDYES cupReinstall IDNO cupAbort
+    Goto cupAbort
+
+  cupTooLarge:
+    MessageBox MB_YESNOCANCEL|MB_ICONQUESTION "$UpgradeHeading$(STR_UPGRADE_TOO_LARGE)" IDYES cupReinstall IDNO cupPatch
+    Goto cupAbort
+
+  cupNeedRetry:
+    MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "$UpgradeHeading$(STR_UPGRADE_RETRY)" IDRETRY cupRetry
+    Goto cupAbort
+FunctionEnd
+
+; Reinstall the variant named by $R0: remove its data directory, download the
+; full client, then patch to the latest version. The specified build version
+; ($BuildFlag / $BuildFlagCW) is passed to the download when present.
+Function ReinstallVariant
+  Call SetUpgradeHeading
+  StrCmp $R0 "cms_cw" rvCW
+
+  DetailPrint "$(STR_DOWNLOADING)"
+  RMDir /r "$INSTDIR\mxd\Data"
+  ExecWait '"$INSTDIR\cmsdl.exe" cms --download "$INSTDIR" $BuildFlag$NoGuiFlag$CloseFlag' $0
+  StrCmp $0 "0" +3
+    MessageBox MB_ICONSTOP "$UpgradeHeading$(STR_DOWNLOAD_FAILED)"
+    Abort
+  DetailPrint "$(STR_PATCHING)"
+  ExecWait '"$INSTDIR\cmsdl.exe" cms --patch latest "$INSTDIR"$NoGuiFlag$CloseFlag' $0
+  StrCmp $0 "0" +3
+    MessageBox MB_ICONSTOP "$UpgradeHeading$(STR_PATCH_FAILED)"
+    Abort
+  Return
+
+  rvCW:
+  DetailPrint "$(STR_DOWNLOADING_CMS_CW)"
+  RMDir /r "$INSTDIR\mxdclassic\Maplestory_Classic_Data"
+  ExecWait '"$INSTDIR\cmsdl.exe" cms_cw --download "$INSTDIR" $BuildFlagCW$NoGuiFlag$CloseFlag' $0
+  StrCmp $0 "0" +3
+    MessageBox MB_ICONSTOP "$UpgradeHeading$(STR_DOWNLOAD_CMS_CW_FAILED)"
+    Abort
+  DetailPrint "$(STR_PATCHING)"
+  ExecWait '"$INSTDIR\cmsdl.exe" cms_cw --patch latest "$INSTDIR"$NoGuiFlag$CloseFlag' $0
+  StrCmp $0 "0" +3
+    MessageBox MB_ICONSTOP "$UpgradeHeading$(STR_DOWNLOAD_CMS_CW_FAILED)"
+    Abort
+  Return
+FunctionEnd
+
+; ============================================================================
 ; Installer Section
 ; ============================================================================
 
@@ -928,19 +1044,44 @@ Section "Install"
         MessageBox MB_YESNO|MB_ICONEXCLAMATION "$(STR_IS_HDD_WARNING)" IDYES +2
         Abort
 
-      ; Run the patch for each selected variant.
-      DetailPrint "$(STR_PATCHING)"
+      ; Run the update for each selected variant. In GUI mode the upgrade path
+      ; is checked first so an un-patchable or oversized update can offer a
+      ; full reinstallation instead.
       StrCmp $InstallCMS "1" 0 patchCMS_CW
+      StrCpy $R0 "cms"
+      Call SetUpgradeHeading
+      StrCmp $NoGuiFlag "" 0 upCMSPatch
+      Call CheckUpgradePath
+      StrCmp $UpgradeAction "abort" 0 upCMSNotAbort
+        Abort
+      upCMSNotAbort:
+      StrCmp $UpgradeAction "reinstall" 0 upCMSPatch
+        Call ReinstallVariant
+        Goto patchCMS_CW
+    upCMSPatch:
+      DetailPrint "$(STR_PATCHING)"
       ExecWait '"$INSTDIR\cmsdl.exe" cms --patch latest "$INSTDIR" --purge-wz-files$NoGuiFlag$CloseFlag' $0
       StrCmp $0 "0" patchCMS_CW
-        MessageBox MB_ICONSTOP "$(STR_PATCH_FAILED)"
+        MessageBox MB_ICONSTOP "$UpgradeHeading$(STR_PATCH_FAILED)"
         Abort
 
     patchCMS_CW:
       StrCmp $InstallCMSCW "1" 0 makeShortcuts
+      StrCpy $R0 "cms_cw"
+      Call SetUpgradeHeading
+      StrCmp $NoGuiFlag "" 0 upCWPatch
+      Call CheckUpgradePath
+      StrCmp $UpgradeAction "abort" 0 upCWNotAbort
+        Abort
+      upCWNotAbort:
+      StrCmp $UpgradeAction "reinstall" 0 upCWPatch
+        Call ReinstallVariant
+        Goto makeShortcuts
+    upCWPatch:
+      DetailPrint "$(STR_PATCHING)"
       ExecWait '"$INSTDIR\cmsdl.exe" cms_cw --patch latest "$INSTDIR"$NoGuiFlag$CloseFlag' $0
       StrCmp $0 "0" makeShortcuts
-        MessageBox MB_ICONSTOP "$(STR_DOWNLOAD_CMS_CW_FAILED)"
+        MessageBox MB_ICONSTOP "$UpgradeHeading$(STR_DOWNLOAD_CMS_CW_FAILED)"
         Abort
 
   ; ----------------------------------------------------------------------
@@ -969,19 +1110,23 @@ Section "Install"
 
     ; Download CMS if selected.
     StrCmp $InstallCMS "1" 0 skipCMSDownload
+      StrCpy $R0 "cms"
+      Call SetUpgradeHeading
       DetailPrint "$(STR_DOWNLOADING)"
       ExecWait '"$INSTDIR\cmsdl.exe" cms --download "$INSTDIR" --purge-wz-files $BuildFlag$NoGuiFlag$CloseFlag' $0
       StrCmp $0 "0" skipCMSDownload
-        MessageBox MB_ICONSTOP "$(STR_DOWNLOAD_FAILED)"
+        MessageBox MB_ICONSTOP "$UpgradeHeading$(STR_DOWNLOAD_FAILED)"
         Abort
     skipCMSDownload:
 
     ; Download CMS_CW if selected.
     StrCmp $InstallCMSCW "1" 0 skipCMSCWDownload
+      StrCpy $R0 "cms_cw"
+      Call SetUpgradeHeading
       DetailPrint "$(STR_DOWNLOADING_CMS_CW)"
       ExecWait '"$INSTDIR\cmsdl.exe" cms_cw --download "$INSTDIR" $BuildFlagCW$NoGuiFlag$CloseFlag' $0
       StrCmp $0 "0" skipCMSCWDownload
-        MessageBox MB_ICONSTOP "$(STR_DOWNLOAD_CMS_CW_FAILED)"
+        MessageBox MB_ICONSTOP "$UpgradeHeading$(STR_DOWNLOAD_CMS_CW_FAILED)"
         Abort
     skipCMSCWDownload:
 

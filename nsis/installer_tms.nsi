@@ -16,7 +16,7 @@ Unicode true
 !include "FileFunc.nsh"
 
 ; Version
-!define VERSION "6.282.2.2"
+!define VERSION "6.282.2.3"
 
 ; Product Info (English)
 !define PRODUCT_NAME "MapleStory TW"
@@ -66,6 +66,8 @@ Var CheckPortable
 Var GamingVPNFlag
 Var ProxyFlag
 Var PortableFlag
+; Result of the upgrade-path check: "patch", "reinstall" or "abort".
+Var UpgradeAction
 
 ; ============================================================================
 ; MUI2 Settings
@@ -123,6 +125,11 @@ LangString STR_SYSTEM_PROXY_MODE ${LANG_ENGLISH} "Use System Proxy"
 LangString STR_PORTABLE_MODE ${LANG_ENGLISH} "Portable mode (do not create uninstaller)"
 LangString STR_CLOSE_QIHOO_360_TOTAL_SECURITY ${LANG_ENGLISH} "Please close or uninstall 360 Total Security and click Retry. If you do not want to close it or cannot close it, click Abort to exit the installation."
 LangString STR_CLOSE_RIOT_VANGUARD ${LANG_ENGLISH} "Please close Riot Vanguard (the anti-cheat program used by League of Legends) and click Retry. If you do not want to close it or cannot close it, click Abort to exit the installation."
+LangString STR_CHECKING_UPGRADE ${LANG_ENGLISH} "Checking if upgrade path is applicable..."
+LangString STR_UPGRADE_NO_PATCH ${LANG_ENGLISH} "No patches cannot be found. Would you like to reinstall the latest version of game? "
+LangString STR_UPGRADE_TOO_LARGE ${LANG_ENGLISH} "Patch files required to latest version are larger than latest client, we recommend a reinstallation. Would you like to reinstall? "
+LangString STR_UPGRADE_NO_CLIENT ${LANG_ENGLISH} "No valid client data can be found. Would you like to reinstall the latest version of game? "
+LangString STR_UPGRADE_RETRY ${LANG_ENGLISH} "Unable to get latest patch info. Would you like to retry?"
 
 ; ============================================================================
 ; Language Strings - Traditional Chinese
@@ -158,6 +165,11 @@ LangString STR_SYSTEM_PROXY_MODE ${LANG_TRADCHINESE} "使用系統代理"
 LangString STR_PORTABLE_MODE ${LANG_TRADCHINESE} "可攜式模式（不產生反安裝程式）"
 LangString STR_CLOSE_QIHOO_360_TOTAL_SECURITY ${LANG_TRADCHINESE} "請先關閉或解除安裝 360 Total Security，然後按「重試」。若不願關閉或無法關閉，可按「中止」結束安裝。"
 LangString STR_CLOSE_RIOT_VANGUARD ${LANG_TRADCHINESE} "請先關閉 Riot Vanguard （即英雄聯盟使用的反作弊程式），然後按「重試」。若不願關閉或無法關閉，可按「中止」結束安裝。"
+LangString STR_CHECKING_UPGRADE ${LANG_TRADCHINESE} "正在檢查升級路徑是否可用..."
+LangString STR_UPGRADE_NO_PATCH ${LANG_TRADCHINESE} "未找到可用的更新檔。是否要重新安裝最新版本的遊戲？"
+LangString STR_UPGRADE_TOO_LARGE ${LANG_TRADCHINESE} "升級到最新版本所需的更新檔比最新客戶端更大，我們建議重新安裝。是否要重新安裝？"
+LangString STR_UPGRADE_NO_CLIENT ${LANG_TRADCHINESE} "未找到有效的客戶端資料。是否要重新安裝最新版本的遊戲？"
+LangString STR_UPGRADE_RETRY ${LANG_TRADCHINESE} "無法取得最新的更新檔資訊。是否要重試？"
 
 ; ============================================================================
 ; Installer Attributes
@@ -490,6 +502,89 @@ Function CheckInstallDirWritable
 FunctionEnd
 
 ; ============================================================================
+; Upgrade path check and reinstallation (GUI update mode)
+; ============================================================================
+
+; Run `tms --upgrade-path-check latest` for the current client and decide how
+; to proceed. The outcome is stored in $UpgradeAction:
+;   "patch"     - apply patches normally (also the fallback for errorlevel 0)
+;   "reinstall" - the caller should reinstall the full client
+;   "abort"     - stop the installation
+; Errorlevel 100 keeps asking the user to retry until it succeeds or is cancelled.
+Function CheckUpgradePath
+  cupRetry:
+    DetailPrint "$(STR_CHECKING_UPGRADE)"
+    StrCmp $GamingVPNFlag "1" 0 cupDirectCheck
+      ExecWait '"$TEMP\MapleStory.exe" tms --upgrade-path-check latest "$INSTDIR"$ProxyFlag' $0
+      Goto cupDecide
+    cupDirectCheck:
+      ExecWait '"$INSTDIR\cmsdl.exe" tms --upgrade-path-check latest "$INSTDIR"$ProxyFlag' $0
+    cupDecide:
+    StrCmp $0 "0" cupPatch 0
+    StrCmp $0 "1" cupNoPatch 0
+    StrCmp $0 "2" cupTooLarge 0
+    StrCmp $0 "3" cupNoClient 0
+    StrCmp $0 "100" cupNeedRetry 0
+    ; Unknown exit code: keep the previous behaviour (just patch).
+    Goto cupPatch
+
+  cupPatch:
+    StrCpy $UpgradeAction "patch"
+    Return
+
+  cupReinstall:
+    StrCpy $UpgradeAction "reinstall"
+    Return
+
+  cupAbort:
+    StrCpy $UpgradeAction "abort"
+    Return
+
+  cupNoPatch:
+    MessageBox MB_YESNO|MB_ICONEXCLAMATION "$(STR_UPGRADE_NO_PATCH)" IDYES cupReinstall IDNO cupAbort
+    Goto cupAbort
+
+  cupNoClient:
+    MessageBox MB_YESNO|MB_ICONEXCLAMATION "$(STR_UPGRADE_NO_CLIENT)" IDYES cupReinstall IDNO cupAbort
+    Goto cupAbort
+
+  cupTooLarge:
+    MessageBox MB_YESNOCANCEL|MB_ICONQUESTION "$(STR_UPGRADE_TOO_LARGE)" IDYES cupReinstall IDNO cupPatch
+    Goto cupAbort
+
+  cupNeedRetry:
+    MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "$(STR_UPGRADE_RETRY)" IDRETRY cupRetry
+    Goto cupAbort
+FunctionEnd
+
+; Reinstall the client: remove the Data directory, download the full client,
+; then patch to the latest version.
+Function ReinstallVariant
+  DetailPrint "$(STR_DOWNLOADING)"
+  RMDir /r "$INSTDIR\Data"
+  StrCmp $GamingVPNFlag "1" 0 rvDirectDownload
+    ExecWait '"$TEMP\MapleStory.exe" tms --download "$INSTDIR" --allow-insecure --no-gui$ProxyFlag' $0
+    Goto rvCheckDownload
+  rvDirectDownload:
+    ExecWait '"$INSTDIR\cmsdl.exe" tms --download "$INSTDIR"$NoGuiFlag$CloseFlag$ProxyFlag' $0
+  rvCheckDownload:
+  StrCmp $0 "0" +3
+    MessageBox MB_ICONSTOP "$(STR_DOWNLOAD_FAILED)"
+    Abort
+  DetailPrint "$(STR_PATCHING)"
+  StrCmp $GamingVPNFlag "1" 0 rvDirectPatch
+    ExecWait '"$TEMP\MapleStory.exe" tms --patch latest "$INSTDIR"$ProxyFlag' $0
+    Goto rvCheckPatch
+  rvDirectPatch:
+    ExecWait '"$INSTDIR\cmsdl.exe" tms --patch latest "$INSTDIR"$NoGuiFlag$CloseFlag$ProxyFlag' $0
+  rvCheckPatch:
+  StrCmp $0 "0" +3
+    MessageBox MB_ICONSTOP "$(STR_PATCH_FAILED)"
+    Abort
+  Return
+FunctionEnd
+
+; ============================================================================
 ; Installer Section
 ; ============================================================================
 
@@ -585,7 +680,17 @@ Section "Install"
       MessageBox MB_YESNO|MB_ICONEXCLAMATION "$(STR_METERED_WARNING)" IDYES +2
       Abort
 
-    ; Execute patch command.
+    ; Execute patch command. In GUI mode the upgrade path is checked first so
+    ; an un-patchable or oversized update can offer a full reinstallation.
+    StrCmp $NoGuiFlag "" 0 updPatch
+    Call CheckUpgradePath
+    StrCmp $UpgradeAction "abort" 0 updNotAbort
+      Abort
+    updNotAbort:
+    StrCmp $UpgradeAction "reinstall" 0 updPatch
+      Call ReinstallVariant
+      Goto sectionDone
+    updPatch:
     DetailPrint "$(STR_PATCHING)"
     StrCmp $GamingVPNFlag "1" 0 +3
       ExecWait '"$TEMP\MapleStory.exe" tms --patch latest "$INSTDIR" --purge-wz-files$NoGuiFlag$CloseFlag$ProxyFlag' $0
