@@ -230,18 +230,37 @@ Function .onInit
   StrCpy $ProxyFlag ""
   StrCpy $PortableFlag ""
 
-  ; Select language based on OS language (Traditional Chinese = 0404).
+  ; Select language based on OS language. TMS is a Traditional Chinese game, so
+  ; any Chinese Windows uses Traditional Chinese:
+  ;   0404 = Chinese (Traditional, Taiwan)
+  ;   0C04 = Chinese (Traditional, Hong Kong SAR)
+  ;   1404 = Chinese (Traditional, Macao SAR)
+  ;   0804 = Chinese (Simplified, PRC)
+  ;   1004 = Chinese (Simplified, Singapore)
+  ; Any other OS language asks the user first, because many players run an
+  ; English (or Japanese, etc.) Windows but still read Chinese.
   ; Set this first so the requirement-check message boxes are localized.
   StrCpy $LANGUAGE ${LANG_ENGLISH}
   ReadRegStr $0 HKLM "SYSTEM\CurrentControlSet\Control\Nls\Language" "Default"
-  StrCmp $0 "0404" 0 +2
+  ${If} $0 == "0404"
+  ${OrIf} $0 == "0C04"
+  ${OrIf} $0 == "1404"
+  ${OrIf} $0 == "0804"
+  ${OrIf} $0 == "1004"
     StrCpy $LANGUAGE ${LANG_TRADCHINESE}
+  ${Else}
+    ; Bilingual question (English first, then Chinese) so either audience can
+    ; answer it. Unattended installs keep English via /SD IDNO, and clicking No
+    ; simply leaves the English default in place.
+    MessageBox MB_YESNO|MB_ICONQUESTION "Can you read Chinese?$\n你能看懂中文嗎？" /SD IDNO IDNO langDone
+    StrCpy $LANGUAGE ${LANG_TRADCHINESE}
+  ${EndIf}
+  langDone:
 
+  ; A Simplified Chinese OS very likely belongs to a mainland-China player,
+  ; who normally needs a gaming accelerator to reach TMS. Pre-select Gaming
+  ; VPN mode and tell the user it can be turned off.
   StrCmp $0 "0804" 0 cnDone
-    StrCpy $LANGUAGE ${LANG_TRADCHINESE}
-    ; A Simplified Chinese OS very likely belongs to a mainland-China player,
-    ; who normally needs a gaming accelerator to reach TMS. Pre-select Gaming
-    ; VPN mode and tell the user it can be turned off.
     StrCpy $GamingVPNFlag "1"
     MessageBox MB_OK|MB_ICONINFORMATION "$(STR_CN_GAMING_VPN)"
   cnDone:

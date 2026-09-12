@@ -215,7 +215,7 @@ LangString STR_FIX_SDOLOGIN_UAC_RETRY ${LANG_SIMPCHINESE} "无法添加防火墙
 LangString STR_LINK_TROUBLESHOOTING ${LANG_SIMPCHINESE} "使用遇到问题了？点击查看帮助"
 LangString STR_UPDATE_ABORT ${LANG_SIMPCHINESE} "在所选目录中未找到现有的游戏安装。无法继续更新。"
 LangString STR_NO_WRITE_PERMISSION ${LANG_SIMPCHINESE} "无法写入目标文件夹。$\n请以管理员身份运行此安装程序。"
-LangString STR_DO_NOT_INCLUDE_LR ${LANG_SIMPCHINESE} "你不应该看到这个选项"
+LangString STR_DO_NOT_INCLUDE_LR ${LANG_SIMPCHINESE} "安装过程中不包含 Locale Remulator"
 LangString STR_USE_CONSOLE_TYPE ${LANG_SIMPCHINESE} "使用命令行样式的CMSDL界面"
 LangString STR_REMOVE_OFFICIAL_LAUNCHER ${LANG_SIMPCHINESE} "您想要移除官方游戏启动器吗？移除该启动器不会影响启动游戏。"
 LangString STR_REMOVE_OFFICIAL_LAUNCHER_UAC ${LANG_SIMPCHINESE} "您当前正在运行官方启动器，但尚未关闭它。关闭后，请点击重试。"
@@ -290,12 +290,32 @@ Function .onInit
   StrCpy $NoGuiFlag ""
   StrCpy $CloseFlag " --close-after-finishing"
 
-  ; Select language based on OS language (Simplified Chinese = 0804).
+  ; Select language based on OS language. The CMS client is a Simplified
+  ; Chinese game, so any Chinese Windows defaults to Simplified Chinese:
+  ;   0804 = Chinese (Simplified, PRC)
+  ;   1004 = Chinese (Simplified, Singapore)
+  ;   0404 = Chinese (Traditional, Taiwan)
+  ;   0C04 = Chinese (Traditional, Hong Kong SAR)
+  ;   1404 = Chinese (Traditional, Macao SAR)
+  ; Any other OS language asks the user first, because many players run an
+  ; English (or Japanese, etc.) Windows but still read Chinese.
   ; Set this first so the requirement-check message boxes are localized.
   StrCpy $LANGUAGE ${LANG_ENGLISH}
   ReadRegStr $0 HKLM "SYSTEM\CurrentControlSet\Control\Nls\Language" "Default"
-  StrCmp $0 "0804" 0 +2
+  ${If} $0 == "0804"
+  ${OrIf} $0 == "1004"
+  ${OrIf} $0 == "0404"
+  ${OrIf} $0 == "0C04"
+  ${OrIf} $0 == "1404"
     StrCpy $LANGUAGE ${LANG_SIMPCHINESE}
+  ${Else}
+    ; Bilingual question (English first, then Chinese) so either audience can
+    ; answer it. Unattended installs keep English via /SD IDNO, and clicking No
+    ; simply leaves the English default in place.
+    MessageBox MB_YESNO|MB_ICONQUESTION "Can you read Chinese?$\n你能看懂中文吗？" /SD IDNO IDNO langDone
+    StrCpy $LANGUAGE ${LANG_SIMPCHINESE}
+  ${EndIf}
+  langDone:
 
   ; Locale Remulator is only useful when the system language is NOT
   ; Simplified Chinese (legacy locale-based app compat is not needed).
