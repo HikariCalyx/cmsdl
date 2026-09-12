@@ -542,7 +542,8 @@ mod win32 {
     extern "system" {
         fn GdiplusStartup(token: *mut usize, input: *const GdiplusStartupInput,
             output: *mut c_void) -> i32;
-        fn GdipCreateBitmapFromFile(file: *const u16, bmp: *mut *mut c_void) -> i32;
+        /// Decode an image from an `IStream` (see [`MemImage::from_bytes`]).
+        fn GdipCreateBitmapFromStream(stream: *mut c_void, bmp: *mut *mut c_void) -> i32;
         fn GdipBitmapLockBits(bmp: *mut c_void, rect: *const [i32; 4], flags: u32,
             format: i32, data: *mut BitmapData) -> i32;
         fn GdipBitmapUnlockBits(bmp: *mut c_void, data: *mut BitmapData) -> i32;
@@ -680,7 +681,7 @@ mod win32 {
             if bg.is_empty() || bw <= 0 || bh <= 0 {
                 return;
             }
-            let (fg, fw, fh) = load_argb(NUMBER_PNGS[pct.clamp(0, 100) as usize], "png");
+            let (fg, fw, fh) = load_argb(NUMBER_PNGS[pct.clamp(0, 100) as usize]);
             if fw != bw || fh != bh {
                 return;
             }
@@ -929,22 +930,72 @@ mod win32 {
         });
     }
 
+    /// A GDI+ image decoded from an in-memory `IStream`.
+    ///
+    /// The embedded resources are handed to GDI+ straight from memory
+    /// (`SHCreateMemStream`), so the GUI never writes anything to disk - no
+    /// more `%TEMP%\cmsdl_gui_*.png` leftovers. GDI+ reads from the stream
+    /// lazily, so it must outlive the image; `Drop` disposes the image first
+    /// and only then releases the stream.
+    struct MemImage {
+        /// Only held so the stream stays open for as long as the image does.
+        #[allow(dead_code)]
+        stream: windows::Win32::System::Com::IStream,
+        img:    *mut c_void,
+    }
+
+    impl MemImage {
+        /// Decode PNG/BMP bytes with GDI+; `None` when the stream could not be
+        /// created or no decoder accepted the data.
+        fn from_bytes(data: &[u8]) -> Option<MemImage> {
+            use windows::core::Interface;
+            gdip_init();
+            // The memory stream copies `data`, so nothing else has to keep the
+            // embedded-bytes slice alive.
+            let stream = unsafe { windows::Win32::UI::Shell::SHCreateMemStream(Some(data)) }?;
+            let mut img: *mut c_void = ptr::null_mut();
+            let ok = unsafe { GdipCreateBitmapFromStream(stream.as_raw(), &mut img) };
+            if ok != 0 || img.is_null() { return None; }
+            Some(MemImage { stream, img })
+        }
+    }
+
+    impl Drop for MemImage {
+        fn drop(&mut self) {
+            unsafe { GdipDisposeImage(self.img) };
+        }
+    }
+
+    /// Delete `cmsdl_gui_*.{png,bmp}` scratch files left behind in `dir` by
+    /// builds up to 0.2.9-prerelease6, whose loaders decoded every embedded
+    /// resource by writing it to a temp file first (see [`MemImage`]).
+    ///
+    /// Best-effort: a file that cannot be removed right now (e.g. it is still
+    /// open in a running older build) is left alone.
+    fn cleanup_legacy_scratch_files(dir: &std::path::Path) {
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with("cmsdl_gui_")
+                && (name.ends_with(".png") || name.ends_with(".bmp"))
+            {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+
+    /// Purge legacy scratch images from the current user's temp directory.
+    /// Runs once per GUI launch; the window itself never writes any.
+    fn cleanup_legacy_temp_files() {
+        cleanup_legacy_scratch_files(&std::env::temp_dir());
+    }
+
     /// Load image bytes -> (pre-multiplied ARGB pixel Vec, width in pixels).
     /// Pixels are top-down, row-major.
-    fn load_pixels(data: &[u8], ext: &str) -> (Vec<u32>, i32) {
-        gdip_init();
-        let tmp = {
-            let mut p = std::env::temp_dir();
-            p.push(format!("cmsdl_gui_{:x}.{ext}", data.as_ptr() as usize));
-            p
-        };
-        let _ = std::fs::write(&tmp, data);
-        let wide: Vec<u16> = tmp.to_string_lossy().encode_utf16().chain(Some(0)).collect();
-
-        let mut img: *mut c_void = ptr::null_mut();
-        let ok = unsafe { GdipCreateBitmapFromFile(wide.as_ptr(), &mut img) };
-        let _ = std::fs::remove_file(&tmp);
-        if ok != 0 || img.is_null() { return (Vec::new(), 0); }
+    fn load_pixels(data: &[u8]) -> (Vec<u32>, i32) {
+        let Some(image) = MemImage::from_bytes(data) else { return (Vec::new(), 0); };
+        let img = image.img;
 
         let mut w = 0u32;
         let mut h = 0u32;
@@ -956,7 +1007,7 @@ mod win32 {
         let ok = unsafe {
             GdipBitmapLockBits(img, &rect, IMAGING_LOCK_READ, PIXEL_FORMAT_32BPP_ARGB, &mut bd)
         };
-        if ok != 0 { unsafe { GdipDisposeImage(img) }; return (Vec::new(), 0); }
+        if ok != 0 { return (Vec::new(), 0); }
 
         let mut pixels = Vec::with_capacity((w * h) as usize);
         for row in 0..h as i32 {
@@ -976,7 +1027,7 @@ mod win32 {
                 pixels.push(pixel);
             }
         }
-        unsafe { GdipBitmapUnlockBits(img, &mut bd); GdipDisposeImage(img); }
+        unsafe { GdipBitmapUnlockBits(img, &mut bd); }
         (pixels, w as i32)
     }
 
@@ -984,20 +1035,9 @@ mod win32 {
     /// height). Unlike [`load_pixels`], the RGB channels are left as-is (not
     /// multiplied by alpha), which is the format Windows expects for the color
     /// bitmap of an alpha icon created via `CreateIconIndirect`.
-    fn load_argb(data: &[u8], ext: &str) -> (Vec<u32>, i32, i32) {
-        gdip_init();
-        let tmp = {
-            let mut p = std::env::temp_dir();
-            p.push(format!("cmsdl_gui_{:x}.{ext}", data.as_ptr() as usize));
-            p
-        };
-        let _ = std::fs::write(&tmp, data);
-        let wide: Vec<u16> = tmp.to_string_lossy().encode_utf16().chain(Some(0)).collect();
-
-        let mut img: *mut c_void = ptr::null_mut();
-        let ok = unsafe { GdipCreateBitmapFromFile(wide.as_ptr(), &mut img) };
-        let _ = std::fs::remove_file(&tmp);
-        if ok != 0 || img.is_null() { return (Vec::new(), 0, 0); }
+    fn load_argb(data: &[u8]) -> (Vec<u32>, i32, i32) {
+        let Some(image) = MemImage::from_bytes(data) else { return (Vec::new(), 0, 0); };
+        let img = image.img;
 
         let mut w = 0u32;
         let mut h = 0u32;
@@ -1010,7 +1050,7 @@ mod win32 {
         let ok = unsafe {
             GdipBitmapLockBits(img, &rect, IMAGING_LOCK_READ, PIXEL_FORMAT_32BPP_ARGB, &mut bd)
         };
-        if ok != 0 { unsafe { GdipDisposeImage(img) }; return (Vec::new(), 0, 0); }
+        if ok != 0 { return (Vec::new(), 0, 0); }
 
         let mut pixels = Vec::with_capacity((w * h) as usize);
         for row in 0..h as i32 {
@@ -1019,8 +1059,101 @@ mod win32 {
                 pixels.push(unsafe { *row_ptr.add(col as usize) });
             }
         }
-        unsafe { GdipBitmapUnlockBits(img, &mut bd); GdipDisposeImage(img); }
+        unsafe { GdipBitmapUnlockBits(img, &mut bd); }
         (pixels, w as i32, h as i32)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// Every embedded resource must decode through the in-memory GDI+ path.
+        #[test]
+        fn embedded_resources_decode_from_memory() {
+            let (bg, bg_w) = load_pixels(BG_PNG);
+            assert_eq!(bg_w, WIN_W, "background image failed to decode");
+            assert_eq!(bg.len() as i32 / bg_w, WIN_H);
+            assert!(bg.iter().any(|&p| p != 0), "background decoded to nothing");
+
+            assert!(load_pixels(OVERLAY_PNG).1 > 0);
+
+            for data in [BMP_NORMAL, BMP_HOVER, BMP_CLICK,
+                         BMP_MIN_NORMAL, BMP_MIN_HOVER, BMP_MIN_CLICK] {
+                let (px, w) = load_pixels(data);
+                assert_eq!(w, BTN_W);
+                assert_eq!(px.len() as i32 / w, BTN_H);
+            }
+            for data in [BMP_PROG_A, BMP_PROG_B, BMP_PROG_C,
+                         BMP_PROG_D, BMP_PROG_E, BMP_PROG_F] {
+                let (px, w) = load_pixels(data);
+                assert!(w > 0, "progress bar slice failed to decode");
+                assert_eq!(px.len() as i32 / w, 12);
+            }
+
+            let (icon, w, h) = load_argb(PROGRESS_BG_ICON);
+            assert!(w > 0 && h > 0);
+            assert_eq!(icon.len(), (w * h) as usize);
+            for pct in [0usize, 42, 100] {
+                let (px, w, h) = load_argb(NUMBER_PNGS[pct]);
+                assert_eq!(px.len(), (w * h) as usize, "percentage {pct} failed to decode");
+            }
+        }
+
+        /// Regression: decoding must not leave `cmsdl_gui_*` scratch files in
+        /// the temp directory the way the old file-backed GDI+ loader did.
+        #[test]
+        fn decoding_writes_no_temp_files() {
+            let temp = std::env::temp_dir();
+            let scratch_files = |dir: &std::path::Path| {
+                std::fs::read_dir(dir)
+                    .map(|entries| {
+                        entries
+                            .filter_map(|entry| entry.ok())
+                            .filter(|entry| {
+                                entry.file_name().to_string_lossy().starts_with("cmsdl_gui_")
+                            })
+                            .count()
+                    })
+                    .unwrap_or(0)
+            };
+
+            let before = scratch_files(&temp);
+            let _ = load_pixels(BG_PNG);
+            let _ = load_argb(PROGRESS_BG_ICON);
+            assert_eq!(scratch_files(&temp), before, "decoding left scratch files in %TEMP%");
+        }
+
+        /// Regression: leftovers from older builds are removed, but nothing
+        /// else in the directory is touched.
+        ///
+        /// Uses a dedicated scratch directory (not `%TEMP%` itself) so the
+        /// `cmsdl_gui_*`-counting test above cannot observe our files; the name
+        /// deliberately lacks the `cmsdl_gui_` prefix that scan matches.
+        #[test]
+        fn legacy_scratch_files_are_cleaned_up() {
+            let dir = std::env::temp_dir()
+                .join(format!("cmsdl_cleanup_test_{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+
+            let scratch: Vec<_> = ["cmsdl_gui_1a2b3c.png", "cmsdl_gui_4d5e6f.bmp"]
+                .iter().map(|name| dir.join(name)).collect();
+            let keep: Vec<_> = ["cmsdl_gui_keep.txt", "cmsdl_other.png"]
+                .iter().map(|name| dir.join(name)).collect();
+            for path in scratch.iter().chain(keep.iter()) {
+                std::fs::write(path, b"x").unwrap();
+            }
+
+            cleanup_legacy_scratch_files(&dir);
+
+            for path in &scratch {
+                assert!(!path.exists(), "{path:?} was not cleaned up");
+            }
+            for path in &keep {
+                assert!(path.exists(), "{path:?} was deleted");
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     /// Composite `fg` over `bg` (both straight ARGB `0xAARRGGBB`, same size)
@@ -2049,6 +2182,10 @@ mod win32 {
     }
 
     pub fn run_window(ui: super::Arc<super::Mutex<super::UiModel>>) -> anyhow::Result<()> {
+        // Wipe the temp images older builds dumped into %TEMP% while decoding
+        // their embedded resources (the current loader is purely in-memory).
+        cleanup_legacy_temp_files();
+
         // Do this before any window/DC is created so no scaling is applied.
         set_dpi_aware();
 
@@ -2099,7 +2236,7 @@ mod win32 {
         let (overlay_pixels, overlay_w, overlay_h) = {
             let region = ui.lock().unwrap().region.clone();
             if region == "cms_cw" {
-                let (px, w) = load_pixels(OVERLAY_PNG, "png");
+                let (px, w) = load_pixels(OVERLAY_PNG);
                 let h = if w > 0 { px.len() as i32 / w } else { 0 };
                 (px, w, h)
             } else {
@@ -2108,26 +2245,26 @@ mod win32 {
         };
         let state = Box::new(WindowState {
             hwnd,
-            bg_pixels:  load_pixels(BG_PNG, "png").0,
+            bg_pixels:  load_pixels(BG_PNG).0,
             overlay_pixels,
             overlay_w,
             overlay_h,
             btn_pixels: [
-                load_pixels(BMP_NORMAL, "bmp").0,
-                load_pixels(BMP_HOVER,  "bmp").0,
-                load_pixels(BMP_CLICK,  "bmp").0,
+                load_pixels(BMP_NORMAL).0,
+                load_pixels(BMP_HOVER).0,
+                load_pixels(BMP_CLICK).0,
             ],
             min_btn_pixels: [
-                load_pixels(BMP_MIN_NORMAL, "bmp").0,
-                load_pixels(BMP_MIN_HOVER,  "bmp").0,
-                load_pixels(BMP_MIN_CLICK,  "bmp").0,
+                load_pixels(BMP_MIN_NORMAL).0,
+                load_pixels(BMP_MIN_HOVER).0,
+                load_pixels(BMP_MIN_CLICK).0,
             ],
-            track_a: load_pixels(BMP_PROG_A, "bmp"),
-            track_f: load_pixels(BMP_PROG_F, "bmp"),
-            track_e: load_pixels(BMP_PROG_E, "bmp"),
-            fill_b:  load_pixels(BMP_PROG_B, "bmp"),
-            fill_c:  load_pixels(BMP_PROG_C, "bmp"),
-            fill_d:  load_pixels(BMP_PROG_D, "bmp"),
+            track_a: load_pixels(BMP_PROG_A),
+            track_f: load_pixels(BMP_PROG_F),
+            track_e: load_pixels(BMP_PROG_E),
+            fill_b:  load_pixels(BMP_PROG_B),
+            fill_c:  load_pixels(BMP_PROG_C),
+            fill_d:  load_pixels(BMP_PROG_D),
             btn_state:  BtnState::Normal,
             min_btn_state: BtnState::Normal,
             label_font: create_label_font(),
@@ -2135,7 +2272,7 @@ mod win32 {
             hdd_label_font: create_hdd_label_font(),
             ui,
             icon_bg:    {
-                let (px, w, h) = load_argb(PROGRESS_BG_ICON, "png");
+                let (px, w, h) = load_argb(PROGRESS_BG_ICON);
                 (px, w, h)
             },
             icon_pct:   -1,
