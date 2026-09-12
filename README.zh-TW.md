@@ -53,7 +53,7 @@
 ./cmsdl cms --download /path/to/cms/client --filter-regex=".wz$":"^Maple" --invert-filter
 ```
 
-- 查看已有的補丁檔案
+- 查看已有的更新檔
 ```bash
 ./cmsdl cms --patch list
 ```
@@ -68,6 +68,17 @@
 ./cmsdl cms --create-shortcut /path/to/cms/client
 ```
 
+
+### 陸服懷舊服 (cms_cw)
+`cms_cw`（冒險島懷舊服 / MapleStory Classic World CN）支援與 `cms` 相同的指令：
+```bash
+./cmsdl cms_cw --check
+./cmsdl cms_cw --download /path/to/cms_cw/client
+./cmsdl cms_cw --patch latest /path/to/cms_cw/client
+./cmsdl cms_cw --create-shortcut /path/to/cms_cw/client
+```
+
+任何需要指定大區的指令都可以用 `cms_cw` 替代 `cms`，包括下方的升級路徑檢查。
 
 ### 台服 (新楓之谷)
 - 檢查最新的TMS客戶端：
@@ -99,6 +110,44 @@
 ```bash
 ./cmsdl tms --download /path/to/tms/client --filter-regex=".wz$":"^Maple" --invert-filter
 ```
+
+### 升級路徑檢查
+在更新之前，可以先檢查更新到指定版本所需的增量更新檔是否比直接下載該版本的完整客戶端更小：
+```bash
+./cmsdl cms --upgrade-path-check latest /path/to/cms/client
+./cmsdl cms_cw --upgrade-path-check latest /path/to/cms_cw/client
+./cmsdl tms --upgrade-path-check latest /path/to/tms/client
+```
+
+第一個參數是目標版本（CMS/CMS_CW 形如 `0.0.0.22`，TMS 形如 `281`）或 `latest`。程式會從客戶端目錄讀取目前版本（CMS 讀取 `LocalVersion3.xml`，讀取失敗時回退到 `Base.wz`；TMS 讀取 `Data/Base/Base.wz`）。
+
+加上 `--verbose`（或 `-v`）還會列出所有將被套用的更新檔，以及每個更新檔的大小。
+
+當升級路徑不大於完整客戶端時，程式會印出建議執行的指令：
+```
+current version: 278
+target version:  282
+patches needed:  2 (9.19 GiB)
+full client:     version V282 (67.74 GiB)
+you may apply the patch with cmsdl.exe tms --patch 282 B:\tms_upgtest
+```
+
+退出代碼：
+
+| 代碼 | 含義 |
+| ---- | ---- |
+| 0 | 更新檔總大小不超過完整客戶端。 |
+| 1 | 找不到可用的更新檔。 |
+| 2 | 所需更新檔比完整客戶端更大，建議重新下載。 |
+| 3 | 無法讀取目前客戶端版本。 |
+| 4 | 指定的目標版本早於目前客戶端版本。 |
+| 100 | 無法存取更新伺服器（重試後仍然失敗）。 |
+
+說明：
+- CMS/CMS_CW 會與該目標版本對應的完整客戶端比較。如果該完整客戶端尚未發布，則改用最近已發布的客戶端（會標註為回退）。
+- TMS 只發布最新完整客戶端的清單，因此指定具體版本時會跳過完整客戶端比較。使用 `latest` 時，如果最新完整客戶端還沒有對應的更新檔，程式會回退到更新伺服器上實際可到達的最後一個版本。
+- 對於 TMS，如果客戶端已經是最新大版本，還會把獨立可執行檔熱修復（`ExePatch.dat`）的大小計入。
+- Windows 安裝程式在更新前（圖形介面模式）會自動執行此檢查；當沒有可用更新檔，或更新檔比客戶端本身更大時，會提示重新安裝完整客戶端。
 
 ### 額外說明
 如果你想確保cmsdl走遊戲加速器，請將 cmsdl 程式更名為 MapleStory.exe，以便遊戲加速器捕捉到。

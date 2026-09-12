@@ -70,6 +70,17 @@ If the download was interrupted, you can rerun and it will continue to download.
 ./cmsdl cms --create-shortcut /path/to/cms/client
 ```
 
+### CMS Classic World (cms_cw)
+`cms_cw` (MapleStory Classic World CN / 冒险岛怀旧服) supports the same commands as `cms`:
+```bash
+./cmsdl cms_cw --check
+./cmsdl cms_cw --download /path/to/cms_cw/client
+./cmsdl cms_cw --patch latest /path/to/cms_cw/client
+./cmsdl cms_cw --create-shortcut /path/to/cms_cw/client
+```
+
+Any command that lists a region also accepts `cms_cw` instead of `cms`, including `--upgrade-path-check` below.
+
 ### TMS
 - Get latest TMS client:
 ```bash
@@ -105,6 +116,44 @@ If the download was interrupted, you can rerun and it will continue to download.
 ```bash
 ./cmsdl tms --patch latest /path/to/tms/client
 ```
+
+### Upgrade path check
+Before patching, check whether the incremental patches needed to reach a version are actually smaller than downloading the full client for that version:
+```bash
+./cmsdl cms --upgrade-path-check latest /path/to/cms/client
+./cmsdl cms_cw --upgrade-path-check latest /path/to/cms_cw/client
+./cmsdl tms --upgrade-path-check latest /path/to/tms/client
+```
+
+The first argument is either a target version (e.g. `0.0.0.22` for CMS/CMS_CW, `281` for TMS) or `latest`. The installed client version is read from the client directory (`LocalVersion3.xml`, falling back to `Base.wz` for CMS; `Data/Base/Base.wz` for TMS).
+
+Add `--verbose` (or `-v`) to also list every patch that would be applied and the size of each patch file.
+
+When the upgrade path is not larger than the full client, the recommended `--patch` command is printed:
+```
+current version: 278
+target version:  282
+patches needed:  2 (9.19 GiB)
+full client:     version V282 (67.74 GiB)
+you may apply the patch with cmsdl.exe tms --patch 282 B:\tms_upgtest
+```
+
+Exit codes:
+
+| Code | Meaning |
+| ---- | ------- |
+| 0 | The patches are the same size as, or smaller than, the full client. |
+| 1 | No applicable patch can be found. |
+| 2 | The required patches are larger than the full client; re-downloading is recommended. |
+| 3 | The current client version cannot be read. |
+| 4 | The requested target version is older than the installed client. |
+| 100 | The patch server cannot be accessed (after retrying). |
+
+Notes:
+- CMS/CMS_CW compare against the full client whose version matches the target. If that full client is not published yet, the most recent published client is used instead (shown as a fallback).
+- TMS only publishes the latest full-client manifest, so an explicit target version skips the full-client comparison. With `latest`, if the newest full client has no patch yet, the check falls back to the last version actually reachable through the patch server.
+- For TMS, the size of the standalone executable hotfix (`ExePatch.dat`) is included when the client is already on the latest major version.
+- The Windows installers run this check automatically before updating (GUI mode) and offer to reinstall the full client when no patch is applicable or when patching would be larger than the client itself.
 
 ### Extra Tips
 If you'd like to ensure cmsdl runs under a "Game Accelerator", please rename the program to MapleStory.exe, so the "Game Accelerator" could capture the program, and download stuff.

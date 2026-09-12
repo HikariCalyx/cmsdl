@@ -69,6 +69,17 @@
 ```
 
 
+### 国服怀旧服 (cms_cw)
+`cms_cw`（冒险岛怀旧服 / MapleStory Classic World CN）支持与 `cms` 相同的命令：
+```bash
+./cmsdl cms_cw --check
+./cmsdl cms_cw --download /path/to/cms_cw/client
+./cmsdl cms_cw --patch latest /path/to/cms_cw/client
+./cmsdl cms_cw --create-shortcut /path/to/cms_cw/client
+```
+
+任何需要指定大区的命令都可以用 `cms_cw` 替代 `cms`，包括下方的升级路径检查。
+
 ### 台服 (新枫之谷)
 - 检查最新的TMS客户端：
 ```bash
@@ -99,6 +110,44 @@
 ```bash
 ./cmsdl tms --download /path/to/tms/client --filter-regex=".wz$":"^Maple" --invert-filter
 ```
+
+### 升级路径检查
+在更新之前，可以先检查更新到指定版本所需的增量补丁是否比直接下载该版本的完整客户端更小：
+```bash
+./cmsdl cms --upgrade-path-check latest /path/to/cms/client
+./cmsdl cms_cw --upgrade-path-check latest /path/to/cms_cw/client
+./cmsdl tms --upgrade-path-check latest /path/to/tms/client
+```
+
+第一个参数是目标版本（CMS/CMS_CW 形如 `0.0.0.22`，TMS 形如 `281`）或 `latest`。程序会从客户端目录读取当前版本（CMS 读取 `LocalVersion3.xml`，读取失败时回退到 `Base.wz`；TMS 读取 `Data/Base/Base.wz`）。
+
+加上 `--verbose`（或 `-v`）还会列出所有将被应用的补丁，以及每个补丁文件的大小。
+
+当升级路径不大于完整客户端时，程序会打印建议执行的命令：
+```
+current version: 278
+target version:  282
+patches needed:  2 (9.19 GiB)
+full client:     version V282 (67.74 GiB)
+you may apply the patch with cmsdl.exe tms --patch 282 B:\tms_upgtest
+```
+
+退出代码：
+
+| 代码 | 含义 |
+| ---- | ---- |
+| 0 | 补丁总大小不超过完整客户端。 |
+| 1 | 找不到可用的补丁。 |
+| 2 | 所需补丁比完整客户端更大，建议重新下载。 |
+| 3 | 无法读取当前客户端版本。 |
+| 4 | 指定的目标版本早于当前客户端版本。 |
+| 100 | 无法访问补丁服务器（重试后仍然失败）。 |
+
+说明：
+- CMS/CMS_CW 会与该目标版本对应的完整客户端比较。如果该完整客户端尚未发布，则改用最近已发布的客户端（会标注为回退）。
+- TMS 只发布最新完整客户端的清单，因此指定具体版本时会跳过完整客户端比较。使用 `latest` 时，如果最新完整客户端还没有对应的补丁，程序会回退到补丁服务器上实际可到达的最后一个版本。
+- 对于 TMS，如果客户端已经是最新大版本，还会把独立可执行文件热修复（`ExePatch.dat`）的大小计入。
+- Windows 安装程序在更新前（图形界面模式）会自动执行此检查；当没有可用补丁，或补丁比客户端本身更大时，会提示重新安装完整客户端。
 
 ### 额外说明
 如果你想确保cmsdl走网游加速器，请将 cmsdl 程序更名为 MapleStory.exe，以便网游加速器捕捉到。
