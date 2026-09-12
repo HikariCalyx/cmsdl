@@ -32,7 +32,8 @@
 //! The CRC-32 polynomial is `0x04C11DB7` (same as Ethernet/gzip).
 
 use std::collections::{HashMap, HashSet};
-use std::io::{Cursor, IsTerminal, Read, Seek, SeekFrom, Write};
+use std::fs::File;
+use std::io::{BufWriter, IsTerminal, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -125,12 +126,13 @@ impl PatchPart {
     }
 }
 
-/// Parsed WzPatch file ready for application.
+/// Parsed WzPatch ready for application.
 struct WzPatch {
     /// All patch parts in order.
     parts: Vec<PatchPart>,
-    /// The decompressed data (kept in memory for random access).
-    decompressed: Vec<u8>,
+    /// The decompressed patch stream, spilled to a scratch file so that a
+    /// multi-gigabyte patch does not have to stay resident in memory.
+    stream: PatchStream,
     /// Whether this patch uses KMST1125 format (file hash list at start,
     /// no old_checksum in Rebuild parts, FromOldFile carries source path).
     is_kmst1125: bool,
@@ -139,102 +141,373 @@ struct WzPatch {
     old_file_hashes: HashMap<String, u32>,
 }
 
-/// Try to locate and extract the WzPatch block from a `.patch` file.
+/// Name of the scratch file (inside the patch's temp directory) that holds the
+/// decompressed patch stream.
+const PATCH_STREAM_FILE: &str = ".cmsdl_patch_stream";
+
+/// Read/write chunk size used for all patch I/O.
+const IO_CHUNK: usize = 1 << 20; // 1 MiB
+
+/// A read-only window over a byte range of a file.
 ///
-/// For TMS, the entire file is typically the patch block with an optional
-/// 64-bit footer.
-fn read_wzpatch(data: &[u8]) -> Result<WzPatch> {
-    let patch_block = extract_patch_block(data)?;
+/// Reads are positional, so the file's own cursor is never disturbed.
+struct FileSlice<'a> {
+    file: &'a File,
+    pos: u64,
+    end: u64,
+}
 
-    // Verify header.
-    if patch_block.len() < 16 {
-        bail!("patch block too small ({})", patch_block.len());
+impl Read for FileSlice<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if buf.is_empty() || self.pos >= self.end {
+            return Ok(0);
+        }
+        let take = (self.end - self.pos).min(buf.len() as u64) as usize;
+        read_exact_at(self.file, self.pos, &mut buf[..take])?;
+        self.pos += take as u64;
+        Ok(take)
     }
-    if &patch_block[..8] != WZPATCH_MAGIC {
-        bail!("invalid WzPatch magic");
+}
+
+/// Read exactly `buf.len()` bytes at absolute `offset` without moving the
+/// file's cursor.
+fn read_exact_at(file: &File, mut offset: u64, mut buf: &mut [u8]) -> std::io::Result<()> {
+    #[cfg(windows)]
+    use std::os::windows::fs::FileExt;
+    #[cfg(unix)]
+    use std::os::unix::fs::FileExt;
+
+    while !buf.is_empty() {
+        #[cfg(windows)]
+        let read = file.seek_read(buf, offset);
+        #[cfg(unix)]
+        let read = file.read_at(buf, offset);
+        #[cfg(not(any(windows, unix)))]
+        let read = {
+            use std::io::{Seek, SeekFrom};
+            let mut handle = file.try_clone()?;
+            handle.seek(SeekFrom::Start(offset))?;
+            Read::read(&mut handle, buf)
+        };
+        let n = read?;
+        if n == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "unexpected end of patch stream",
+            ));
+        }
+        offset += n as u64;
+        buf = &mut buf[n..];
+    }
+    Ok(())
+}
+
+/// Random-access view over the decompressed patch stream.
+///
+/// TMS patches decompress to several gigabytes, so the stream is spilled to a
+/// scratch file and read back in bounded chunks.  Peak memory is therefore
+/// independent of the patch size: only the parts table and the small I/O
+/// buffers stay resident.  The scratch file is removed when the stream is
+/// dropped.
+struct PatchStream {
+    file: File,
+    path: PathBuf,
+    len: u64,
+}
+
+impl PatchStream {
+    /// Open an existing scratch file as a patch stream.
+    fn open(path: PathBuf) -> Result<Self> {
+        let file = File::open(&path)
+            .with_context(|| format!("failed to open patch stream {}", path.display()))?;
+        let len = file
+            .metadata()
+            .with_context(|| format!("failed to stat {}", path.display()))?
+            .len();
+        Ok(PatchStream { file, path, len })
     }
 
-    let _version = i32::from_le_bytes(patch_block[8..12].try_into().unwrap());
-    let _checksum0 = u32::from_le_bytes(patch_block[12..16].try_into().unwrap());
+    /// Length of the decompressed stream, in bytes.
+    fn len(&self) -> u64 {
+        self.len
+    }
 
-    // The compressed stream always starts at byte 16. Check whether the first
-    // two bytes form a zlib header (CMF=0x78, FLG where (CMF*256+FLG)%31==0).
-    // If so, use a ZlibDecoder; otherwise use raw DeflateDecoder.
-    let body = &patch_block[16..];
-    let decompressed = if body.len() >= 2
-        && body[0] == 0x78
-        && (body[0] as u16 * 256 + body[1] as u16) % 31 == 0
-    {
-        let mut decoder = ZlibDecoder::new(body);
-        let mut out = Vec::new();
-        decoder.read_to_end(&mut out)
-            .context("failed to decompress (zlib) patch data")?;
-        out
+    /// Fill `buf` with bytes starting at absolute `offset`.
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> Result<()> {
+        if offset.saturating_add(buf.len() as u64) > self.len {
+            bail!(
+                "patch stream read out of bounds (offset {offset}, len {}, size {})",
+                buf.len(),
+                self.len
+            );
+        }
+        read_exact_at(&self.file, offset, buf).context("failed to read the patch stream")
+    }
+
+    /// Read `len` bytes at `offset` as a lossy UTF-8 string.
+    fn read_string_at(&self, offset: u64, len: usize) -> Result<String> {
+        let mut buf = vec![0u8; len];
+        self.read_at(offset, &mut buf)?;
+        Ok(String::from_utf8_lossy(&buf).into_owned())
+    }
+}
+
+impl Drop for PatchStream {
+    fn drop(&mut self) {
+        // Best effort: the caller removes the scratch directory as well.
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// Read-ahead window of [`StreamCursor`].
+const CURSOR_BUF: usize = 8192;
+
+/// A [`Read`] + [`Seek`] cursor over a [`PatchStream`].
+///
+/// This gives the patch parser the same API it had over an in-memory slice
+/// without keeping the (multi-gigabyte) stream in memory.  Sequential reads are
+/// served from a small read-ahead window so that parsing the instruction
+/// stream is not a syscall per field.
+struct StreamCursor<'a> {
+    stream: &'a PatchStream,
+    pos: u64,
+    buf: [u8; CURSOR_BUF],
+    buf_start: u64,
+    buf_len: usize,
+}
+
+impl<'a> StreamCursor<'a> {
+    fn new(stream: &'a PatchStream) -> Self {
+        Self::at(stream, 0)
+    }
+
+    fn at(stream: &'a PatchStream, pos: u64) -> Self {
+        StreamCursor { stream, pos, buf: [0u8; CURSOR_BUF], buf_start: 0, buf_len: 0 }
+    }
+
+    /// Current absolute position in the stream.
+    fn position(&self) -> u64 {
+        self.pos
+    }
+
+    /// Move to an absolute position and drop the read-ahead window.
+    fn set_position(&mut self, pos: u64) {
+        self.pos = pos;
+        self.buf_len = 0;
+    }
+
+    /// Bytes left between the cursor and the end of the stream.
+    fn remaining(&self) -> u64 {
+        self.stream.len().saturating_sub(self.pos)
+    }
+}
+
+impl Read for StreamCursor<'_> {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        if out.is_empty() {
+            return Ok(0);
+        }
+        let remaining = self.stream.len().saturating_sub(self.pos);
+        if remaining == 0 {
+            return Ok(0);
+        }
+        // Refill the read-ahead window when the request is not already covered.
+        let covered = self.pos >= self.buf_start
+            && self.pos - self.buf_start < self.buf_len as u64;
+        if !covered {
+            let take = remaining.min(CURSOR_BUF as u64) as usize;
+            read_exact_at(&self.stream.file, self.pos, &mut self.buf[..take])?;
+            self.buf_start = self.pos;
+            self.buf_len = take;
+        }
+        let offset = (self.pos - self.buf_start) as usize;
+        let take = (self.buf_len - offset).min(out.len());
+        out[..take].copy_from_slice(&self.buf[offset..offset + take]);
+        self.pos += take as u64;
+        Ok(take)
+    }
+}
+
+impl Seek for StreamCursor<'_> {
+    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+        let target = match pos {
+            SeekFrom::Start(n) => n as i128,
+            SeekFrom::End(n) => self.stream.len() as i128 + n as i128,
+            SeekFrom::Current(n) => self.pos as i128 + n as i128,
+        };
+        if target < 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "seek before the start of the patch stream",
+            ));
+        }
+        self.set_position(target as u64);
+        Ok(self.pos)
+    }
+}
+
+/// The WzPatch block located inside a `.patch` file.
+struct BlockRange {
+    /// Absolute offset of the block (the WzPatch header) in the file.
+    start: u64,
+    /// Length of the block in bytes.
+    len: u64,
+}
+
+/// Locate the WzPatch block inside `file`.
+///
+/// TMS patches are usually the whole file, optionally followed by a 32- or
+/// 64-bit footer (block length + notice length + end marker).  Only the head
+/// and tail of the file are inspected, so a multi-gigabyte patch is never read
+/// into memory just to find the block.
+fn locate_patch_block(file: &File, file_len: u64) -> Result<BlockRange> {
+    // 32-bit footer.
+    if file_len >= 12 {
+        let mut tail = [0u8; 4];
+        read_exact_at(file, file_len - 4, &mut tail)?;
+        if u32::from_le_bytes(tail) == END_MARKER {
+            let mut lens = [0u8; 8];
+            read_exact_at(file, file_len - 12, &mut lens)?;
+            let patch_len = u32::from_le_bytes(lens[..4].try_into().unwrap()) as u64;
+            let block_end = file_len - 12;
+            if patch_len <= block_end {
+                return Ok(BlockRange { start: block_end - patch_len, len: patch_len });
+            }
+        }
+    }
+
+    // 64-bit footer: the end marker is followed by four zero bytes.
+    if file_len >= 24 {
+        let mut tail = [0u8; 8];
+        read_exact_at(file, file_len - 8, &mut tail)?;
+        let lo = u32::from_le_bytes(tail[..4].try_into().unwrap());
+        let hi = u32::from_le_bytes(tail[4..].try_into().unwrap());
+        if lo == END_MARKER && hi == 0 {
+            let mut lens = [0u8; 8];
+            read_exact_at(file, file_len - 24, &mut lens)?;
+            let patch_len = u64::from_le_bytes(lens);
+            let block_end = file_len - 24;
+            if patch_len <= block_end {
+                return Ok(BlockRange { start: block_end - patch_len, len: patch_len });
+            }
+        }
+    }
+
+    // No footer: find the WzPatch magic (a patch may carry leading data).
+    let mut buf = vec![0u8; IO_CHUNK];
+    let mut carry: Vec<u8> = Vec::new();
+    let mut pos = 0u64;
+    while pos < file_len {
+        let take = (file_len - pos).min(buf.len() as u64) as usize;
+        read_exact_at(file, pos, &mut buf[..take])?;
+        // Extend the window with the previous chunk's tail so that a magic
+        // straddling a chunk boundary is still found.
+        let mut window = Vec::with_capacity(carry.len() + take);
+        window.extend_from_slice(&carry);
+        window.extend_from_slice(&buf[..take]);
+        if let Some(i) = window
+            .windows(WZPATCH_MAGIC.len())
+            .position(|w| w == WZPATCH_MAGIC)
+        {
+            let start = pos - carry.len() as u64 + i as u64;
+            return Ok(BlockRange { start, len: file_len - start });
+        }
+        carry.clear();
+        let keep = window.len().min(WZPATCH_MAGIC.len() - 1);
+        carry.extend_from_slice(&window[window.len() - keep..]);
+        pos += take as u64;
+    }
+
+    // Fallback: treat the whole file as the patch block.
+    Ok(BlockRange { start: 0, len: file_len })
+}
+
+/// Decompress the body of a WzPatch block into `scratch`.
+fn decompress_body_to_file(
+    file: &File,
+    body_start: u64,
+    body_len: u64,
+    scratch: &Path,
+) -> Result<()> {
+    // The compressed stream always starts at byte 16 of the patch block.  Check
+    // whether the first two bytes form a zlib header (CMF=0x78, FLG where
+    // (CMF*256+FLG)%31==0).  If so, use a ZlibDecoder; otherwise use raw
+    // DeflateDecoder.
+    let mut probe = [0u8; 2];
+    let is_zlib = if body_len >= 2 {
+        read_exact_at(file, body_start, &mut probe)?;
+        probe[0] == 0x78 && (probe[0] as u16 * 256 + probe[1] as u16) % 31 == 0
     } else {
-        let mut decoder = flate2::read::DeflateDecoder::new(body);
-        let mut out = Vec::new();
-        decoder.read_to_end(&mut out)
-            .context("failed to decompress (deflate) patch data")?;
-        out
+        false
     };
 
-    // Parse patch parts (handles KMST1125 hash list if present).
-    let (parts, is_kmst1125, old_file_hashes) = parse_patch_parts(&decompressed)?;
+    let body = FileSlice { file, pos: body_start, end: body_start + body_len };
+    let mut decoder: Box<dyn Read> = if is_zlib {
+        Box::new(ZlibDecoder::new(body))
+    } else {
+        Box::new(flate2::read::DeflateDecoder::new(body))
+    };
 
-    Ok(WzPatch { parts, decompressed, is_kmst1125, old_file_hashes })
+    let out = File::create(scratch)
+        .with_context(|| format!("failed to create {}", scratch.display()))?;
+    let mut writer = BufWriter::with_capacity(IO_CHUNK, out);
+    let mut buf = vec![0u8; IO_CHUNK];
+    loop {
+        let n = decoder
+            .read(&mut buf)
+            .context("failed to decompress patch data")?;
+        if n == 0 {
+            break;
+        }
+        writer
+            .write_all(&buf[..n])
+            .with_context(|| format!("failed to write {}", scratch.display()))?;
+    }
+    writer
+        .flush()
+        .with_context(|| format!("failed to write {}", scratch.display()))?;
+    Ok(())
 }
 
-/// Extract the WzPatch data block from a raw `.patch` file.
+/// Read a `.patch` file, spilling its decompressed stream to `scratch_dir`.
 ///
-/// For non-MZ files (TMS patches), the entire file may be the block, or it
-/// may have a 64-bit footer.
-fn extract_patch_block(data: &[u8]) -> Result<&[u8]> {
-    if data.len() < 16 {
-        bail!("patch file too small ({})", data.len());
+/// Neither the compressed file nor the decompressed stream is held in memory:
+/// the compressed body is decompressed straight from disk to a scratch file,
+/// which is removed once the returned [`WzPatch`] is dropped.
+fn load_wzpatch(path: &Path, scratch_dir: &Path) -> Result<WzPatch> {
+    let file = File::open(path).with_context(|| format!("failed to read {}", path.display()))?;
+    let file_len = file
+        .metadata()
+        .with_context(|| format!("failed to read {}", path.display()))?
+        .len();
+    if file_len < 16 {
+        bail!("patch file too small ({file_len})");
     }
 
-    // Check for 64-bit footer: last 8 bytes as u32, not u64.
-    // Try 32-bit footer first.
-    if data.len() >= 12 {
-        let end_marker = u32::from_le_bytes(data[data.len() - 4..].try_into().unwrap());
-        if end_marker == END_MARKER {
-            // 32-bit footer.
-            let patch_len = u32::from_le_bytes(data[data.len() - 12..data.len() - 8].try_into().unwrap()) as usize;
-            let _notice_len = u32::from_le_bytes(data[data.len() - 8..data.len() - 4].try_into().unwrap()) as usize;
-            let block_end = data.len() - 12;
-            if patch_len <= block_end {
-                return Ok(&data[block_end - patch_len..block_end]);
-            }
-        }
+    let block = locate_patch_block(&file, file_len)?;
+    if block.len < 16 {
+        bail!("patch block too small ({})", block.len);
     }
-
-    // Try 64-bit footer (first check the last 4 bytes; if they are 0xF2F7FBF3
-    // and the following 4 bytes are 0x00000000).
-    if data.len() >= 24 {
-        let marker_lo = u32::from_le_bytes(data[data.len() - 8..data.len() - 4].try_into().unwrap());
-        let marker_hi = u32::from_le_bytes(data[data.len() - 4..].try_into().unwrap());
-        if marker_lo == END_MARKER && marker_hi == 0 {
-            let patch_len = u64::from_le_bytes(data[data.len() - 24..data.len() - 16].try_into().unwrap()) as usize;
-            let _notice_len = u64::from_le_bytes(data[data.len() - 16..data.len() - 8].try_into().unwrap()) as usize;
-            let block_end = data.len() - 24;
-            if patch_len <= block_end {
-                return Ok(&data[block_end - patch_len..block_end]);
-            }
-        }
+    let mut header = [0u8; 16];
+    read_exact_at(&file, block.start, &mut header)?;
+    if &header[..8] != WZPATCH_MAGIC {
+        bail!("invalid WzPatch magic");
     }
+    let _version = i32::from_le_bytes(header[8..12].try_into().unwrap());
+    let _checksum0 = u32::from_le_bytes(header[12..16].try_into().unwrap());
 
-    // For TMS patches, if no footer found, treat the entire file as the
-    // patch block (after skipping any leading non-WzPatch data).
-    // But first, try to find the WzPatch magic.
-    if let Some(pos) = data.windows(8).position(|w| w == WZPATCH_MAGIC) {
-        return Ok(&data[pos..]);
-    }
+    let scratch = scratch_dir.join(PATCH_STREAM_FILE);
+    decompress_body_to_file(&file, block.start + 16, block.len - 16, &scratch)?;
+    drop(file);
 
-    // Fallback: entire file.
-    Ok(data)
+    let stream = PatchStream::open(scratch)?;
+    // Parse patch parts (handles the KMST1125 hash list if present).
+    let (parts, is_kmst1125, old_file_hashes) = parse_patch_parts(&stream)?;
+
+    Ok(WzPatch { parts, stream, is_kmst1125, old_file_hashes })
 }
 
-/// Parse the sequence of patch parts from the decompressed data.
+/// Parse the sequence of patch parts from the decompressed stream.
 ///
 /// Returns `(parts, is_kmst1125, old_file_hashes)`.
 ///
@@ -242,11 +515,11 @@ fn extract_patch_block(data: &[u8]) -> Result<&[u8]> {
 /// followed by that many `{i32 len, ASCII name, u32 checksum}` entries), the
 /// list is consumed and `is_kmst1125` is set.  Otherwise the cursor resets
 /// and parsing proceeds in classic mode.
-fn parse_patch_parts(data: &[u8]) -> Result<(Vec<PatchPart>, bool, HashMap<String, u32>)> {
-    let mut cursor = Cursor::new(data);
+fn parse_patch_parts(stream: &PatchStream) -> Result<(Vec<PatchPart>, bool, HashMap<String, u32>)> {
+    let mut cursor = StreamCursor::new(stream);
 
     // ── Try to read a KMST1125 file-hash list ──────────────────────────
-    let (is_kmst1125, old_file_hashes) = try_read_kmst1125_hash_list(&mut cursor, data.len());
+    let (is_kmst1125, old_file_hashes) = try_read_kmst1125_hash_list(&mut cursor);
 
     if !is_kmst1125 {
         cursor.set_position(0);
@@ -269,7 +542,7 @@ fn parse_patch_parts(data: &[u8]) -> Result<(Vec<PatchPart>, bool, HashMap<Strin
             0 => {
                 // Create.
                 if Path::new(&name).extension().is_none() {
-                    // Directory marker �?skip.
+                    // Directory marker - skip.
                     continue;
                 }
                 let file_length = read_i32(&mut cursor)? as u32;
@@ -307,45 +580,45 @@ fn parse_patch_parts(data: &[u8]) -> Result<(Vec<PatchPart>, bool, HashMap<Strin
 ///
 /// Returns `(true, hashes)` on success, or `(false, empty)` if the data
 /// doesn't look like a hash list.
-fn try_read_kmst1125_hash_list(
-    cursor: &mut Cursor<&[u8]>,
-    data_len: usize,
-) -> (bool, HashMap<String, u32>) {
-    let start = cursor.position() as usize;
-    let remaining = data_len.saturating_sub(start);
-    if remaining < 4 {
+fn try_read_kmst1125_hash_list(cursor: &mut StreamCursor<'_>) -> (bool, HashMap<String, u32>) {
+    let start = cursor.position();
+    if cursor.remaining() < 4 {
         return (false, HashMap::new());
     }
 
-    let buf = cursor.get_ref();
-    let count = i32::from_le_bytes([buf[start], buf[start+1], buf[start+2], buf[start+3]]);
+    let count = match read_i32(cursor) {
+        Ok(c) => c,
+        Err(_) => return (false, HashMap::new()),
+    };
     // Reasonable bounds: 1 .. 500_000
     if count <= 0 || count > 500_000 {
+        cursor.set_position(start);
         return (false, HashMap::new());
     }
-    cursor.set_position((start + 4) as u64);
 
     let mut hashes = HashMap::with_capacity(count as usize);
     for _ in 0..count {
         let name_len = match read_i32(cursor) {
             Ok(n) if n > 0 && n <= 260 => n as usize,
             _ => {
-                cursor.set_position(start as u64);
+                cursor.set_position(start);
                 return (false, HashMap::new());
             }
         };
-        let pos = cursor.position() as usize;
-        if pos + name_len + 4 > data_len {
-            cursor.set_position(start as u64);
+        if cursor.remaining() < name_len as u64 + 4 {
+            cursor.set_position(start);
             return (false, HashMap::new());
         }
-        let name_bytes = &cursor.get_ref()[pos..pos + name_len];
-        let name = String::from_utf8_lossy(name_bytes).into_owned();
-        cursor.set_position((pos + name_len) as u64);
+        let mut name_bytes = vec![0u8; name_len];
+        if cursor.read_exact(&mut name_bytes).is_err() {
+            cursor.set_position(start);
+            return (false, HashMap::new());
+        }
+        let name = String::from_utf8_lossy(&name_bytes).into_owned();
         let checksum = match read_u32(cursor) {
             Ok(c) => c,
             Err(_) => {
-                cursor.set_position(start as u64);
+                cursor.set_position(start);
                 return (false, HashMap::new());
             }
         };
@@ -357,7 +630,7 @@ fn try_read_kmst1125_hash_list(
 
 /// Read a file name followed by a type byte from the patch stream.
 ///
-/// File name bytes are read until a byte �?2 is encountered; that byte is the
+/// File name bytes are read until a byte - 2 is encountered; that byte is the
 /// patch type. Returns `(file_name, type_byte)` or `-1` if EOF.
 fn read_patch_file_name<R: Read>(reader: &mut R) -> Result<(String, i32)> {
     let mut name_bytes = Vec::new();
@@ -585,13 +858,25 @@ pub fn apply_patches(
             patch_index.fetch_add(1, Ordering::Relaxed);
 
             plog!("  applying {}...", zip_name);
-            let patch_data = std::fs::read(&dest)
-                .with_context(|| format!("failed to read downloaded patch {}", dest.display()))?;
+            // Reading + decompressing + parsing the downloaded patch is the
+            // (short) pause seen before the pre-patch checksum phase, surfaced
+            // on the GUI.  The decompressed stream goes to a scratch file inside
+            // the client, so a multi-gigabyte patch never has to be resident.
+            crate::progress::loading_patch();
+            let temp_dir = create_temp_dir(target_dir)?;
+            let loaded = load_wzpatch(&dest, &temp_dir);
+            // The download has been consumed as a whole; release it before the
+            // apply phase starts.
             let _ = std::fs::remove_file(&dest);
-
-            // Apply the patch with progress reporting (the apply phase is
-            // reported from inside apply_patch_data once its totals are known).
-            let corrupted = apply_patch_data(&patch_data, target_dir)
+            let result = match loaded {
+                Ok(patch) => apply_patch_data(&patch, target_dir, &temp_dir),
+                Err(e) => Err(e.context(format!(
+                    "failed to read downloaded patch {}",
+                    dest.display()
+                ))),
+            };
+            let _ = std::fs::remove_dir_all(&temp_dir);
+            let corrupted = result
                 .with_context(|| format!("failed to apply patch {} -> {}", current, target))?;
 
             if !corrupted.is_empty() {
@@ -673,15 +958,24 @@ pub fn apply_patch_file(
         purge_junk_dirs(target_dir)?;
     }
 
-    let patch_data = std::fs::read(patch_path)
-        .with_context(|| format!("failed to read {}", patch_path.display()))?;
+    let patch_size = std::fs::metadata(patch_path)
+        .with_context(|| format!("failed to read {}", patch_path.display()))?
+        .len();
 
     plog!("applying local patch '{}' ({:.2} MiB)...",
         patch_path.display(),
-        patch_data.len() as f64 / (1024.0 * 1024.0));
+        patch_size as f64 / (1024.0 * 1024.0));
 
-    let corrupted = apply_patch_data(&patch_data, target_dir)
-        .context("failed to apply patch")?;
+    // Decompress the patch into a scratch file and parse it, then apply it; the
+    // compressed file and the decompressed stream are never held in memory.
+    crate::progress::loading_patch();
+    let temp_dir = create_temp_dir(target_dir)?;
+    let result = (|| -> Result<Vec<String>> {
+        let patch = load_wzpatch(patch_path, &temp_dir)?;
+        apply_patch_data(&patch, target_dir, &temp_dir)
+    })();
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    let corrupted = result.context("failed to apply patch")?;
 
     if corrupted.is_empty() {
         plog!("patching successful.");
@@ -1484,6 +1778,21 @@ fn pre_patch_report(patch: &WzPatch) -> (usize, usize, usize, u64) {
     (create, rebuild, delete, bytes.max(0) as u64)
 }
 
+/// CRC-32 of an open file, computed in bounded chunks so that verifying a
+/// several-hundred-megabyte WZ archive never loads it into memory.
+fn crc32_file_handle(file: &File, len: u64) -> Result<u32> {
+    let mut buf = vec![0u8; IO_CHUNK];
+    let mut crc = 0u32;
+    let mut pos = 0u64;
+    while pos < len {
+        let take = (len - pos).min(buf.len() as u64) as usize;
+        read_exact_at(file, pos, &mut buf[..take])?;
+        crc = crate::patch_builder::crc32_update(crc, &buf[..take]);
+        pos += take as u64;
+    }
+    Ok(crc)
+}
+
 /// Validate that an old file exists with the expected CRC-32.
 ///
 /// Returns:
@@ -1502,9 +1811,14 @@ fn validate_old_file(
     if !old_path.exists() {
         bail!("old file not found");
     }
-    let old_data = std::fs::read(&old_path)
+    let file = File::open(&old_path)
         .with_context(|| format!("failed to read {}", old_path.display()))?;
-    let actual_crc = crate::patch_builder::crc32_update(0, &old_data);
+    let len = file
+        .metadata()
+        .with_context(|| format!("failed to read {}", old_path.display()))?
+        .len();
+    let actual_crc = crc32_file_handle(&file, len)
+        .with_context(|| format!("failed to read {}", old_path.display()))?;
 
     if new_checksum == Some(actual_crc) {
         return Ok(PreValidate::AlreadyUpToDate);
@@ -1522,7 +1836,7 @@ fn validate_old_file(
 /// (only meaningful for KMST1125 format).  Returns an empty set on error or
 /// for non-KMST1125 parts.
 fn collect_source_deps(
-    decompressed: &[u8],
+    stream: &PatchStream,
     inst_offset: u64,
     is_kmst1125: bool,
 ) -> Result<HashSet<String>> {
@@ -1530,7 +1844,7 @@ fn collect_source_deps(
     if !is_kmst1125 {
         return Ok(deps);
     }
-    let mut cursor = Cursor::new(&decompressed[inst_offset as usize..]);
+    let mut cursor = StreamCursor::at(stream, inst_offset);
     loop {
         let cmd = read_u32(&mut cursor)?;
         if cmd == 0 {
@@ -1547,10 +1861,10 @@ fn collect_source_deps(
                 let _old_offset = read_i32(&mut cursor)?;
                 let name_len = read_i32(&mut cursor)?;
                 if name_len > 0 && name_len <= 260 {
-                    let pos = inst_offset as usize + cursor.position() as usize;
-                    if pos + name_len as usize <= decompressed.len() {
-                        let name_bytes = &decompressed[pos..pos + name_len as usize];
-                        let name = String::from_utf8_lossy(name_bytes)
+                    let pos = cursor.position();
+                    if pos + name_len as u64 <= stream.len() {
+                        let name = stream
+                            .read_string_at(pos, name_len as usize)?
                             .replace('\\', "/");
                         deps.insert(name);
                     }
@@ -1577,19 +1891,18 @@ fn plan_line(line: &str) {
     }
 }
 
-/// Apply patch data (the raw bytes of a `.patch` file) to `target_dir`.
-/// Returns the list of corrupted file paths.
+/// Apply a parsed patch to `target_dir`.  Returns the list of corrupted file
+/// paths.
 ///
 /// DeadPatch is enabled by default: a pre-patch validation phase checks every
 /// old file's CRC-32 and reports the execution plan (files, sizes, disk space)
 /// before writing a single byte to the target directory.
-fn apply_patch_data(patch_data: &[u8], target_dir: &Path) -> Result<Vec<String>> {
-    // Reading + decompressing + parsing the patch file is the (short) pause
-    // seen before the pre-patch checksum phase — surface it on the GUI.
-    crate::progress::loading_patch();
-    let patch = read_wzpatch(patch_data)?;
-
-    // ── DeadPatch: pre-patch validation & execution plan ─────────────────
+///
+/// `temp_dir` must be a scratch directory inside the client (see
+/// [`create_temp_dir`]); rebuilt files that still have to wait for their last
+/// consumer are staged there before being committed.
+fn apply_patch_data(patch: &WzPatch, target_dir: &Path, temp_dir: &Path) -> Result<Vec<String>> {
+    // ── DeadPatch: pre-patch validation & execution plan ──────────────────
     let (create_count, rebuild_count, delete_count, total_bytes) = pre_patch_report(&patch);
     plog!("  patch plan: {} create, {} rebuild, {} delete ({} total)",
         create_count, rebuild_count, delete_count,
@@ -1721,7 +2034,6 @@ fn apply_patch_data(patch_data: &[u8], target_dir: &Path) -> Result<Vec<String>>
     // ─────────────────────────────────────────────────────────────────────
 
     let mut corrupted: Vec<String> = Vec::new();
-    let temp_dir = create_temp_dir(target_dir)?;
 
     if patch.is_kmst1125 {
         // Signal the GUI that the patch execution plan is being computed.
@@ -1735,7 +2047,7 @@ fn apply_patch_data(patch_data: &[u8], target_dir: &Path) -> Result<Vec<String>>
     let deps: Vec<HashSet<String>> = patch.parts.iter().map(|part| {
         match part {
             PatchPart::Rebuild { inst_offset, .. } => {
-                collect_source_deps(&patch.decompressed, *inst_offset, patch.is_kmst1125)
+                collect_source_deps(&patch.stream, *inst_offset, patch.is_kmst1125)
                     .unwrap_or_default()
             }
             _ => HashSet::new(),
@@ -1862,8 +2174,24 @@ fn apply_patch_data(patch_data: &[u8], target_dir: &Path) -> Result<Vec<String>>
     // as its owner (last consumer) part has been built, so the OLD copy stays
     // on disk for every part that still reads it as a source.
     let total_apply = patch.parts.iter().filter(|p| !matches!(p, PatchPart::Delete { .. })).count();
-    crate::progress::begin_apply(total_apply);
+    crate::progress::begin_apply(total_apply, total_bytes);
+    // Console-only byte bar (in GUI mode the reporter drives the window).
+    let apply_bar = if total_bytes > 0 && !crate::progress::active() {
+        let pb = ProgressBar::new(total_bytes);
+        pb.set_style(
+            ProgressStyle::with_template(
+                "    [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({binary_bytes_per_sec}, ETA {eta}) {msg}",
+            )
+            .unwrap()
+            .progress_chars("=>-"),
+        );
+        pb.enable_steady_tick(Duration::from_millis(120));
+        Some(pb)
+    } else {
+        None
+    };
     let apply_done = AtomicUsize::new(0);
+    let mut bytes_done: u64 = 0;
     for (i, part) in patch.parts.iter().enumerate() {
         let file_name = match part {
             PatchPart::Create { file_name, .. } | PatchPart::Rebuild { file_name, .. } => file_name,
@@ -1872,16 +2200,25 @@ fn apply_patch_data(patch_data: &[u8], target_dir: &Path) -> Result<Vec<String>>
 
         let result = match part {
             PatchPart::Create { file_name, file_length, checksum, data_offset } => {
-                apply_create(&patch.decompressed, file_name, *data_offset, *file_length, *checksum, &temp_dir, target_dir)
+                apply_create(&patch.stream, file_name, *data_offset, *file_length, *checksum, &temp_dir, target_dir)
             }
             PatchPart::Rebuild { file_name, old_checksum, new_checksum, inst_offset, .. } => {
-                apply_rebuild(&patch.decompressed, file_name, *inst_offset, *old_checksum, *new_checksum, &temp_dir, target_dir, patch.is_kmst1125)
+                apply_rebuild(&patch.stream, file_name, *inst_offset, *old_checksum, *new_checksum, &temp_dir, target_dir, patch.is_kmst1125)
             }
             PatchPart::Delete { .. } => unreachable!(),
         };
 
         let done = apply_done.fetch_add(1, Ordering::Relaxed) + 1;
+        // Progress is reported in bytes: patch parts differ by two orders of
+        // magnitude in size, so a per-file count would leave most of the work
+        // hidden in the last few percent of the bar.
+        bytes_done = bytes_done.saturating_add(part.byte_delta().max(0) as u64);
+        crate::progress::apply_bytes(bytes_done, total_bytes);
         crate::progress::apply_progress(done, total_apply, file_name);
+        if let Some(pb) = &apply_bar {
+            pb.set_message(file_basename(file_name).to_string());
+            pb.set_position(bytes_done);
+        }
 
         if let Err(e) = result {
             plog!("    apply fail: {} - {}", file_name, e);
@@ -1908,6 +2245,9 @@ fn apply_patch_data(patch_data: &[u8], target_dir: &Path) -> Result<Vec<String>>
         }
         pending = new_pending;
     }
+    if let Some(pb) = &apply_bar {
+        pb.finish_and_clear();
+    }
 
     // Phase 2: Apply deletions.
     for part in &patch.parts {
@@ -1924,6 +2264,11 @@ fn apply_patch_data(patch_data: &[u8], target_dir: &Path) -> Result<Vec<String>>
     }
 
     // Phase 3: Apply remaining pending files (Base files last, then others).
+    // These were built during Phase 1; committing them moves the staged file
+    // into the client, so no further byte progress is reported here.
+    if !pending.is_empty() {
+        plog!("  committing {} deferred file(s)...", pending.len());
+    }
     pending.sort_by(|a, b| {
         let a_name = match &patch.parts[*a] {
             PatchPart::Create { file_name, .. } | PatchPart::Rebuild { file_name, .. } => file_name,
@@ -1940,9 +2285,6 @@ fn apply_patch_data(patch_data: &[u8], target_dir: &Path) -> Result<Vec<String>>
     for &idx in &pending {
         apply_pending(idx, &patch.parts, &mut corrupted, &temp_dir, target_dir);
     }
-
-    // Clean up temp directory.
-    let _ = std::fs::remove_dir_all(&temp_dir);
 
     corrupted.sort();
     corrupted.dedup();
@@ -1961,7 +2303,7 @@ fn create_temp_dir(target_dir: &Path) -> Result<PathBuf> {
     Ok(dir)
 }
 
-/// Sanitize a file path from the patch manifest (backslash �?forward slash,
+/// Sanitize a file path from the patch manifest (backslash - forward slash,
 /// remove leading separators).
 fn sanitize_path(path: &str) -> PathBuf {
     let normalized = path.replace('\\', "/");
@@ -1969,9 +2311,16 @@ fn sanitize_path(path: &str) -> PathBuf {
     PathBuf::from(trimmed)
 }
 
+/// The final path component of a patch file name (used for progress messages).
+fn file_basename(name: &str) -> &str {
+    name.rsplit(|c| c == '\\' || c == '/')
+        .find(|s| !s.is_empty())
+        .unwrap_or(name)
+}
+
 /// Apply a "create" patch part: extract raw file data and verify checksum.
 fn apply_create(
-    decompressed: &[u8],
+    stream: &PatchStream,
     file_name: &str,
     data_offset: u64,
     file_length: u32,
@@ -1979,21 +2328,9 @@ fn apply_create(
     temp_dir: &Path,
     _target_dir: &Path,
 ) -> Result<()> {
-    let offset = data_offset as usize;
-    let length = file_length as usize;
-    if offset + length > decompressed.len() {
+    let length = file_length as u64;
+    if data_offset.saturating_add(length) > stream.len() {
         bail!("create data for '{}' extends past decompressed data", file_name);
-    }
-
-    let data = &decompressed[offset..offset + length];
-
-    // Verify CRC-32.
-    let actual_crc = crate::patch_builder::crc32_update(0, data);
-    if actual_crc != expected_crc {
-        bail!(
-            "CRC-32 mismatch for '{}': expected {:08X}, got {:08X}",
-            file_name, expected_crc, actual_crc
-        );
     }
 
     let temp_path = temp_dir.join(sanitize_path(file_name));
@@ -2001,10 +2338,47 @@ fn apply_create(
         std::fs::create_dir_all(parent)
             .with_context(|| format!("failed to create parent dir for {}", temp_path.display()))?;
     }
-    std::fs::write(&temp_path, data)
+
+    // Copy the payload straight from the patch stream into the temp file while
+    // checksumming it, so the file's data is never held in memory.
+    let out = File::create(&temp_path)
         .with_context(|| format!("failed to write {}", temp_path.display()))?;
+    let mut writer = BufWriter::with_capacity(IO_CHUNK, out);
+    let mut buf = vec![0u8; IO_CHUNK];
+    let mut crc = 0u32;
+    let mut pos = data_offset;
+    let mut remaining = length;
+    while remaining > 0 {
+        let take = remaining.min(buf.len() as u64) as usize;
+        stream.read_at(pos, &mut buf[..take])?;
+        crc = crate::patch_builder::crc32_update(crc, &buf[..take]);
+        writer
+            .write_all(&buf[..take])
+            .with_context(|| format!("failed to write {}", temp_path.display()))?;
+        pos += take as u64;
+        remaining -= take as u64;
+    }
+    writer
+        .flush()
+        .with_context(|| format!("failed to write {}", temp_path.display()))?;
+    drop(writer);
+
+    if crc != expected_crc {
+        let _ = std::fs::remove_file(&temp_path);
+        bail!(
+            "CRC-32 mismatch for '{}': expected {:08X}, got {:08X}",
+            file_name, expected_crc, crc
+        );
+    }
 
     Ok(())
+}
+
+/// An open source file for rebuild copy instructions.  Only the handle and the
+/// file's length are kept, never its contents.
+struct SourceFile {
+    file: File,
+    len: u64,
 }
 
 /// Apply a "rebuild" patch part: follow rebuild instructions to construct the
@@ -2017,7 +2391,7 @@ fn apply_create(
 /// exists.  Classic rebuilds always read from their own old file, so it is
 /// required there.
 fn apply_rebuild(
-    decompressed: &[u8],
+    stream: &PatchStream,
     file_name: &str,
     inst_offset: u64,
     old_checksum: u32,
@@ -2028,23 +2402,42 @@ fn apply_rebuild(
 ) -> Result<()> {
     let old_path = target_dir.join(sanitize_path(file_name));
 
-    // Load the target's own old copy when present.  If it already matches the
+    // Open the target's own old copy when present.  If it already matches the
     // new checksum the file is up to date and is copied through unchanged.  A
     // checksum mismatch is only fatal for classic patches: in KMST1125 it was
     // already reported during pre-patch validation and the rebuild may still
     // succeed (the reference patcher's dead-patch mode does the same).
-    let old_data: Option<Vec<u8>> = if old_path.exists() {
-        let data = std::fs::read(&old_path)
+    //
+    // Only file handles are cached, never file contents: a client WZ archive can
+    // be several hundred megabytes and holding old + new copies in memory is
+    // what made large patches thrash on machines with little RAM.
+    let mut sources: HashMap<String, SourceFile> = HashMap::new();
+    if old_path.exists() {
+        let file = File::open(&old_path)
             .with_context(|| format!("failed to read old file {}", old_path.display()))?;
-        let actual_old_crc = crate::patch_builder::crc32_update(0, &data);
+        let old_len = file
+            .metadata()
+            .with_context(|| format!("failed to read old file {}", old_path.display()))?
+            .len();
+        let actual_old_crc = crc32_file_handle(&file, old_len)
+            .with_context(|| format!("failed to read old file {}", old_path.display()))?;
         if actual_old_crc == new_checksum {
             let temp_path = temp_dir.join(sanitize_path(file_name));
             if let Some(parent) = temp_path.parent() {
                 std::fs::create_dir_all(parent)
                     .with_context(|| format!("failed to create parent dir for {}", temp_path.display()))?;
             }
-            std::fs::write(&temp_path, &data)
+            std::fs::copy(&old_path, &temp_path)
                 .with_context(|| format!("failed to write {}", temp_path.display()))?;
+            // A file copy also copies the source's attributes; make sure the
+            // staged file stays writable so committing it later succeeds.
+            if let Ok(meta) = std::fs::metadata(&temp_path) {
+                let mut perms = meta.permissions();
+                if perms.readonly() {
+                    perms.set_readonly(false);
+                    let _ = std::fs::set_permissions(&temp_path, perms);
+                }
+            }
             return Ok(());
         }
         if !is_kmst1125 && actual_old_crc != old_checksum {
@@ -2053,28 +2446,27 @@ fn apply_rebuild(
                 file_name, old_checksum, actual_old_crc
             );
         }
-        Some(data)
-    } else if is_kmst1125 {
-        // Newly-split piece with no old copy: rebuild purely from the source
-        // files referenced by the instructions.
-        None
-    } else {
+        sources.insert(file_name.to_string(), SourceFile { file, len: old_len });
+    } else if !is_kmst1125 {
         bail!("old file '{}' not found", file_name);
-    };
-
-    // Cache of opened source files (KMST1125 can reference multiple).  When
-    // the target's own old copy is absent the cache is left without it; any
-    // instruction that actually reads from it then fails with a clear
-    // "source file not found" error below.
-    let mut file_cache: HashMap<String, Vec<u8>> = HashMap::new();
-    if let Some(od) = old_data {
-        file_cache.insert(file_name.to_string(), od);
     }
 
-    // Parse instructions and compute the new file.
-    let mut cursor = Cursor::new(&decompressed[inst_offset as usize..]);
-    let mut new_data = Vec::new();
+    // Build the new file straight into the temp file, checksumming as we go, so
+    // neither the old copy nor the new copy of a large WZ archive is ever
+    // resident in memory.
+    let temp_path = temp_dir.join(sanitize_path(file_name));
+    if let Some(parent) = temp_path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create parent dir for {}", temp_path.display()))?;
+    }
+    let out = File::create(&temp_path)
+        .with_context(|| format!("failed to write {}", temp_path.display()))?;
+    let mut writer = BufWriter::with_capacity(IO_CHUNK, out);
+
+    let mut copy_buf = vec![0u8; IO_CHUNK];
+    let mut fill_buf = vec![0u8; IO_CHUNK];
     let mut new_crc = 0u32;
+    let mut cursor = StreamCursor::at(stream, inst_offset);
 
     loop {
         let cmd = read_u32(&mut cursor)?;
@@ -2083,24 +2475,40 @@ fn apply_rebuild(
         }
         match cmd >> 28 {
             0x08 => {
-                let len = (cmd & 0x0FFF_FFFF) as usize;
-                let pos = inst_offset as usize + cursor.position() as usize;
-                if pos + len > decompressed.len() {
+                let len = (cmd & 0x0FFF_FFFF) as u64;
+                let mut pos = cursor.position();
+                if pos.saturating_add(len) > stream.len() {
                     bail!("patch data extends past end of decompressed stream for '{}'", file_name);
                 }
-                let chunk = &decompressed[pos..pos + len];
-                new_crc = crate::patch_builder::crc32_update(new_crc, chunk);
-                new_data.extend_from_slice(chunk);
+                let mut remaining = len;
+                while remaining > 0 {
+                    let take = remaining.min(copy_buf.len() as u64) as usize;
+                    stream.read_at(pos, &mut copy_buf[..take])?;
+                    new_crc = crate::patch_builder::crc32_update(new_crc, &copy_buf[..take]);
+                    writer
+                        .write_all(&copy_buf[..take])
+                        .with_context(|| format!("failed to write {}", temp_path.display()))?;
+                    pos += take as u64;
+                    remaining -= take as u64;
+                }
                 cursor.seek(SeekFrom::Current(len as i64))?;
             }
             0x0C => {
                 let len = ((cmd & 0x0FFF_FF00) >> 8) as usize;
                 let fill_byte = (cmd & 0xFF) as u8;
-                new_data.resize(new_data.len() + len, fill_byte);
+                fill_buf.fill(fill_byte);
+                let mut remaining = len;
+                while remaining > 0 {
+                    let take = remaining.min(fill_buf.len());
+                    writer
+                        .write_all(&fill_buf[..take])
+                        .with_context(|| format!("failed to write {}", temp_path.display()))?;
+                    remaining -= take;
+                }
                 new_crc = crc32_fill_bytes(new_crc, fill_byte, len);
             }
             _ => {
-                let len = cmd as usize;
+                let len = cmd as u64;
                 let old_offset = read_i32(&mut cursor)?;
                 if old_offset < 0 {
                     bail!("negative old file offset for '{}'", file_name);
@@ -2112,59 +2520,64 @@ fn apply_rebuild(
                     if name_len <= 0 || name_len > 260 {
                         bail!("invalid source file name length {} for '{}'", name_len, file_name);
                     }
-                    let pos = inst_offset as usize + cursor.position() as usize;
-                    if pos + name_len as usize > decompressed.len() {
+                    let pos = cursor.position();
+                    if pos.saturating_add(name_len as u64) > stream.len() {
                         bail!("source file name extends past stream for '{}'", file_name);
                     }
-                    let name_bytes = &decompressed[pos..pos + name_len as usize];
-                    let name = String::from_utf8_lossy(name_bytes).into_owned();
+                    let name = stream.read_string_at(pos, name_len as usize)?;
                     cursor.seek(SeekFrom::Current(name_len as i64))?;
                     name
                 } else {
                     file_name.to_string()
                 };
 
-                // Get or open the source file data.
-                let source_data = if let Some(data) = file_cache.get(&source_file) {
-                    data
-                } else {
+                // Get or open the source file.
+                if !sources.contains_key(&source_file) {
                     let src_path = target_dir.join(sanitize_path(&source_file));
-                    let data = std::fs::read(&src_path)
+                    let file = File::open(&src_path)
                         .with_context(|| format!("failed to read source file {}", src_path.display()))?;
-                    file_cache.insert(source_file.clone(), data);
-                    file_cache.get(&source_file).unwrap()
-                };
+                    let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+                    sources.insert(source_file.clone(), SourceFile { file, len });
+                }
+                let source = sources.get(&source_file).unwrap();
 
-                let old_start = old_offset as usize;
-                if old_start + len > source_data.len() {
+                let old_start = old_offset as u64;
+                if old_start.saturating_add(len) > source.len {
                     bail!(
                         "source file reference out of bounds for '{}' (source='{}'): offset {}, len {}, size {}",
-                        file_name, source_file, old_offset, len, source_data.len()
+                        file_name, source_file, old_offset, len, source.len
                     );
                 }
-                let chunk = &source_data[old_start..old_start + len];
-                new_crc = crate::patch_builder::crc32_update(new_crc, chunk);
-                new_data.extend_from_slice(chunk);
+                let mut pos = old_start;
+                let mut remaining = len;
+                while remaining > 0 {
+                    let take = remaining.min(copy_buf.len() as u64) as usize;
+                    read_exact_at(&source.file, pos, &mut copy_buf[..take])
+                        .with_context(|| format!("failed to read source file {}", source_file))?;
+                    new_crc = crate::patch_builder::crc32_update(new_crc, &copy_buf[..take]);
+                    writer
+                        .write_all(&copy_buf[..take])
+                        .with_context(|| format!("failed to write {}", temp_path.display()))?;
+                    pos += take as u64;
+                    remaining -= take as u64;
+                }
             }
         }
     }
 
+    writer
+        .flush()
+        .with_context(|| format!("failed to write {}", temp_path.display()))?;
+    drop(writer);
+
     // Verify new CRC-32.
     if new_crc != new_checksum {
+        let _ = std::fs::remove_file(&temp_path);
         bail!(
             "new CRC-32 mismatch for '{}': expected {:08X}, got {:08X}",
             file_name, new_checksum, new_crc
         );
     }
-
-    // Write the new file to temp.
-    let temp_path = temp_dir.join(sanitize_path(file_name));
-    if let Some(parent) = temp_path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create parent dir for {}", temp_path.display()))?;
-    }
-    std::fs::write(&temp_path, &new_data)
-        .with_context(|| format!("failed to write {}", temp_path.display()))?;
 
     Ok(())
 }
@@ -2272,12 +2685,12 @@ pub fn purge_junk_dirs(target_dir: &Path) -> Result<()> {
 
 /// Check whether a directory name matches the junk patterns:
 /// - Ends with `.$$$`
-/// - 8.3 format: `XXXXXXXX.XXX` (name �?8 chars, extension �?3 chars)
+/// - 8.3 format: `XXXXXXXX.XXX` (name - 8 chars, extension - 3 chars)
 fn is_junk_dir_name(name: &str) -> bool {
     if name.to_ascii_lowercase().ends_with(".$$$") {
         return true;
     }
-    // 8.3 format: check if name looks like `name.ext` with name �?8 and ext �?3.
+    // 8.3 format: check if name looks like `name.ext` with name - 8 and ext - 3.
     if let Some(dot_pos) = name.rfind('.') {
         let base = &name[..dot_pos];
         let ext = &name[dot_pos + 1..];
@@ -2613,6 +3026,14 @@ mod tests {
         root
     }
 
+    /// Write an instruction blob to a scratch file and open it as a patch
+    /// stream (the instructions then start at offset 0).
+    fn stream_of(root: &Path, bytes: &[u8]) -> PatchStream {
+        let path = root.join("stream.bin");
+        std::fs::write(&path, bytes).unwrap();
+        PatchStream::open(path).unwrap()
+    }
+
     /// A KMST1125 Rebuild may produce a piece that has no old copy of its own
     /// (e.g. a WZ file newly split in this patch): it is assembled purely from
     /// other old source files.  Such a part must NOT be reported "old file not
@@ -2631,8 +3052,9 @@ mod tests {
         let expect = &a[0..5];
         let new_crc = crate::patch_builder::crc32_update(0, expect);
         let inst = inst_from_other("Data/A.wz", 0, 5);
+        let stream = stream_of(&root, &inst);
 
-        apply_rebuild(&inst, "Data/B.wz", 0, 0, new_crc, &temp, &root, true)?;
+        apply_rebuild(&stream, "Data/B.wz", 0, 0, new_crc, &temp, &root, true)?;
 
         let out = std::fs::read(temp.join("Data/B.wz"))?;
         assert_eq!(&out, expect, "rebuilt file must match the new checksum");
@@ -2649,7 +3071,8 @@ mod tests {
         std::fs::create_dir_all(&temp)?;
 
         let inst = inst_from_self(0, 5);
-        let res = apply_rebuild(&inst, "Data/B.wz", 0, 0, 0x1234_5678, &temp, &root, false);
+        let stream = stream_of(&root, &inst);
+        let res = apply_rebuild(&stream, "Data/B.wz", 0, 0, 0x1234_5678, &temp, &root, false);
         let err = format!("{:#}", res.expect_err("classic rebuild without an old file must fail"));
         assert!(err.contains("old file"), "unexpected error: {err}");
         let _ = std::fs::remove_dir_all(&root);
@@ -2672,11 +3095,40 @@ mod tests {
         let new = &old[0..5];
         let new_crc = crate::patch_builder::crc32_update(0, new);
         let inst = inst_from_self(0, 5);
+        let stream = stream_of(&root, &inst);
 
-        apply_rebuild(&inst, "Data/B.wz", 0, old_crc, new_crc, &temp, &root, false)?;
+        apply_rebuild(&stream, "Data/B.wz", 0, old_crc, new_crc, &temp, &root, false)?;
 
         let out = std::fs::read(temp.join("Data/B.wz"))?;
         assert_eq!(&out, new);
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    /// A rebuild that fails its new-checksum check must not leave a partial
+    /// file behind: the streaming writer creates the temp file up front.
+    #[test]
+    fn rebuild_discards_temp_file_on_crc_mismatch() -> Result<()> {
+        let root = temp_root("crc_mismatch");
+        let data = root.join("Data");
+        std::fs::create_dir_all(&data)?;
+        let old = b"HELLOworld".to_vec();
+        std::fs::write(data.join("B.wz"), &old)?;
+        let temp = root.join("patch_tmp");
+        std::fs::create_dir_all(&temp)?;
+
+        let old_crc = crate::patch_builder::crc32_update(0, &old);
+        let inst = inst_from_self(0, 5);
+        let stream = stream_of(&root, &inst);
+
+        // Deliberately wrong new checksum.
+        let res = apply_rebuild(&stream, "Data/B.wz", 0, old_crc, 0xDEAD_BEEF, &temp, &root, false);
+        assert!(res.is_err(), "a bad new checksum must fail the rebuild");
+        assert!(
+            !temp.join("Data/B.wz").exists(),
+            "the partially written temp file must be removed"
+        );
+
         let _ = std::fs::remove_dir_all(&root);
         Ok(())
     }

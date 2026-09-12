@@ -43,8 +43,15 @@ pub trait Reporter: Send + Sync {
     /// Computing the patch execution plan (dead-patch dependency ordering)
     /// before any file is committed.
     fn planning(&self);
-    /// Begin applying a package's files (resets the bar; `total` files).
-    fn begin_apply(&self, total: usize);
+    /// Begin applying a package's files (resets the bar): `total_files` parts
+    /// totalling `total_bytes` of output data.  When `total_bytes` is 0 the
+    /// caller has no byte estimate and the bar follows the file count.
+    fn begin_apply(&self, total_files: usize, total_bytes: u64);
+    /// Report cumulative apply progress in bytes.  Only meaningful when
+    /// [`begin_apply`](Reporter::begin_apply) announced a non-zero byte total;
+    /// the bar is driven from this so that it advances in proportion to the
+    /// work done (patch parts differ wildly in size).
+    fn apply_bytes(&self, done: u64, total: u64);
     /// Report apply progress: `done` of `total` files, current `rel_path`.
     fn apply_progress(&self, done: usize, total: usize, rel_path: &str);
     /// Begin repairing corrupted files (`total` files, `total_bytes` total).
@@ -202,9 +209,16 @@ pub fn planning() {
     line("[progress] planning");
     with(|r| r.planning());
 }
-pub fn begin_apply(total: usize) {
-    line(&format!("[progress] begin_apply({})", total));
-    with(|r| r.begin_apply(total));
+pub fn begin_apply(total_files: usize, total_bytes: u64) {
+    line(&format!(
+        "[progress] begin_apply(files={}, bytes={})",
+        total_files, total_bytes
+    ));
+    with(|r| r.begin_apply(total_files, total_bytes));
+}
+pub fn apply_bytes(done: u64, total: u64) {
+    // Called once per patch part: too noisy to log.
+    with(|r| r.apply_bytes(done, total));
 }
 pub fn apply_progress(done: usize, total: usize, rel_path: &str) {
     // Log only at boundaries to avoid flooding.

@@ -73,6 +73,10 @@ pub struct GuiReporter {
     speed: Mutex<SpeedState>,
     last_ui: Mutex<Instant>,
     repair_total_bytes: Mutex<u64>,
+    /// Byte total announced by `begin_apply` for the current apply phase.
+    /// Non-zero means the bar is driven by [`Reporter::apply_bytes`] instead of
+    /// the per-file progress (patch parts differ wildly in size).
+    apply_bytes_total: Mutex<u64>,
     /// When true, the download label uses the TMS-specific format string
     /// (`gui-patcher-downloading-update-tms`) showing version numbers instead
     /// of the generic package index/count/speed format.
@@ -88,6 +92,7 @@ impl GuiReporter {
             speed: Mutex::new(SpeedState::reset()),
             last_ui: Mutex::new(Instant::now()),
             repair_total_bytes: Mutex::new(0),
+            apply_bytes_total: Mutex::new(0),
             is_tms,
         }
     }
@@ -328,15 +333,27 @@ impl Reporter for GuiReporter {
         self.set_label3(String::new());
     }
 
-    fn begin_apply(&self, _total: usize) {
-        self.log(&format!("[gui-debug] Reporter::begin_apply(total={})", _total));
+    fn begin_apply(&self, total_files: usize, total_bytes: u64) {
+        self.log(&format!(
+            "[gui-debug] Reporter::begin_apply(files={total_files}, bytes={total_bytes})"
+        ));
+        *self.apply_bytes_total.lock().unwrap() = total_bytes;
         // Requirement 6: reset the progress bar to 0 for the apply phase.
         self.set_label3(String::new());
         self.set_progress(0.0);
     }
 
-    fn apply_progress(&self, done: usize, total: usize, rel_path: &str) {
+    fn apply_bytes(&self, done: u64, total: u64) {
         if total > 0 {
+            self.set_progress(done as f32 / total as f32);
+        }
+    }
+
+    fn apply_progress(&self, done: usize, total: usize, rel_path: &str) {
+        // Only drive the bar from the file count when the caller did not
+        // announce a byte total (e.g. the CMS zip patcher); TMS reports the
+        // byte progress separately so the bar tracks the real workload.
+        if *self.apply_bytes_total.lock().unwrap() == 0 && total > 0 {
             self.set_progress(done as f32 / total as f32);
         }
         if self.should_update_ui() || done == total {

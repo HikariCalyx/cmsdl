@@ -405,7 +405,9 @@ pub(crate) fn apply_zip(
     };
     pb.set_style(ProgressStyle::with_template("    [{pos}/{len}] {wide_msg}").unwrap());
     pb.enable_steady_tick(Duration::from_millis(120));
-    crate::progress::begin_apply(items.len());
+    // CMS applies zip parts; their compressed sizes are not the output sizes, so
+    // no byte total is announced and the bar keeps following the file count.
+    crate::progress::begin_apply(items.len(), 0);
 
     let next = AtomicUsize::new(0);
     let patched = AtomicUsize::new(0);
