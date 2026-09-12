@@ -141,6 +141,28 @@ fn run_inner(
         }
     };
 
+    // Display helper: map an internal version to its human "version view"
+    // (e.g. `0.0.0.14` -> `0.0.0.14 (V225.6)`).
+    let view_of = |v: &str| -> Option<&str> {
+        data.packages
+            .iter()
+            .find(|p| p.to == v)
+            .map(|p| p.version_view.as_str())
+            .filter(|s| !s.is_empty())
+    };
+    let fmt_ver = |v: &str| -> String {
+        match view_of(v) {
+            Some(view) => format!("{v} ({view})"),
+            None => v.to_string(),
+        }
+    };
+    // The requested target, for display when no plan can be built.
+    let requested_target = if version_arg.eq_ignore_ascii_case("latest") {
+        data.packages.last().map(|p| p.to.as_str()).unwrap_or(version_arg)
+    } else {
+        version_arg
+    };
+
     let plan = match plan_patches(&data.packages, &current, version_arg) {
         Ok(p) => p,
         Err(PlanError::TargetOlder) => {
@@ -148,6 +170,8 @@ fn run_inner(
             return Ok(EXIT_TARGET_OLDER);
         }
         Err(PlanError::NoPatch) => {
+            println!("current version: {}", fmt_ver(&current));
+            println!("target version:  {}", fmt_ver(requested_target));
             println!("error: no applicable patch can be found");
             return Ok(EXIT_NO_PATCH);
         }
@@ -203,20 +227,6 @@ fn run_inner(
     };
 
     // ── 5. Human-readable summary ──────────────────────────────────────────
-    let view_of = |v: &str| -> Option<&str> {
-        data.packages
-            .iter()
-            .find(|p| p.to == v)
-            .map(|p| p.version_view.as_str())
-            .filter(|s| !s.is_empty())
-    };
-    let fmt_ver = |v: &str| -> String {
-        match view_of(v) {
-            Some(view) => format!("{v} ({view})"),
-            None => v.to_string(),
-        }
-    };
-
     println!("current version: {}", fmt_ver(&current));
     println!("target version:  {}", fmt_ver(&target_version));
     println!(
@@ -373,6 +383,8 @@ fn run_tms(
         match version_arg.parse::<i16>() {
             Ok(v) if v > 0 => v,
             _ => {
+                println!("current version: {current}");
+                println!("target version:  {version_arg}");
                 println!("error: no applicable patch can be found");
                 return Ok(EXIT_NO_PATCH);
             }
@@ -410,6 +422,8 @@ fn run_tms(
             reached
         }
         TmsTarget::NoPatch => {
+            println!("current version: {current}");
+            println!("target version:  {target}");
             println!("error: no applicable patch can be found");
             return Ok(EXIT_NO_PATCH);
         }
