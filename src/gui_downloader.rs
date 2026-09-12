@@ -342,10 +342,17 @@ pub fn run_gui_download(
             m.region = region_str.to_string();
         }
     }
+    let log_path = path.join("cmsdl_downloader.log");
     let reporter = Arc::new(GuiDownloadReporter::new(
         Arc::clone(&ui),
-        path.join("cmsdl_downloader.log"),
+        log_path.clone(),
     ));
+    // Create the log file (and its session header) up front so the "View log"
+    // link always has a valid target, even before any progress is reported.
+    reporter.open_log();
+    if let Ok(mut m) = ui.lock() {
+        m.log_path = log_path.to_string_lossy().to_string();
+    }
 
     // Show an advisory when downloading to a mechanical hard disk.
     if crate::is_hdd::is_hdd(path) {

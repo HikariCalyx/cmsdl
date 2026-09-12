@@ -236,4 +236,16 @@ mod tests {
             }
         }
     }
+
+    /// The "View log" link label is rendered directly by the window (not via
+    /// `tr_error`), so guard it separately.
+    #[test]
+    fn view_log_key_present_in_all_catalogs() {
+        for (name, src) in [("en", EN), ("zh-CN", ZH_CN), ("zh-TW", ZH_TW)] {
+            assert!(
+                parse(src).contains_key("gui-view-log"),
+                "{name} is missing 'gui-view-log'"
+            );
+        }
+    }
 }

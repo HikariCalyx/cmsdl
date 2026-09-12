@@ -504,7 +504,14 @@ pub fn run_gui_patch(
             m.region = region_str.to_string();
         }
     }
-    let reporter = Arc::new(GuiReporter::new(Arc::clone(&ui), target.join("cmsdl_patcher.log"), is_tms));
+    let log_path = target.join("cmsdl_patcher.log");
+    let reporter = Arc::new(GuiReporter::new(Arc::clone(&ui), log_path.clone(), is_tms));
+    // Create the log file (and its session header) up front so the "View log"
+    // link always has a valid target, even if no update is ever found.
+    reporter.open_log();
+    if let Ok(mut m) = ui.lock() {
+        m.log_path = log_path.to_string_lossy().to_string();
+    }
     progress::set_reporter(reporter.clone() as Arc<dyn Reporter>);
     reporter.log("[gui-debug] GuiReporter registered successfully");
     crate::plog!("[gui-debug] set_reporter called, is_tms={}", is_tms);

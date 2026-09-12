@@ -34,6 +34,7 @@ gui-error-invalid-client = 所選資料夾不是有效的遊戲用戶端。
 gui-error-invalid-version = 要求的版本無效或尚無法使用。
 gui-error-no-patch = 找不到適用的更新檔，您可能需要重新安裝遊戲。
 gui-error-unknown = 發生未預期的錯誤。詳情請參閱記錄檔。
+gui-view-log = 檢視記錄
 gui-patcher-clear-nxoverlay-cache = 正在清除 NxOverlay 快取
 gui-patcher-nxoverlay-cleared = NxOverlay 快取已清理
 gui-patcher-prompt-patch-larger-than-client = 更新包累積大小遠大於新的客戶端。我們建議您重新安裝遊戲。

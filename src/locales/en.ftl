@@ -34,6 +34,7 @@ gui-error-invalid-client = The selected folder is not a valid game client.
 gui-error-invalid-version = The requested version is invalid or not available.
 gui-error-no-patch = No applicable update patch was found. You may need to reinstall the game.
 gui-error-unknown = An unexpected error occurred. See the log file for details.
+gui-view-log = View log
 gui-patcher-clear-nxoverlay-cache = Clearing NxOverlay cache
 gui-patcher-nxoverlay-cleared = NxOverlay cache cleared
 gui-patcher-prompt-patch-larger-than-client = The update package is significantly larger than the new client. We recommend that you reinstall the game.

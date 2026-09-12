@@ -63,6 +63,9 @@ pub struct UiModel {
     /// Region identifier string (e.g. "cms", "cms_cw", "tms").  Used to
     /// select the appropriate background image.
     pub region: String,
+    /// Path to the log file for the current run.  When non-empty, a clickable
+    /// "View log" link is drawn in the window.
+    pub log_path: String,
 }
 
 impl Default for UiModel {
@@ -81,6 +84,7 @@ impl Default for UiModel {
             should_close: false,
             exit_code: 1,
             region: String::new(),
+            log_path: String::new(),
         }
     }
 }
@@ -237,6 +241,20 @@ mod win32 {
     const LABEL3_COLOR_G: u8 = 0xB2;
     const LABEL3_COLOR_B: u8 = 0xFF;
 
+    // "View log" link (bottom-right, on label1's row).  Opens the current
+    // run's log file with the system default handler.
+    const LOG_LINK_RIGHT_X: i32 = PROG_X + PROG_TOTAL_W;
+    const LOG_LINK_Y: i32 = LABEL_Y;
+    const LOG_LINK_COLOR_R: u8 = 0x66;
+    const LOG_LINK_COLOR_G: u8 = 0xB2;
+    const LOG_LINK_COLOR_B: u8 = 0xFF;
+    /// Brighter colour while the cursor hovers the link.
+    const LOG_LINK_HOVER_R: u8 = 0x99;
+    const LOG_LINK_HOVER_G: u8 = 0xCC;
+    const LOG_LINK_HOVER_B: u8 = 0xFF;
+    /// Height of the link's clickable band (text + underline).
+    const LOG_LINK_H: i32 = 14;
+
     // HDD notice label (drawn at the bottom of the window when the target
     // drive is a mechanical hard disk).
     const HDD_LABEL_X: i32 = 24;
@@ -337,6 +355,7 @@ mod win32 {
 
     const GWLP_USERDATA: i32   = -21;
     const IDC_ARROW:     usize = 32512;
+    const IDC_HAND:      usize = 32649;
 
     // ShowWindow commands
     const SW_MINIMIZE: i32 = 6;
@@ -514,6 +533,12 @@ mod win32 {
         fn GetProcAddress(module: HINSTANCE, name: *const u8) -> *const c_void;
     }
 
+    #[link(name = "shell32")]
+    extern "system" {
+        fn ShellExecuteW(hwnd: isize, op: *const u16, file: *const u16,
+            params: *const u16, dir: *const u16, show: i32) -> isize;
+    }
+
     extern "system" {
         fn GdiplusStartup(token: *mut usize, input: *const GdiplusStartupInput,
             output: *mut c_void) -> i32;
@@ -576,6 +601,15 @@ mod win32 {
         /// window's progress-bar fill onto its taskbar button so progress is
         /// visible even when the window is minimised.
         taskbar:       Option<windows::Win32::UI::Shell::ITaskbarList3>,
+
+        /// Clickable rectangle of the "View log" link (x0, y0, x1, y1).
+        /// Zero-width when no log path is set (link hidden).  Updated by the
+        /// renderer, hence a `Cell` (the renderer holds `&self`).
+        log_link_rect: std::cell::Cell<(i32, i32, i32, i32)>,
+        /// Whether the cursor is currently over the "View log" link.
+        log_link_hover: bool,
+        /// Whether the "View log" link is currently held down.
+        log_link_pressed: bool,
     }
 
     impl WindowState {
@@ -593,6 +627,20 @@ mod win32 {
             let hy_hi = MAINT_BOTTOM_Y + 39;
             x >= MAINT_HEADER_X && x < MAINT_HEADER_X + 400
                 && y >= hy_lo && y < hy_hi
+        }
+
+        fn hit_log_link(&self, x: i32, y: i32) -> bool {
+            let (x0, y0, x1, y1) = self.log_link_rect.get();
+            x1 > x0 && x >= x0 && x < x1 && y >= y0 && y < y1
+        }
+
+        /// Open the current run's log file with the system default handler.
+        fn open_log(&self) {
+            let path = match self.ui.lock() {
+                Ok(m) if !m.log_path.is_empty() => m.log_path.clone(),
+                _ => return,
+            };
+            open_log_file(&path);
         }
 
         /// Snapshot the current label text and progress from the shared model.
@@ -1209,6 +1257,8 @@ mod win32 {
         // entire track (A + E + F, i.e. all of PROG_TOTAL_W) ────────────────
         let (label1_text, label2_text, label3_text, hdd_notice_text, progress_ratio, _close,
              maint_title, maint_body, maint_folded, maint_scroll, _plines) = s.snapshot();
+        // Target of the "View log" link (set once at startup).
+        let log_path = s.ui.lock().map(|m| m.log_path.clone()).unwrap_or_default();
         let fill_len = (PROG_TOTAL_W as f64 * progress_ratio as f64).round() as i32;
 
         if fill_len > 0 {
@@ -1296,6 +1346,35 @@ mod win32 {
             let label3_x = (LABEL3_RIGHT_X - text_w).max(0);
             draw_label(dib, &label3_text, label3_x, LABEL3_Y,
                 (LABEL3_COLOR_R, LABEL3_COLOR_G, LABEL3_COLOR_B), s.label_font);
+        }
+
+        // ── "View log" link ─────────────────────────────────────────────────
+        // Bottom-right of the status row; opens the current run's log file.
+        // Hidden when no log path is set.
+        if log_path.is_empty() {
+            s.log_link_rect.set((0, 0, 0, 0));
+        } else {
+            let text = crate::locale::tr("gui-view-log", &[]);
+            let text_w = measure_text_width(hdc_screen, s.label_font, &text);
+            let link_x = (LOG_LINK_RIGHT_X - text_w).max(0);
+            let (cr, cg, cb) = if s.log_link_hover {
+                (LOG_LINK_HOVER_R, LOG_LINK_HOVER_G, LOG_LINK_HOVER_B)
+            } else {
+                (LOG_LINK_COLOR_R, LOG_LINK_COLOR_G, LOG_LINK_COLOR_B)
+            };
+            draw_label(dib, &text, link_x, LOG_LINK_Y, (cr, cg, cb), s.label_font);
+            // Underline for link affordance.
+            let uy = LOG_LINK_Y + LOG_LINK_H - 1;
+            if uy >= 0 && uy < WIN_H {
+                let underline = (0xFFu32 << 24)
+                    | ((cr as u32) << 16) | ((cg as u32) << 8) | cb as u32;
+                for px in link_x.max(0)..(link_x + text_w).min(WIN_W) {
+                    let di = (uy * WIN_W + px) as usize;
+                    dib[di] = alpha_blend_dib(dib[di], underline);
+                }
+            }
+            let x_end = (link_x + text_w).min(WIN_W);
+            s.log_link_rect.set((link_x, LOG_LINK_Y, x_end, LOG_LINK_Y + LOG_LINK_H));
         }
 
         // ── Maintenance notice ────────────────────────────────────────────────
@@ -1688,6 +1767,20 @@ mod win32 {
         extent.cx
     }
 
+    /// Open `path` with the system default handler (`ShellExecuteW` "open"),
+    /// used by the "View log" link.  Failures are ignored: the link simply
+    /// does nothing when no handler is registered for the file type.
+    fn open_log_file(path: &str) {
+        let op = wide("open");
+        let file = wide(path);
+        // SAFETY: both buffers are null-terminated UTF-16 and outlive the
+        // call; the remaining arguments are null, which ShellExecuteW accepts.
+        unsafe {
+            ShellExecuteW(0, op.as_ptr(), file.as_ptr(),
+                ptr::null(), ptr::null(), 1 /* SW_SHOWNORMAL */);
+        }
+    }
+
     fn strip_ansi(s: &str) -> String {
         let mut out = String::with_capacity(s.len());
         let mut chars = s.chars();
@@ -1734,9 +1827,12 @@ mod win32 {
                 };
                 let new_close = hover_state(s.btn_state == BtnState::Pressed, s.hit_close(x, y));
                 let new_min = hover_state(s.min_btn_state == BtnState::Pressed, s.hit_min(x, y));
-                if new_close != s.btn_state || new_min != s.min_btn_state {
+                let new_log_hover = s.hit_log_link(x, y);
+                if new_close != s.btn_state || new_min != s.min_btn_state
+                    || new_log_hover != s.log_link_hover {
                     s.btn_state = new_close;
                     s.min_btn_state = new_min;
+                    s.log_link_hover = new_log_hover;
                     // None = keep current screen position
                     update_layered(s, None);
                 }
@@ -1752,9 +1848,11 @@ mod win32 {
             WM_MOUSELEAVE => {
                 if !sp.is_null() {
                     let s = unsafe { &mut *sp };
-                    if s.btn_state != BtnState::Normal || s.min_btn_state != BtnState::Normal {
+                    if s.btn_state != BtnState::Normal || s.min_btn_state != BtnState::Normal
+                        || s.log_link_hover {
                         s.btn_state = BtnState::Normal;
                         s.min_btn_state = BtnState::Normal;
+                        s.log_link_hover = false;
                         update_layered(s, None);
                     }
                 }
@@ -1766,6 +1864,7 @@ mod win32 {
                 let s = unsafe { &mut *sp };
                 let x = (l & 0xFFFF) as i16 as i32;
                 let y = ((l >> 16) & 0xFFFF) as i16 as i32;
+                s.log_link_pressed = false;
                 if s.hit_close(x, y) {
                     s.btn_state = BtnState::Pressed;
                     update_layered(s, None);
@@ -1778,6 +1877,9 @@ mod win32 {
                         m.maintenance_folded = !m.maintenance_folded;
                     }
                     update_layered(s, None);
+                } else if s.hit_log_link(x, y) {
+                    s.log_link_pressed = true;
+                    update_layered(s, None);
                 }
                 0
             }
@@ -1789,12 +1891,18 @@ mod win32 {
                 let y = ((l >> 16) & 0xFFFF) as i16 as i32;
                 let close_was_pressed = s.btn_state == BtnState::Pressed;
                 let min_was_pressed = s.min_btn_state == BtnState::Pressed;
+                let log_was_pressed = s.log_link_pressed;
+                s.log_link_pressed = false;
                 s.btn_state = if s.hit_close(x, y) { BtnState::Hover } else { BtnState::Normal };
                 s.min_btn_state = if s.hit_min(x, y) { BtnState::Hover } else { BtnState::Normal };
                 if close_was_pressed && s.hit_close(x, y) {
                     unsafe { PostQuitMessage(0) };
                 } else if min_was_pressed && s.hit_min(x, y) {
                     unsafe { ShowWindow(hwnd, SW_MINIMIZE) };
+                    update_layered(s, None);
+                } else if log_was_pressed && s.hit_log_link(x, y) {
+                    // Open the log file with the system default handler.
+                    s.open_log();
                     update_layered(s, None);
                 } else {
                     update_layered(s, None);
@@ -1815,7 +1923,9 @@ mod win32 {
                     let cy = sy - rect[1];
                     let in_close = cx >= BTN_X && cx < BTN_X + BTN_W && cy >= BTN_Y && cy < BTN_Y + BTN_H;
                     let in_min = cx >= MIN_BTN_X && cx < MIN_BTN_X + BTN_W && cy >= MIN_BTN_Y && cy < MIN_BTN_Y + BTN_H;
-                    if in_close || in_min || (!sp.is_null() && unsafe { &*sp }.hit_maint_header(cx, cy)) {
+                    if in_close || in_min
+                        || (!sp.is_null() && unsafe { &*sp }.hit_maint_header(cx, cy))
+                        || (!sp.is_null() && unsafe { &*sp }.hit_log_link(cx, cy)) {
                         return HTCLIENT;
                     }
                     return HTCAPTION;
@@ -1840,7 +1950,10 @@ mod win32 {
             }
 
             WM_SETCURSOR => {
-                let cur = unsafe { LoadCursorW(ptr::null_mut(), IDC_ARROW) };
+                // A hand cursor signals that the "View log" link is clickable.
+                let hovering_link = !sp.is_null() && unsafe { &*sp }.log_link_hover;
+                let id = if hovering_link { IDC_HAND } else { IDC_ARROW };
+                let cur = unsafe { LoadCursorW(ptr::null_mut(), id) };
                 unsafe { SetCursor(cur) };
                 1
             }
@@ -2028,6 +2141,9 @@ mod win32 {
             icon_pct:   -1,
             icon:       ptr::null_mut(),
             taskbar:    init_taskbar(),
+            log_link_rect: std::cell::Cell::new((0, 0, 0, 0)),
+            log_link_hover: false,
+            log_link_pressed: false,
         });
 
         // Attach state to window.
