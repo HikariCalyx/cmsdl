@@ -130,6 +130,9 @@ LangString STR_UPGRADE_NO_PATCH ${LANG_ENGLISH} "No patches cannot be found. Wou
 LangString STR_UPGRADE_TOO_LARGE ${LANG_ENGLISH} "Patch files required to latest version are larger than latest client, we recommend a reinstallation. Would you like to reinstall? "
 LangString STR_UPGRADE_NO_CLIENT ${LANG_ENGLISH} "No valid client data can be found. Would you like to reinstall the latest version of game? "
 LangString STR_UPGRADE_RETRY ${LANG_ENGLISH} "Unable to get latest patch info. Would you like to retry?"
+; Only shown to a Simplified Chinese OS (which uses the Traditional Chinese
+; strings below), so this English fallback should never be displayed.
+LangString STR_CN_GAMING_VPN ${LANG_ENGLISH} "You should not see this message"
 
 ; ============================================================================
 ; Language Strings - Traditional Chinese
@@ -170,6 +173,7 @@ LangString STR_UPGRADE_NO_PATCH ${LANG_TRADCHINESE} "未找到可用的更新檔
 LangString STR_UPGRADE_TOO_LARGE ${LANG_TRADCHINESE} "升級到最新版本所需的更新檔比最新客戶端更大，我們建議重新安裝。是否要重新安裝？"
 LangString STR_UPGRADE_NO_CLIENT ${LANG_TRADCHINESE} "未找到有效的客戶端資料。是否要重新安裝最新版本的遊戲？"
 LangString STR_UPGRADE_RETRY ${LANG_TRADCHINESE} "無法取得最新的更新檔資訊。是否要重試？"
+LangString STR_CN_GAMING_VPN ${LANG_TRADCHINESE} "您可能是中國大陸的玩家，因此我們已為您自動勾選「遊戲 VPN / 加速器模式」。$\n若您不使用遊戲加速器，可以自行取消勾選。"
 
 ; ============================================================================
 ; Installer Attributes
@@ -233,8 +237,14 @@ Function .onInit
   StrCmp $0 "0404" 0 +2
     StrCpy $LANGUAGE ${LANG_TRADCHINESE}
 
-  StrCmp $0 "0804" 0 +2
+  StrCmp $0 "0804" 0 cnDone
     StrCpy $LANGUAGE ${LANG_TRADCHINESE}
+    ; A Simplified Chinese OS very likely belongs to a mainland-China player,
+    ; who normally needs a gaming accelerator to reach TMS. Pre-select Gaming
+    ; VPN mode and tell the user it can be turned off.
+    StrCpy $GamingVPNFlag "1"
+    MessageBox MB_OK|MB_ICONINFORMATION "$(STR_CN_GAMING_VPN)"
+  cnDone:
 
   ; Check if system is x64
   ${IfNot} ${RunningX64}
