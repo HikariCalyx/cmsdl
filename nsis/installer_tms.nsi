@@ -514,11 +514,15 @@ FunctionEnd
 Function CheckUpgradePath
   cupRetry:
     DetailPrint "$(STR_CHECKING_UPGRADE)"
+    ; nsExec runs the check hidden (no console window) and logs its output to
+    ; the details pane; the exit code is popped from the stack.
     StrCmp $GamingVPNFlag "1" 0 cupDirectCheck
-      ExecWait '"$TEMP\MapleStory.exe" tms --upgrade-path-check latest "$INSTDIR"$ProxyFlag' $0
+      nsExec::ExecToLog '"$TEMP\MapleStory.exe" tms --upgrade-path-check latest "$INSTDIR"$ProxyFlag'
+      Pop $0
       Goto cupDecide
     cupDirectCheck:
-      ExecWait '"$INSTDIR\cmsdl.exe" tms --upgrade-path-check latest "$INSTDIR"$ProxyFlag' $0
+      nsExec::ExecToLog '"$INSTDIR\cmsdl.exe" tms --upgrade-path-check latest "$INSTDIR"$ProxyFlag'
+      Pop $0
     cupDecide:
     StrCmp $0 "0" cupPatch 0
     StrCmp $0 "1" cupNoPatch 0

@@ -839,7 +839,10 @@ Function CheckUpgradePath
   Call SetUpgradeHeading
   cupRetry:
     DetailPrint "$(STR_CHECKING_UPGRADE)"
-    ExecWait '"$INSTDIR\cmsdl.exe" $R0 --upgrade-path-check latest "$INSTDIR"' $0
+    ; nsExec runs the check hidden (no console window) and logs its output to
+    ; the details pane; the exit code is popped from the stack.
+    nsExec::ExecToLog '"$INSTDIR\cmsdl.exe" $R0 --upgrade-path-check latest "$INSTDIR"'
+    Pop $0
     StrCmp $0 "0" cupPatch 0
     StrCmp $0 "1" cupNoPatch 0
     StrCmp $0 "2" cupTooLarge 0
