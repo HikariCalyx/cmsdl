@@ -769,6 +769,16 @@ Section "Install"
       CreateShortcut "$SMPROGRAMS\$(STR_PRODUCT_NAME)\Uninstall.lnk" "$INSTDIR\Uninstall.exe"
 
   sectionDone:
+  ; Point the official (Gamania) launcher's registry at this installation so it
+  ; launches the correct executable. Only install (1) and update (2) modes
+  ; touch the game client; the other modes never produce MapleStory.exe.
+  StrCmp $InstallMode "1" sdoWriteOfficial
+  StrCmp $InstallMode "2" sdoWriteOfficial
+  Goto sdoWriteOfficialEnd
+  sdoWriteOfficial:
+    IfFileExists "$INSTDIR\MapleStory.exe" 0 sdoWriteOfficialEnd
+      WriteRegStr HKCU "${OFFICIAL_REG_KEY}" "Path" "$INSTDIR\MapleStory.exe"
+  sdoWriteOfficialEnd:
 
 SectionEnd
 
