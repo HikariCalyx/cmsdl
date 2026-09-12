@@ -201,9 +201,13 @@ pub fn begin_verify(total: usize) {
     with(|r| r.begin_verify(total));
 }
 pub fn verify_progress(done: usize, total: usize, rel_path: &str) {
-    // Log only at boundaries to avoid flooding.
-    if done == 1 || done == total || done % 100 == 0 {
-        line(&format!("[progress] verify_progress({}/{}, {})", done, total, rel_path));
+    // Diagnostic trace: debug builds only, like the GUI reporter's
+    // `[gui-debug]` lines.  Logged at boundaries to avoid flooding.
+    #[cfg(debug_assertions)]
+    {
+        if done == 1 || done == total || done % 100 == 0 {
+            line(&format!("[progress] verify_progress({}/{}, {})", done, total, rel_path));
+        }
     }
     with(|r| r.verify_progress(done, total, rel_path));
 }
