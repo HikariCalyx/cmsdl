@@ -16,7 +16,7 @@ use anyhow::{bail, Result};
 use crate::cli::Region;
 use crate::gui::{self, UiModel};
 use crate::gui_downloader::format_eta;
-use crate::locale::tr;
+use crate::locale::{tr, tr_error};
 use crate::maintenance;
 use crate::progress::{self, format_speed, Reporter};
 
@@ -550,7 +550,9 @@ pub fn run_gui_patch(
         if let Err(e) = &res {
             crate::plog!("error: {e:#}");
             // Surface the failure on the status line; leave the window open.
-            progress::finish(&format!("{e}"), false);
+            // The raw error is kept in the log above, and the label shows a
+            // short localized message.
+            progress::finish(&tr_error(e), false);
         } else if let Ok(mut m) = ui_for_result.lock() {
             m.exit_code = 0;
         }

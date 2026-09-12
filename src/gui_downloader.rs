@@ -26,7 +26,7 @@ use indicatif::ProgressBar;
 use crate::cli::Region;
 use crate::filter::FileFilter;
 use crate::gui::{self, UiModel};
-use crate::locale::tr;
+use crate::locale::{tr, tr_error};
 use crate::maintenance;
 use crate::progress::{self, format_size, format_speed, DownloadReporter};
 
@@ -401,7 +401,12 @@ pub fn run_gui_download(
                 }
                 progress::dl_finish(close_after_finishing);
             }
-            Err(e) => progress::dl_fail(&format!("{e}")),
+            Err(e) => {
+                // Keep the raw error in the log; show a short localized
+                // message on the status line.
+                crate::progress::dl_log(&format!("error: {e:#}"));
+                progress::dl_fail(&tr_error(&e));
+            }
         }
     });
 
