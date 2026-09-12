@@ -154,7 +154,7 @@ Exit codes:
 Notes:
 - CMS/CMS_CW compare against the full client whose version matches the target. If that full client is not published yet, the most recent published client is used instead (shown as a fallback).
 - TMS only publishes the latest full-client manifest, so an explicit target version skips the full-client comparison. With `latest`, if the newest full client has no patch yet, the check falls back to the last version actually reachable through the patch server.
-- For TMS, the size of the standalone executable hotfix (`ExePatch.dat`) is included when the client is already on the latest major version.
+- For TMS, the standalone executable hotfix (`ExePatch.dat`) for the latest version is always included in the patch total — the patcher applies it after reaching the latest version, whether the client was already up to date or was just upgraded to it.
 - The Windows installers run this check automatically before updating (GUI mode) and offer to reinstall the full client when no patch is applicable or when patching would be larger than the client itself.
 
 ### Extra Tips

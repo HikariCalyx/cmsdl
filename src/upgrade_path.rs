@@ -453,10 +453,11 @@ fn run_tms(
         exact = parse_tms_version_number(&info.version) == Some(target);
         client_version = info.version;
 
-        // When the client is already on the latest major version the patcher
-        // still fetches the standalone executable hotfix (`ExePatch.dat`), so
-        // its size counts towards the patch route.
-        if exact && current == target {
+        // The patcher always fetches the standalone executable hotfix
+        // (`ExePatch.dat`) for the version it ends on, so its size counts
+        // towards the patch route whenever the target is the latest published
+        // version — including when an older client is upgraded up to it.
+        if exact {
             minor = probe_exe_patch_size(&agent, target);
         }
     }
