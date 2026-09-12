@@ -395,6 +395,10 @@ fn purge_dir_recursive_tms(
 /// skipped. When `wz_only` is set, only data files (paths under `Data/`) are
 /// downloaded. When `filter` is given, only files whose path matches the filter
 /// are downloaded.
+///
+/// `MapleStory.exe` is handled specially: the standalone executable hotfix
+/// (`ExePatch.dat`) published for the installed version is preferred over the
+/// manifest's pristine copy. See [`plan_client_exe`].
 pub fn download_client(
     target_dir: &Path,
     wz_only: bool,
@@ -452,6 +456,72 @@ pub fn download_client(
         let before = items.len();
         items.retain(|item| f.matches(&item.local_path));
         println!("Filter applied: {} / {} file(s) match.", items.len(), before);
+    }
+
+    // ── MapleStory.exe ────────────────────────────────────────────────
+    // The manifest carries the pristine full-client executable, but the patch
+    // CDN also publishes a standalone hotfix (`ExePatch.dat`) for the installed
+    // version. Prefer the hotfix: install it when the existing executable is the
+    // pristine manifest copy and differs from the hotfix, leave it alone when it
+    // was already hotfixed, and use the hotfix as the source when the executable
+    // is missing.
+    let exe_name = file_name_of(&info.execution_path).to_owned();
+    let exe_idx = items
+        .iter()
+        .position(|i| i.local_path.eq_ignore_ascii_case(&exe_name));
+    // Pending install: (downloaded `ExePatch.dat`, target `MapleStory.exe`, size).
+    let mut exe_patch: Option<(PathBuf, PathBuf, u64)> = None;
+    // Manifest entry to fall back to when the hotfix cannot be downloaded.
+    let mut exe_fallback: Option<DownloadItem> = None;
+    if let Some(idx) = exe_idx {
+        // The version the client is on right now. `Base.wz` is authoritative;
+        // the manifest version is the fallback for a fresh download into an
+        // empty directory (and matches `Base.wz` for an up-to-date client).
+        let exe_version = read_client_wz_version(target_dir)
+            .or_else(|| parse_manifest_version(&info.version));
+        let manifest_item = items.remove(idx);
+        let exe_path = local_path(target_dir, &manifest_item.local_path);
+        let exe_existed = exe_path.exists();
+        let patch_size = exe_version.and_then(|v| probe_exe_patch_size(&agent, v));
+        let plan = plan_client_exe(
+            &exe_path,
+            manifest_item.size,
+            manifest_item.sha256.as_deref(),
+            patch_size,
+        )?;
+        match plan {
+            ExePlan::ExePatch(size) => {
+                // `ExePatch` is only planned when the version is known.
+                let version = exe_version.expect("ExePatch plan requires a version");
+                println!(
+                    "MapleStory.exe: will be replaced with the standalone hotfix \
+                     (ExePatch.dat) for V{version} ({:.2} MiB).",
+                    size as f64 / 1_048_576.0
+                );
+                crate::progress::dl_log(&format!(
+                    "MapleStory.exe: preferring ExePatch.dat for V{version} ({size} bytes)"
+                ));
+                exe_patch = Some((
+                    local_path(target_dir, crate::tms_patch::EXE_PATCH_FILE),
+                    exe_path,
+                    size,
+                ));
+                if !exe_existed {
+                    exe_fallback = Some(manifest_item);
+                }
+                items.push(DownloadItem {
+                    url: crate::tms_patch::build_exe_patch_url(version),
+                    local_path: crate::tms_patch::EXE_PATCH_FILE.to_owned(),
+                    size: Some(size),
+                    sha256: None,
+                });
+            }
+            ExePlan::Keep => {
+                println!("MapleStory.exe: already up to date; keeping the existing file.");
+                crate::progress::dl_log("MapleStory.exe: kept as is");
+            }
+            ExePlan::Manifest => items.push(manifest_item),
+        }
     }
 
     // Resolve any unknown sizes (e.g. the execution path) so the total progress
@@ -564,6 +634,77 @@ pub fn download_client(
         }
     });
 
+    // Install a downloaded executable hotfix over MapleStory.exe. The hotfix is
+    // a single best-effort file: its own download failure is superseded by the
+    // outcome below (either the existing executable is kept, or the manifest
+    // copy is fetched as a last resort).
+    if let Some((patch_path, exe_path, size)) = exe_patch {
+        failures
+            .lock()
+            .unwrap()
+            .retain(|f| !f.starts_with(&format!("{}: ", crate::tms_patch::EXE_PATCH_FILE)));
+
+        if patch_path.metadata().map_or(false, |m| m.len() == size) {
+            if let Err(e) = crate::tms_patch::install_exe_patch(&patch_path, &exe_path) {
+                failures
+                    .lock()
+                    .unwrap()
+                    .push(format!("MapleStory.exe: {e:#}"));
+            } else {
+                println!("MapleStory.exe: replaced with the downloaded hotfix.");
+                crate::progress::dl_log("MapleStory.exe: hotfix installed");
+            }
+        } else {
+            // The hotfix never arrived in full: discard the partial file.
+            let _ = std::fs::remove_file(&patch_path);
+            let _ = std::fs::remove_file(crate::resume::progress_path(&patch_path));
+            match exe_fallback {
+                Some(item) => {
+                    eprintln!(
+                        "warning: ExePatch.dat could not be downloaded; \
+                         falling back to the manifest MapleStory.exe."
+                    );
+                    let dest = local_path(target_dir, &item.local_path);
+                    let bar = mp.add(ProgressBar::new(0));
+                    bar.set_style(
+                        ProgressStyle::with_template(
+                            "  [{bar:25.green/white}] {bytes:>10}/{total_bytes:>10} \
+                             ({binary_bytes_per_sec:>11}) {wide_msg}",
+                        )
+                        .unwrap()
+                        .progress_chars("=>-"),
+                    );
+                    bar.set_length(item.size.unwrap_or(0));
+                    bar.set_message(item.local_path.clone());
+                    match download_file(
+                        &item.url,
+                        &dest,
+                        item.size,
+                        SEGMENTS_PER_FILE,
+                        &bar,
+                        &total_pb,
+                        &agent,
+                    ) {
+                        Ok(()) => {
+                            downloaded.fetch_add(1, Ordering::Relaxed);
+                            done_files.fetch_add(1, Ordering::Relaxed);
+                            crate::progress::dl_file_done(&item.local_path, item.size.unwrap_or(0));
+                        }
+                        Err(e) => failures
+                            .lock()
+                            .unwrap()
+                            .push(format!("{}: {e:#}", item.local_path)),
+                    }
+                    bar.finish_and_clear();
+                }
+                None => eprintln!(
+                    "warning: ExePatch.dat could not be downloaded; \
+                     keeping the existing MapleStory.exe."
+                ),
+            }
+        }
+    }
+
     let final_bytes = total_pb.position();
     total_pb.finish_and_clear();
     _taskbar.finish();
@@ -630,6 +771,83 @@ fn sha256_file(path: &Path) -> Result<String> {
 fn remote_size(url: &str, agent: &ureq::Agent) -> Option<u64> {
     let resp = agent.request("HEAD", url).call().ok()?;
     resp.header("Content-Length")?.trim().parse().ok()
+}
+
+/// What to do with the client executable during a download.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExePlan {
+    /// Leave the existing `MapleStory.exe` untouched.
+    Keep,
+    /// Download the executable from the client manifest (the default behaviour).
+    Manifest,
+    /// Fetch the standalone hotfix `ExePatch.dat` (of `size` bytes) instead.
+    ExePatch(u64),
+}
+
+/// Read the WZ version from `<target_dir>/Data/Base/Base.wz`, if present.
+fn read_client_wz_version(target_dir: &Path) -> Option<i16> {
+    let wz_path = target_dir.join("Data").join("Base").join("Base.wz");
+    let wz = crate::miniwzlib::get_wz_version(&wz_path).ok()?;
+    (wz.version != 0).then_some(wz.version)
+}
+
+/// Parse the numeric version out of a manifest version string (`"V282"` → 282).
+fn parse_manifest_version(version: &str) -> Option<i16> {
+    let start = version.find(|c: char| c.is_ascii_digit())?;
+    let tail = &version[start..];
+    let end = tail
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(tail.len());
+    tail[..end].parse::<i16>().ok()
+}
+
+/// Probe the standalone executable hotfix (`ExePatch.dat`) for `version`.
+///
+/// Returns its size when the file is published, `None` when it is absent or the
+/// server cannot be reached (best-effort, mirroring the patcher).
+fn probe_exe_patch_size(agent: &ureq::Agent, version: i16) -> Option<u64> {
+    let url = crate::tms_patch::build_exe_patch_url(version);
+    remote_size(&url, agent).filter(|size| *size > 0)
+}
+
+/// Decide how to obtain `MapleStory.exe`.
+///
+/// The manifest carries the pristine full-client executable (with its checksum)
+/// while the patch CDN publishes a standalone hotfix (`ExePatch.dat`) for the
+/// installed version. An executable that matches the manifest checksum is the
+/// pristine copy: it is replaced by the hotfix when the two differ in size, and
+/// kept when they are the same size. An executable that does not match the
+/// manifest is left alone - a previous run already installed the hotfix, whose
+/// checksum the manifest does not list. A missing executable is fetched from the
+/// hotfix when one is published, otherwise from the manifest.
+fn plan_client_exe(
+    exe_path: &Path,
+    manifest_size: Option<u64>,
+    manifest_sha256: Option<&str>,
+    exe_patch_size: Option<u64>,
+) -> Result<ExePlan> {
+    if !exe_path.exists() {
+        return Ok(match exe_patch_size {
+            Some(size) if size > 0 => ExePlan::ExePatch(size),
+            _ => ExePlan::Manifest,
+        });
+    }
+
+    // Without a manifest size/checksum the executable cannot be verified, so
+    // fall back to the default behaviour.
+    let (Some(size), Some(sha256)) = (manifest_size, manifest_sha256) else {
+        return Ok(ExePlan::Manifest);
+    };
+    let metadata = std::fs::metadata(exe_path)?;
+    let matches_manifest =
+        metadata.len() == size && sha256_file(exe_path)?.eq_ignore_ascii_case(sha256);
+    if !matches_manifest {
+        return Ok(ExePlan::Keep);
+    }
+    Ok(match exe_patch_size {
+        Some(patch) if patch > 0 && patch != metadata.len() => ExePlan::ExePatch(patch),
+        _ => ExePlan::Keep,
+    })
 }
 
 /// Download `url` to `dest`, using parallel byte-range segments for large files.
@@ -1112,5 +1330,96 @@ mod tests {
             resolve_torrent_output(Some(Path::new("out/custom.torrent")), "MS_V280.torrent"),
             PathBuf::from("out/custom.torrent")
         );
+    }
+
+    /// Create a scratch directory unique to `name` (removed first).
+    fn exe_test_root(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("cmsdl_tms_exe_{name}"));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    /// Write `content` as `MapleStory.exe` under `root` and return its path.
+    fn write_exe(root: &Path, content: &[u8]) -> PathBuf {
+        let path = root.join("MapleStory.exe");
+        std::fs::write(&path, content).unwrap();
+        path
+    }
+
+    #[test]
+    fn parses_manifest_version_strings() {
+        assert_eq!(parse_manifest_version("V282"), Some(282));
+        assert_eq!(parse_manifest_version("V280.1"), Some(280));
+        assert_eq!(parse_manifest_version("282"), Some(282));
+        assert_eq!(parse_manifest_version("latest"), None);
+    }
+
+    #[test]
+    fn plan_uses_manifest_when_exe_missing_and_no_hotfix() {
+        let root = exe_test_root("missing_no_hotfix");
+        let plan = plan_client_exe(&root.join("MapleStory.exe"), Some(10), Some("aa"), None).unwrap();
+        assert_eq!(plan, ExePlan::Manifest);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn plan_prefers_hotfix_when_exe_missing() {
+        let root = exe_test_root("missing_hotfix");
+        let plan = plan_client_exe(&root.join("MapleStory.exe"), Some(10), Some("aa"), Some(20)).unwrap();
+        assert_eq!(plan, ExePlan::ExePatch(20));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn plan_replaces_manifest_copy_when_sizes_differ() {
+        let root = exe_test_root("replace");
+        let exe = write_exe(&root, b"hello");
+        let sha = sha256_file(&exe).unwrap();
+        let plan = plan_client_exe(&exe, Some(5), Some(sha.as_str()), Some(9)).unwrap();
+        assert_eq!(plan, ExePlan::ExePatch(9));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn plan_keeps_manifest_copy_when_sizes_match() {
+        let root = exe_test_root("same_size");
+        let exe = write_exe(&root, b"hello");
+        let sha = sha256_file(&exe).unwrap();
+        let plan = plan_client_exe(&exe, Some(5), Some(sha.as_str()), Some(5)).unwrap();
+        assert_eq!(plan, ExePlan::Keep);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn plan_keeps_manifest_copy_when_no_hotfix_is_published() {
+        let root = exe_test_root("no_hotfix");
+        let exe = write_exe(&root, b"hello");
+        let sha = sha256_file(&exe).unwrap();
+        let plan = plan_client_exe(&exe, Some(5), Some(sha.as_str()), None).unwrap();
+        assert_eq!(plan, ExePlan::Keep);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn plan_keeps_exe_that_no_longer_matches_the_manifest() {
+        // A previous run installed the hotfix, whose checksum the manifest does
+        // not list: the file must be left alone.
+        let root = exe_test_root("hotfixed");
+        let exe = write_exe(&root, b"hotfixed");
+        let plan = plan_client_exe(&exe, Some(5), Some("00deadbeef"), Some(9)).unwrap();
+        assert_eq!(plan, ExePlan::Keep);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn plan_falls_back_to_manifest_without_a_checksum() {
+        // The manifest lists no usable checksum (execution path only): the exe
+        // cannot be verified, so the default behaviour is kept.
+        let root = exe_test_root("no_checksum");
+        let exe = write_exe(&root, b"whatever");
+        let plan = plan_client_exe(&exe, None, None, Some(9)).unwrap();
+        assert_eq!(plan, ExePlan::Manifest);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

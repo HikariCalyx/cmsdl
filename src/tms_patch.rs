@@ -1110,12 +1110,56 @@ fn probe_file_size(agent: &ureq::Agent, url: &str) -> Result<u64> {
     }
 }
 
+/// File name of the standalone executable hotfix ("minor patch"). It is
+/// downloaded next to `MapleStory.exe` and renamed over it once complete.
+pub(crate) const EXE_PATCH_FILE: &str = "ExePatch.dat";
+
 /// Build the standalone executable hotfix ("minor patch") URL for `version`.
 pub(crate) fn build_exe_patch_url(version: i16) -> String {
     format!(
         "http://tw.cdnpatch.maplestory.beanfun.com/maplestory/patch/patchdir/{:05}/ExePatch.dat",
         version
     )
+}
+
+/// Install an already-downloaded executable hotfix as `MapleStory.exe`.
+///
+/// The existing executable is removed (clearing the read-only attribute first,
+/// if any) and the hotfix is renamed over it. A missing executable is fine, so
+/// a stale existence check or an already-deleted file never blocks the install.
+/// Only a genuine failure - e.g. the file is locked because the game is running
+/// - is reported.
+pub(crate) fn install_exe_patch(patch_path: &Path, exe_path: &Path) -> Result<()> {
+    // Delete the existing MapleStory.exe if present (clear read-only first).
+    remove_readonly_file(exe_path);
+    match std::fs::remove_file(exe_path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            return Err(e).with_context(|| {
+                format!(
+                    "failed to remove existing {} (is the game running, or does cmsdl need administrator rights here?)",
+                    exe_path.display()
+                )
+            });
+        }
+    }
+
+    // Rename ExePatch.dat → MapleStory.exe (same directory → atomic). If the
+    // destination is somehow still occupied (e.g. an existence/delete
+    // mismatch), clear it and retry once before giving up.
+    if std::fs::rename(patch_path, exe_path).is_err() {
+        remove_readonly_file(exe_path);
+        let _ = std::fs::remove_file(exe_path);
+        std::fs::rename(patch_path, exe_path).with_context(|| {
+            format!(
+                "failed to rename {} to {} (is the game running, or does cmsdl need administrator rights here?)",
+                patch_path.display(),
+                exe_path.display()
+            )
+        })?;
+    }
+    Ok(())
 }
 
 /// Stream a bounded range request from `*pos` to `end` (inclusive) into
@@ -1312,7 +1356,7 @@ fn download_minor_patch(
         Err(e) => return Err(e),
     };
 
-    let exe_patch = target_dir.join("ExePatch.dat");
+    let exe_patch = target_dir.join(EXE_PATCH_FILE);
 
     // 1. Download ExePatch.dat into the client root. If a complete copy from a
     // previous interrupted install is already there, reuse it and skip the
@@ -1334,40 +1378,8 @@ fn download_minor_patch(
         plog!("  ExePatch.dat already downloaded; installing...");
     }
 
-    // 2. Delete the existing MapleStory.exe if present (clear read-only first).
-    //    A missing file is fine: treat "not found" as success, so a stale
-    //    existence check or an already-deleted executable never blocks the
-    //    install. Only a genuine failure (e.g. the file is locked because the
-    //    game is running) is reported.
-    let exe_path = target_dir.join("MapleStory.exe");
-    remove_readonly_file(&exe_path);
-    match std::fs::remove_file(&exe_path) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => {
-            return Err(e).with_context(|| {
-                format!(
-                    "failed to remove existing {} (is the game running, or does cmsdl need administrator rights here?)",
-                    exe_path.display()
-                )
-            });
-        }
-    }
-
-    // 3. Rename ExePatch.dat → MapleStory.exe (same directory → atomic). If the
-    //    destination is somehow still occupied (e.g. an existence/delete
-    //    mismatch), clear it and retry once before giving up.
-    if std::fs::rename(&exe_patch, &exe_path).is_err() {
-        remove_readonly_file(&exe_path);
-        let _ = std::fs::remove_file(&exe_path);
-        std::fs::rename(&exe_patch, &exe_path).with_context(|| {
-            format!(
-                "failed to rename {} to {} (is the game running, or does cmsdl need administrator rights here?)",
-                exe_patch.display(),
-                exe_path.display()
-            )
-        })?;
-    }
+    // 2. Replace MapleStory.exe with the downloaded hotfix.
+    install_exe_patch(&exe_patch, &target_dir.join("MapleStory.exe"))?;
     Ok(true)
 }
 
@@ -3032,6 +3044,32 @@ mod tests {
         let path = root.join("stream.bin");
         std::fs::write(&path, bytes).unwrap();
         PatchStream::open(path).unwrap()
+    }
+
+    #[test]
+    fn installs_exe_patch_over_an_existing_executable() {
+        let root = temp_root("exe_patch_install");
+        let patch = root.join(EXE_PATCH_FILE);
+        std::fs::write(&patch, b"new").unwrap();
+        let exe = root.join("MapleStory.exe");
+        std::fs::write(&exe, b"old").unwrap();
+
+        install_exe_patch(&patch, &exe).unwrap();
+
+        assert_eq!(std::fs::read(&exe).unwrap(), b"new");
+        assert!(!patch.exists());
+    }
+
+    #[test]
+    fn installs_exe_patch_without_an_existing_executable() {
+        let root = temp_root("exe_patch_fresh");
+        let patch = root.join(EXE_PATCH_FILE);
+        std::fs::write(&patch, b"new").unwrap();
+
+        install_exe_patch(&patch, &root.join("MapleStory.exe")).unwrap();
+
+        assert_eq!(std::fs::read(root.join("MapleStory.exe")).unwrap(), b"new");
+        assert!(!patch.exists());
     }
 
     /// A KMST1125 Rebuild may produce a piece that has no old copy of its own

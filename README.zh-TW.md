@@ -91,6 +91,8 @@
 ./cmsdl tms --download /path/to/tms/client
 ```
 
+客戶端主程式會保持最新：當 `MapleStory.exe` 缺失，或仍是清單中列出的原始版本時，會改為下載並安裝目前版本對應的獨立主程式 Hotfix（`ExePatch.dat`）；已被 Hotfix 替換過的主程式不會被再次覆蓋。
+
 - 只下載所有路徑中包含_Canvas，String，Reactor的檔案到 /path/to/tms/client：
 ```bash
 ./cmsdl tms --download /path/to/tms/client --filter="_Canvas:String:Reactor"

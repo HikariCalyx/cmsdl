@@ -92,6 +92,8 @@ Any command that lists a region also accepts `cms_cw` instead of `cms`, includin
 ./cmsdl tms --download /path/to/tms/client
 ```
 
+The client executable is kept current: when `MapleStory.exe` is missing, or is still the pristine copy listed in the manifest, the standalone executable hotfix (`ExePatch.dat`) published for the installed version is downloaded and installed instead. An executable that a previous hotfix already replaced is left untouched.
+
 - Download only files containing "_Canvas", "String", or "Reactor" in any path to /path/to/tms/client:
 ```bash
 ./cmsdl tms --download /path/to/tms/client --filter="_Canvas:String:Reactor"
