@@ -763,7 +763,7 @@ pub fn apply_patches(
     crate::progress::scanning();
 
     if current_version == target_version {
-        // Already at the target version — still keep MapleStory.exe current by
+        // Already at the target version - still keep MapleStory.exe current by
         // fetching the standalone executable hotfix (ExePatch.dat), if any is
         // published for this version.
         if ensure_latest_minor_patch(target_dir, target_version, allow_insecure, proxy) {
@@ -926,7 +926,7 @@ pub fn apply_patches(
     }
 
     if current == target_version {
-        // All patch files applied — fetch the standalone executable hotfix for
+        // All patch files applied - fetch the standalone executable hotfix for
         // the version the client is now on.
         ensure_latest_minor_patch(target_dir, target_version, allow_insecure, proxy);
     }
@@ -936,7 +936,7 @@ pub fn apply_patches(
 
 /// Apply a pre-downloaded `.patch` file directly to `target_dir`.
 ///
-/// No version detection or download is performed — the file is read from disk
+/// No version detection or download is performed - the file is read from disk
 /// and applied immediately. Corrupted files are reported but not repaired
 /// (repair requires network access; re-run with `--patch latest` instead).
 pub fn apply_patch_file(
@@ -1120,7 +1120,7 @@ pub(crate) fn build_exe_patch_url(version: i16) -> String {
 
 /// Stream a bounded range request from `*pos` to `end` (inclusive) into
 /// `dest` at `*pos`.  Errors (a dropped/stalled connection) are returned to
-/// the caller so it can retry — bytes already written are preserved, and the
+/// the caller so it can retry - bytes already written are preserved, and the
 /// next attempt resumes from where the stream stopped.
 fn stream_exe_bounded(
     agent: &ureq::Agent,
@@ -1884,7 +1884,7 @@ fn collect_source_deps(
 fn plan_line(line: &str) {
     crate::plog!("{}", line);
     // stdout() can be an invalid handle after the GUI frees its own console
-    // (Explorer/shortcut launch), where println! would panic — only echo when
+    // (Explorer/shortcut launch), where println! would panic - only echo when
     // a genuine terminal is attached.
     if crate::progress::active() && std::io::stdout().is_terminal() {
         println!("{}", line);
@@ -1912,7 +1912,7 @@ fn apply_patch_data(patch: &WzPatch, target_dir: &Path, temp_dir: &Path) -> Resu
     // old_checksum in each Rebuild part.  KMST1125 patches instead carry the
     // authoritative pre-patch checksum list up front (the first section of the
     // decompressed stream), which also covers source files referenced by
-    // rebuilds but not rebuilt themselves — so verify every entry of that list.
+    // rebuilds but not rebuilt themselves - so verify every entry of that list.
     let verify_items: Vec<(String, u32, Option<u32>)> = if patch.is_kmst1125 {
         // Which files are also rebuilt by this patch (so an already-updated
         // file can be skipped instead of treated as corrupt).
@@ -1959,7 +1959,7 @@ fn apply_patch_data(patch: &WzPatch, target_dir: &Path, temp_dir: &Path) -> Resu
     let workers = if total_verify == 0 {
         0
     } else if crate::is_hdd::is_hdd(target_dir) {
-        plog!("  HDD detected — verifying files one at a time.");
+        plog!("  HDD detected - verifying files one at a time.");
         1
     } else {
         std::thread::available_parallelism()
@@ -2386,7 +2386,7 @@ struct SourceFile {
 ///
 /// For KMST1125 patches the target's own old file is *optional*: a piece that
 /// is newly split in this patch (no old copy on the client) is assembled purely
-/// from other old source files, so it is rebuilt without its own old copy —
+/// from other old source files, so it is rebuilt without its own old copy -
 /// exactly like the reference patcher, which only acts on the old file when it
 /// exists.  Classic rebuilds always read from their own old file, so it is
 /// required there.
@@ -2792,7 +2792,7 @@ fn repair_corrupted_files(
     std::fs::write(&sentinel_path, "").ok();
 
     let max_parallel = if crate::is_hdd::is_hdd(target_dir) {
-        plog!("  HDD detected — repairing files one at a time.");
+        plog!("  HDD detected - repairing files one at a time.");
         REPAIR_PARALLEL_HDD
     } else {
         REPAIR_PARALLEL_SSD
@@ -2879,7 +2879,7 @@ fn download_and_verify_segmented(
         }
     }
 
-    // Use a hidden progress bar — per-file bars in a parallel repair loop
+    // Use a hidden progress bar - per-file bars in a parallel repair loop
     // would interleave and garble the console output.  The plog! messages
     // above already identify each file being repaired.
     let pb = ProgressBar::hidden();

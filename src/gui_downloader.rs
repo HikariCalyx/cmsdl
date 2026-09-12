@@ -6,9 +6,9 @@
 //! console downloader when the GUI is unavailable (non-Windows or `--no-gui`).
 //!
 //! Window labels while downloading:
-//!   * label2 (top):    `gui-downloader-client-version` — region, display
+//!   * label2 (top):    `gui-downloader-client-version` - region, display
 //!                      version, and the current transfer speed.
-//!   * label1 (bottom): `gui-downloader-downloading` — files done, total
+//!   * label1 (bottom): `gui-downloader-downloading` - files done, total
 //!                      files, bytes done, and total bytes.
 //! When the download finishes and `--close-after-finishing` was not given,
 //! label2 shows `gui-downloader-complete`.

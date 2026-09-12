@@ -327,7 +327,7 @@ enum MaintenanceType {
     /// Maintenance on a specific channel or channel category, e.g. VIP
     /// channels (频道维护 / 頻道維護).
     Channel,
-    /// Login-server-only maintenance — game worlds stay online but new
+    /// Login-server-only maintenance - game worlds stay online but new
     /// logins are blocked (登录服务器维护 / 登入伺服器維護).
     LoginServer,
 }
@@ -346,7 +346,7 @@ impl std::fmt::Display for MaintenanceType {
 /// Detect the maintenance type by scanning the title and body for keywords.
 fn detect_maintenance_type(title: &str, body: &str) -> MaintenanceType {
     let combined = format!("{title} {body}");
-    // Per-channel indicators (check first — most specific).
+    // Per-channel indicators (check first - most specific).
     if combined.contains("分频道维护")
         || combined.contains("分頻道維護")
         || combined.contains("分流維護")
@@ -390,9 +390,9 @@ fn extract_maintenance_times(title: &str, html_body: &str) -> Option<Maintenance
     let plain = strip_html(&cleaned);
     let combined = format!("{title} {plain}");
 
-    // Find a time range.  Separators: ~ ～ - – — 至
+    // Find a time range.  Separators: ~ ～ - – - 至
     let time_re =
-        Regex::new(r"(\d{1,2}):(\d{2})\s*[~～\-–—]+\s*(\d{1,2}):(\d{2})").ok()?;
+        Regex::new(r"(\d{1,2}):(\d{2})\s*[~～\-–-]+\s*(\d{1,2}):(\d{2})").ok()?;
     let caps = time_re.captures(&combined)?;
     let start_h: u32 = caps.get(1)?.as_str().parse().ok()?;
     let start_m: u32 = caps.get(2)?.as_str().parse().ok()?;
@@ -441,7 +441,7 @@ fn extract_maintenance_times(title: &str, html_body: &str) -> Option<Maintenance
 /// Two formats are supported:
 /// - **TMS**: batch sections like "第一批 … 20:30~21:30" with explicit time
 ///   ranges per batch.
-/// - **CMS**: "9:45起对各服务器前半组频道开始进行维护" — each group only
+/// - **CMS**: "9:45起对各服务器前半组频道开始进行维护" - each group only
 ///   gives a start time; the group ends when the next group starts (or at the
 ///   overall end for the last group).
 ///
@@ -548,7 +548,7 @@ fn try_extract_tms_batch_groups(
     }
 
     // Time range: "HH:MM~HH:MM" (with various separators)
-    let time_re = Regex::new(r"(\d{2}):(\d{2})\s*[~～\-–—]+\s*(\d{2}):(\d{2})").ok()?;
+    let time_re = Regex::new(r"(\d{2}):(\d{2})\s*[~～\-–-]+\s*(\d{2}):(\d{2})").ok()?;
 
     let mut groups = Vec::new();
 
@@ -701,7 +701,7 @@ fn print_maintenance(item: &NewsItem, content: &NewsContentData, json: bool, dis
         );
     } else {
         eprintln!(
-            "Found maintenance notice: #{} — {} [{}]",
+            "Found maintenance notice: #{} - {} [{}]",
             item.id, item.title, mtype
         );
         println!("=== {} ===", content.title);
@@ -887,7 +887,7 @@ fn show_tms_maintenance(agent: &ureq::Agent, json: bool, discord: bool, maint_id
     for dd in &delayed_items {
         if !json {
             eprintln!(
-                "Also found delayed-opening notice: #{} — {}",
+                "Also found delayed-opening notice: #{} - {}",
                 dd.bulletin_id, dd.title
             );
         }
@@ -933,7 +933,7 @@ fn show_tms_maintenance(agent: &ureq::Agent, json: bool, discord: bool, maint_id
         );
     } else {
         eprintln!(
-            "Found maintenance notice: #{} — {} [{}]",
+            "Found maintenance notice: #{} - {} [{}]",
             main_item.bulletin_id, main_item.title, mtype
         );
         println!("=== {} ===", detail.title);
@@ -1261,7 +1261,7 @@ fn apply_bold_close(output: &mut String, mode: RenderMode) {
 }
 
 fn apply_open(output: &mut String, color: AnsiColor, mode: RenderMode) {
-    // Skip near-black colours — invisible on dark terminal backgrounds.
+    // Skip near-black colours - invisible on dark terminal backgrounds.
     if color.is_too_dark() {
         return;
     }
@@ -1351,7 +1351,7 @@ fn extract_color(tag: &str) -> Option<AnsiColor> {
     let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
 
     let color = AnsiColor { r, g, b };
-    // Skip near-black colours — invisible on dark terminal backgrounds.
+    // Skip near-black colours - invisible on dark terminal backgrounds.
     if color.is_too_dark() {
         return None;
     }

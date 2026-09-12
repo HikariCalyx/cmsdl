@@ -109,7 +109,7 @@ fn setup_keep_old_wz(target_dir: &Path, manifest: &Manifest) -> Result<bool> {
     // likely a fresh install or the layout is already in the desired state.
     if data_dir.is_dir() {
         // If DataBk already exists from a previous interrupted run, remove it
-        // so the rename below succeeds (it was stale anyway — the marker was
+        // so the rename below succeeds (it was stale anyway - the marker was
         // absent, meaning we are starting fresh).
         if data_bk.exists() {
             std::fs::remove_dir_all(&data_bk)
@@ -824,7 +824,7 @@ fn launch_with_lr(_lr_proc: &Path, _exe: &Path) -> Result<()> {
 /// `MapleStory.exe` ships a manifest that requests administrator rights, so a
 /// plain `CreateProcess` (`std::process::Command`) fails with OS error 740
 /// (`ERROR_ELEVATION_REQUIRED`). We use `ShellExecuteW` directly instead of
-/// PowerShell — the shell sees the executable's manifest and triggers the UAC
+/// PowerShell - the shell sees the executable's manifest and triggers the UAC
 /// prompt automatically, without any intermediate console window.
 #[cfg(windows)]
 fn launch_exe(exe: &Path, working_dir: &Path) -> Result<()> {
@@ -934,7 +934,7 @@ pub(crate) fn version_view_matches(version_view: &str, wz_version: i16) -> bool 
             return false;
         }
         // Only match if the next character is '.', end-of-string, or we're
-        // at the end of the numeric prefix — reject underscore ('_') suffixes
+        // at the end of the numeric prefix - reject underscore ('_') suffixes
         // used by internal/test builds (e.g. V225_2G).
         let suffix = &version_view[end..];
         suffix.is_empty() || suffix.starts_with('.')
@@ -1035,7 +1035,7 @@ pub fn apply_patches(
     }
 
     // If the installed version is strictly newer than the latest available
-    // patch target the client is already ahead of the patch chain — patching
+    // patch target the client is already ahead of the patch chain - patching
     // would be a downgrade.  Warn and bail out.
     if let Some(ref inst) = installed {
         if version_newer_than(inst, &final_version) {
@@ -1052,7 +1052,7 @@ pub fn apply_patches(
                 pos
             } else {
                 // The recorded version is not a known patch starting point
-                // (e.g. a newer or non-standard build) — fall back to WZ
+                // (e.g. a newer or non-standard build) - fall back to WZ
                 // detection before defaulting to the beginning of the chain.
                 plog!(
                     "warning: recorded version '{v}' is not a known patch starting point; \
@@ -1074,7 +1074,7 @@ pub fn apply_patches(
             }
         }
         None => {
-            // LocalVersion3.xml does not provide a version —
+            // LocalVersion3.xml does not provide a version -
             // try to detect it from Base.wz.
             if let Some((idx, detected_ver)) =
                 try_detect_version_from_wz(target_dir, &data.packages)
@@ -1152,7 +1152,7 @@ pub fn apply_patches(
     //    Patching many files in parallel on an HDD can cause severe thrashing;
     //    single-threaded patching is much faster on spinning rust.
     let max_parallel = if crate::is_hdd::is_hdd(target_dir) {
-        plog!("HDD detected — patching files one at a time to avoid thrashing.");
+        plog!("HDD detected - patching files one at a time to avoid thrashing.");
         1
     } else {
         PARALLEL_FILES
@@ -1219,7 +1219,7 @@ pub fn apply_patches(
         //
         // The `must` version (from ver2.dat) is a guaranteed-available full
         // client baseline.  However it is only safe to use when it equals
-        // the pre-patch version of the *last* applied patch — otherwise the
+        // the pre-patch version of the *last* applied patch - otherwise the
         // origin MD5s stored in the last patch's manifest won't match the
         // downloaded files, and the intermediate patches between `must` and
         // the pre-patch version would be skipped.
@@ -1308,7 +1308,7 @@ pub fn apply_patches(
                                 }
 
                                 // Only keep the files that were originally
-                                // corrupted — the re-run may report new
+                                // corrupted - the re-run may report new
                                 // "corrupted" entries for files that were
                                 // already at the target version and simply
                                 // skipped.
@@ -1386,9 +1386,9 @@ fn cleanup_keep_old_wz_marker(target_dir: &Path) {
 /// After the first zip is downloaded and its manifest extracted, two files are
 /// written to `<target>/patchdata/`:
 ///
-/// * `patch_delta_direct.dat` — the raw manifest XML, so it is available
+/// * `patch_delta_direct.dat` - the raw manifest XML, so it is available
 ///   without re-downloading zip 0 on resume.
-/// * `.incomplete` — a plain-text file; each time a zip is fully applied its
+/// * `.incomplete` - a plain-text file; each time a zip is fully applied its
 ///   name is appended as a new line.
 ///
 /// On the next run the function detects these two files, loads the manifest
@@ -1443,7 +1443,7 @@ fn apply_one_patch(
         plog!("  resuming: {}/{} zip(s) already applied.",
             completed_zips.len(), filelist.file_list.len());
         // Re-establish keep-old-wz layout if needed (the setup call is
-        // idempotent — if DataBk already exists this is a no-op).
+        // idempotent - if DataBk already exists this is a no-op).
         if keep_old_wz {
             if let Some(ref m) = manifest {
                 setup_keep_old_wz(target_dir, m)?;

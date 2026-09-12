@@ -722,7 +722,7 @@ Function OpenTroubleshootingLink
   ExecShell "open" "https://wiki.biligame.com/maplestory/CMSDL故障排除"
 FunctionEnd
 
-; Skip the directory page for MSVC mode — no install path is needed.
+; Skip the directory page for MSVC mode - no install path is needed.
 Function DirectoryPagePre
   StrCmp $InstallMode "4" 0 +2
     Abort
@@ -771,7 +771,7 @@ Function CheckQihoo360
 
   qihooRunning:
   MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "$(STR_CLOSE_QIHOO_360_TOTAL_SECURITY)" IDRETRY checkQihooLoop
-  ; The user cannot close it — abort the installation.
+  ; The user cannot close it - abort the installation.
   Abort
 
   qihooDone:
@@ -1094,7 +1094,7 @@ Section "Install"
     ; Extract cmsdl.exe
     File "..\target\release\cmsdl.exe"
 
-    ; Registry + uninstaller — only when cms is selected.
+    ; Registry + uninstaller - only when cms is selected.
     StrCmp $InstallCMS "1" 0 skipRegInfoInstall
       Call WriteRegInfo
     skipRegInfoInstall:
@@ -1199,7 +1199,7 @@ Section "Install"
     ${EnableX64FSRedirection}
     StrCmp $0 "0" fwDone
       MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "$(STR_FIX_SDOLOGIN_UAC_RETRY)" IDRETRY fwRetry
-    ; User cancelled — not a fatal error; proceed to finish.
+    ; User cancelled - not a fatal error; proceed to finish.
     fwDone:
     Goto sectionDone
 
@@ -1245,7 +1245,7 @@ Section "Install"
 
   launcherStillRunning:
     MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "$(STR_REMOVE_OFFICIAL_LAUNCHER_UAC)" IDRETRY checkLauncherRunning
-    ; Cancel was clicked — skip removal and proceed to Finish page
+    ; Cancel was clicked - skip removal and proceed to Finish page
     Goto sectionDone
 
   doRemoveLauncher:
@@ -1330,7 +1330,7 @@ Function .onInstSuccess
   StrCmp $InstallCMS "1" 0 singleVariant
   StrCmp $InstallCMSCW "1" 0 singleVariant
 
-  ; Both variants were installed — honour the radio selection.
+  ; Both variants were installed - honour the radio selection.
   StrCmp $LaunchVariant "0" done
   StrCmp $LaunchVariant "2" launchCMS_CW
   ; Launch CMS (default).
@@ -1342,7 +1342,7 @@ launchCMS_CW:
   Goto done
 
 singleVariant:
-  ; Update and Fix SDOLogin modes — always launch CMS.
+  ; Update and Fix SDOLogin modes - always launch CMS.
   StrCmp $InstallMode "2" launchOriginalCms
   StrCmp $InstallMode "5" launchOriginalCms
   ; Install mode with a single variant.

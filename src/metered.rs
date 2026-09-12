@@ -7,7 +7,7 @@
 //! downloading large amounts of data may incur charges.
 //!
 //! A secondary helper, [`is_android_tethering`], checks whether any adapter
-//! address falls in a well-known Android tethering subnet — a necessary but not
+//! address falls in a well-known Android tethering subnet - a necessary but not
 //! sufficient condition for metered status:
 //!
 //! | Transport | Subnet            |
@@ -52,7 +52,7 @@ pub fn is_android_metered() -> bool {
 /// Returns `true` when any adapter's unicast IPv4 address falls within
 /// Apple's Personal Hotspot subnet (`172.20.10.0/28`).
 ///
-/// This subnet is used by iPhone for **all** tethering transports — USB,
+/// This subnet is used by iPhone for **all** tethering transports - USB,
 /// Wi-Fi, and Bluetooth.  iOS does not advertise metered status via DHCP, so
 /// this is the only available indicator that the upstream connection is a
 /// cellular link.
@@ -75,7 +75,7 @@ pub fn is_iphone_tethering() -> bool {
 ///
 /// 1. The user has manually enabled **"Set as metered connection"** in Windows
 ///    Settings (Network & Internet → adapter properties).
-/// 2. Windows has **automatically** classified the link as metered — e.g.
+/// 2. Windows has **automatically** classified the link as metered - e.g.
 ///    a mobile broadband adapter, a cellular USB dongle, or any hotspot that
 ///    Windows recognises as such.
 ///
@@ -117,7 +117,7 @@ mod imp {
     /// Bit 2 of `IP_ADAPTER_ADDRESSES_LH::Flags`: DHCPv4 is active.
     const IP_ADAPTER_DHCP_ENABLED: u32 = 0x0004;
 
-    /// DHCP option 43 — Vendor-Specific Information.
+    /// DHCP option 43 - Vendor-Specific Information.
     const DHCP_OPT_VENDOR_SPECIFIC: u32 = 43;
 
     /// The payload Android injects into option 43 when mobile data is metered.
@@ -371,7 +371,7 @@ mod imp {
     // ── Subnet heuristic ─────────────────────────────────────────────────────
 
     fn unicast_in_iphone_subnet(adapter: &IP_ADAPTER_ADDRESSES_LH) -> bool {
-        // iPhone does not require DHCP to be enabled — USB tethering uses a
+        // iPhone does not require DHCP to be enabled - USB tethering uses a
         // static address assignment from the iPhone itself, and the adapter
         // may not show the DHCP flag even when the lease came from iOS.
         let mut ua: *const IP_ADAPTER_UNICAST_ADDRESS_LH =

@@ -142,12 +142,14 @@ pub fn active() -> bool {
     PATCH_REPORTER.read().unwrap().is_some()
 }
 
+/// Dispatch to the active reporter, if one is registered.
+///
+/// In console mode no reporter is registered and the call is a no-op: the
+/// console output there is produced by the callers' own progress bars and by
+/// [`line`].
 fn with(f: impl FnOnce(&dyn Reporter)) {
     if let Some(r) = PATCH_REPORTER.read().unwrap().as_ref() {
         f(r.as_ref());
-    } else {
-        // In console mode (no reporter), print to stderr for diagnostics.
-        eprintln!("[progress] no reporter registered — call dropped");
     }
 }
 
@@ -174,7 +176,7 @@ pub fn begin_download(index: usize, count: usize, total: u64) {
     with(|r| r.begin_download(index, count, total));
 }
 pub fn download_progress(downloaded: u64) {
-    // Too noisy to log every call — only log periodically via the reporter.
+    // Too noisy to log every call - only log periodically via the reporter.
     with(|r| r.download_progress(downloaded));
 }
 pub fn loading_patch() {
@@ -186,7 +188,7 @@ pub fn minor_patch(version: &str, total: u64) {
     with(|r| r.minor_patch(version, total));
 }
 pub fn minor_patch_progress(downloaded: u64, total: u64) {
-    // Too noisy to log every call — the GUI reports via the reporter; the
+    // Too noisy to log every call - the GUI reports via the reporter; the
     // console progress bar is driven separately by the caller.
     with(|r| r.minor_patch_progress(downloaded, total));
 }
@@ -248,7 +250,7 @@ pub fn finish(msg: &str, close: bool) {
     with(|r| r.finish(msg, close));
 }
 
-/// `plog!("...")` — a detailed procedure line (see [`line`]).
+/// `plog!("...")` - a detailed procedure line (see [`line`]).
 #[macro_export]
 macro_rules! plog {
     ($($arg:tt)*) => { $crate::progress::line(&format!($($arg)*)) };

@@ -20,6 +20,13 @@ use crate::locale::{tr, tr_error};
 use crate::maintenance;
 use crate::progress::{self, format_speed, Reporter};
 
+/// Prefix of the development-only diagnostic lines in the patch log.
+///
+/// `[gui-debug]` lines exist to trace reporter wiring while working on the GUI;
+/// [`GuiReporter::log`] drops them in release builds so the user-facing
+/// `cmsdl_patcher.log` only contains the actual patch procedure.
+const GUI_DEBUG_PREFIX: &str = "[gui-debug]";
+
 /// Download/repair context used to compute transfer speed.
 struct SpeedState {
     last: Instant,
@@ -153,6 +160,10 @@ impl GuiReporter {
 
 impl Reporter for GuiReporter {
     fn log(&self, line: &str) {
+        // Development diagnostics are kept in debug builds only.
+        if !cfg!(debug_assertions) && line.starts_with(GUI_DEBUG_PREFIX) {
+            return;
+        }
         let mut st = self.log.lock().unwrap();
         match st.file.as_mut() {
             Some(f) => { let _ = writeln!(f, "{line}"); }
@@ -172,7 +183,7 @@ impl Reporter for GuiReporter {
         self.log(&format!("[gui-debug] Reporter::installing({}, {})", current, target));
         // An update was found: create/append the log file now.
         self.open_log();
-        // TMS versions are bare numbers (e.g. "280") — prepend "V".
+        // TMS versions are bare numbers (e.g. "280") - prepend "V".
         let cur_display = if self.is_tms { format!("V{current}") } else { current.to_string() };
         let tgt_display = if self.is_tms { format!("V{target}") } else { target.to_string() };
         self.set_label2(tr("gui-patcher-installing-update-from-nospeed", &[&cur_display, &tgt_display]));

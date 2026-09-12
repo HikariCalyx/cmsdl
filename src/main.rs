@@ -44,8 +44,8 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Setting `ENABLE_EXTENDED_FLAGS` re-specifies the input mode, which on some
 /// Windows builds drops `ENABLE_PROCESSED_INPUT`. Without that flag the console
 /// stops generating `CTRL_C_EVENT` (Ctrl+C is delivered as raw `^C` input
-/// instead), so Ctrl+C no longer terminates the process while Ctrl+Break —
-/// which does not depend on that flag — still does. We therefore re-assert
+/// instead), so Ctrl+C no longer terminates the process while Ctrl+Break -
+/// which does not depend on that flag - still does. We therefore re-assert
 /// `ENABLE_PROCESSED_INPUT` explicitly.
 fn disable_quick_edit() {
     #[cfg(windows)]
@@ -65,14 +65,14 @@ fn disable_quick_edit() {
         // SAFETY: GetStdHandle with STD_INPUT_HANDLE is always safe to call.
         let handle = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
         if handle == -1 {
-            // Not a console (redirected / piped input) — nothing to do.
+            // Not a console (redirected / piped input) - nothing to do.
             return;
         }
 
         let mut mode: u32 = 0;
         // SAFETY: handle has been validated; lpMode points to a valid u32.
         if unsafe { GetConsoleMode(handle, &mut mode) } == 0 {
-            // Could not query console mode — bail out silently.
+            // Could not query console mode - bail out silently.
             return;
         }
 
@@ -89,7 +89,7 @@ fn disable_quick_edit() {
 
         // SAFETY: handle is valid; mode flags are well-known console flags.
         let _ = unsafe { SetConsoleMode(handle, new_mode) };
-        // Failure is deliberately ignored — this is a cosmetic convenience.
+        // Failure is deliberately ignored - this is a cosmetic convenience.
     }
 }
 
@@ -129,7 +129,7 @@ fn install_ctrl_handler() {
             // Clear any inherited "ignore Ctrl+C" attribute. A process launched
             // with CREATE_NEW_PROCESS_GROUP (or whose parent called
             // SetConsoleCtrlHandler(NULL, TRUE)) inherits a flag that suppresses
-            // CTRL_C_EVENT while still delivering CTRL_BREAK_EVENT — which is
+            // CTRL_C_EVENT while still delivering CTRL_BREAK_EVENT - which is
             // exactly the "Ctrl+Break works, Ctrl+C doesn't" symptom. Passing
             // (NULL, FALSE) restores normal Ctrl+C processing.
             SetConsoleCtrlHandler(None, 0);

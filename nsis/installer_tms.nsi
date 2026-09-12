@@ -195,7 +195,7 @@ BrandingText "Powered by CMSDL"
 Function .onInit
   ; Resolve the default installation directory, in order of preference:
   ;   1. the folder holding the executable recorded by an existing official
-  ;      (Gamania) install — its "Path" value is a full exe path such as
+  ;      (Gamania) install - its "Path" value is a full exe path such as
   ;      N:\MapleStoryTW\MapleStory.exe, so the parent folder is used,
   ;   2. our own previous installation path,
   ;   3. the actual system drive (e.g. D:), which cannot be resolved at
@@ -297,7 +297,7 @@ Function ModeSelectPage
     ${NSD_Check} $CheckSystemProxy
 
   ; Portable Mode checkbox. When checked, no uninstaller or registry entries
-  ; are created — the game directory can be moved or deleted freely.
+  ; are created - the game directory can be moved or deleted freely.
   ${NSD_CreateCheckbox} 10u 126u 95% 12u "$(STR_PORTABLE_MODE)"
   Pop $CheckPortable
   StrCmp $PortableFlag "1" 0 +2
@@ -435,7 +435,7 @@ Function CheckQihoo360
 
   qihooRunning:
   MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "$(STR_CLOSE_QIHOO_360_TOTAL_SECURITY)" IDRETRY checkQihooLoop
-  ; The user cannot close it — abort the installation.
+  ; The user cannot close it - abort the installation.
   Abort
 
   qihooDone:
@@ -457,7 +457,7 @@ Function CheckRiotVanguard
 
   vanguardRunning:
   MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "$(STR_CLOSE_RIOT_VANGUARD)" IDRETRY checkVanguardLoop
-  ; The user cannot close it — abort the installation.
+  ; The user cannot close it - abort the installation.
   Abort
 
   vanguardDone:
@@ -664,7 +664,7 @@ Section "Install"
   ; UPDATE (PATCH) MODE
   ; ----------------------------------------------------------------------
   modeUpdate:
-    ; Extract cmsdl.exe. Do NOT write registry or uninstaller — patching
+    ; Extract cmsdl.exe. Do NOT write registry or uninstaller - patching
     ; only updates the existing game installation.
     File "..\target\release\cmsdl.exe"
 

@@ -65,7 +65,7 @@ pub fn manual_download(
     let original_url = url.to_owned();
     let url = unwrap_secauth(url);
 
-    // 1. Validate domain — extract host and ensure it's one of the two known CDN hosts.
+    // 1. Validate domain - extract host and ensure it's one of the two known CDN hosts.
     let (scheme_host, raw_path) = split_url(&url)?;
     let host = scheme_host
         .strip_prefix("https://")
@@ -126,12 +126,12 @@ pub fn manual_download(
     if dry_run {
         if let Some(sz) = size {
             println!(
-                "  content-length: {sz} ({}) — would download as {} segment(s)",
+                "  content-length: {sz} ({}) - would download as {} segment(s)",
                 format_bytes(sz),
                 effective_segments(sz, SEGMENTS)
             );
         } else {
-            println!("  content-length: unknown — would download as a single stream");
+            println!("  content-length: unknown - would download as a single stream");
         }
         println!("  output: {}", dest.display());
         println!("dry-run complete; no data was downloaded.");

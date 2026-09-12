@@ -89,9 +89,9 @@ fn is_region_name(s: &str) -> bool {
 
 /// Normalise a single command-line argument for duplicate detection.
 ///
-/// On Windows only, a token that clearly names a drive-absolute path — either
+/// On Windows only, a token that clearly names a drive-absolute path - either
 /// the whole token or the value after the first `=` (e.g. `--download=C:\...`)
-/// — has its drive letter and path lower-cased and `\` separators converted to
+/// - has its drive letter and path lower-cased and `\` separators converted to
 /// `/`, mirroring the case-insensitive filesystem. Everything else is returned
 /// unchanged, so flags, URLs, regex patterns, versions, and other values stay
 /// byte-for-byte identical in the key. On non-Windows platforms the argument
@@ -185,10 +185,10 @@ impl SingleInstanceGuard {
 
 /// Try to acquire the single-instance lock for the current command line.
 ///
-/// - `Ok(Some(guard))` — this process may proceed; hold the guard until done,
+/// - `Ok(Some(guard))` - this process may proceed; hold the guard until done,
 ///   then call [`SingleInstanceGuard::cleanup`] once the operation finishes.
-/// - `Ok(None)` — another cmsdl is already running this exact command.
-/// - `Err(e)` — the lock could not be set up (e.g. an unwritable temp dir);
+/// - `Ok(None)` - another cmsdl is already running this exact command.
+/// - `Err(e)` - the lock could not be set up (e.g. an unwritable temp dir);
 ///   the caller should treat this as best-effort and continue.
 ///
 /// After acquiring, lock files left behind by earlier runs are pruned (see
@@ -212,7 +212,7 @@ pub fn acquire() -> Result<Option<SingleInstanceGuard>> {
 /// A leftover lock file is one whose exclusive lock can be taken right now: if
 /// some other cmsdl were still running that command, the lock would be held and
 /// the attempt would fail. Files that are held are left untouched, as is the
-/// caller's own lock file (`own_path`). Errors are ignored — this is purely
+/// caller's own lock file (`own_path`). Errors are ignored - this is purely
 /// housekeeping, so it can never block the actual operation.
 fn prune_stale_locks(dir: &Path, own_path: &Path) {
     let Ok(entries) = std::fs::read_dir(dir) else {

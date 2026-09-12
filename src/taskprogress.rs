@@ -75,7 +75,7 @@ pub fn watch(pb: ProgressBar, total: u64) -> TaskbarHandle {
 }
 
 // ---------------------------------------------------------------------------
-// Windows — ITaskbarList3 via the `windows` crate
+// Windows - ITaskbarList3 via the `windows` crate
 // ---------------------------------------------------------------------------
 
 #[cfg(windows)]
@@ -137,7 +137,7 @@ impl PlatformProgress {
             }
             let hwnd = HWND(raw as *mut core::ffi::c_void);
 
-            // Initialise COM for this thread; ignore errors — the main thread
+            // Initialise COM for this thread; ignore errors - the main thread
             // may have already initialised it with a compatible apartment model.
             let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
 
@@ -196,7 +196,7 @@ impl PlatformProgress {
 unsafe impl Send for PlatformProgress {}
 
 // ---------------------------------------------------------------------------
-// macOS / Linux — OSC 9;4 terminal escape sequence (best-effort)
+// macOS / Linux - OSC 9;4 terminal escape sequence (best-effort)
 //
 // This sequence is recognised by iTerm2 (macOS dock progress), WezTerm,
 // Windows Terminal, and certain other emulators that forward it to the OS

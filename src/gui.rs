@@ -40,7 +40,7 @@ pub struct UiModel {
     /// HDD notice label, drawn at (16, 477) in #FFA500.  Shown only when
     /// the target drive is a mechanical hard disk.
     pub hdd_notice: String,
-    /// Maintenance notice — title line + optional body.  Shown above the
+    /// Maintenance notice - title line + optional body.  Shown above the
     /// HDD warning when a recent maintenance announcement is available.
     pub maintenance_title: String,
     /// Full body of the maintenance notice (plain text).  Visible only when
@@ -263,14 +263,14 @@ mod win32 {
     const HDD_LABEL_COLOR_G: u8 = 0xA5;
     const HDD_LABEL_COLOR_B: u8 = 0x00;
 
-    // HDD notice background — a rounded rectangle behind the label.
+    // HDD notice background - a rounded rectangle behind the label.
     const HDD_BOX_X: i32 = 12;
     const HDD_BOX_Y: i32 = 472;
     const HDD_BOX_W: i32 = 602;
     const HDD_BOX_H: i32 = 36;
     const HDD_BOX_RADIUS: i32 = 8;
 
-    // Maintenance notice — anchored at the bottom (above HDD warning), grows
+    // Maintenance notice - anchored at the bottom (above HDD warning), grows
     // upward when expanded.  The header line is clickable to fold/expand.
     /// Y position of the bottom of the maintenance area (just above HDD box).
     const MAINT_BOTTOM_Y: i32 = 468;
@@ -293,7 +293,7 @@ mod win32 {
     // Semi-transparent dark background: ARGB 0x72000000 (~45% black).
     const HDD_BOX_BG: u32 = 0xAF00_0000;
 
-    // Maintenance notice backdrop — darker for readability.
+    // Maintenance notice backdrop - darker for readability.
     const MAINT_BOX_BG: u32 = 0xDF00_0000;
 
     // cmsdl version label (top area). Same style as label1 (#979497).
@@ -360,7 +360,7 @@ mod win32 {
     // ShowWindow commands
     const SW_MINIMIZE: i32 = 6;
 
-    // System command — window restored from minimised state.
+    // System command - window restored from minimised state.
     const SC_RESTORE: usize = 0xF120;
 
     // PeekMessage mode
@@ -584,7 +584,7 @@ mod win32 {
         label_font:    HGDIOBJ,
         /// Bold variant of the label font (for maintenance body).
         label_font_bold: HGDIOBJ,
-        /// Font for the HDD notice (Segoe UI, 10pt) — better Unicode coverage.
+        /// Font for the HDD notice (Segoe UI, 10pt) - better Unicode coverage.
         hdd_label_font: HGDIOBJ,
 
         /// Shared UI model (label text + progress), updated by the owning task.
@@ -962,7 +962,7 @@ mod win32 {
         for row in 0..h as i32 {
             let row_ptr = unsafe { bd.scan0.offset((row * bd.stride) as isize) as *const u32 };
             for col in 0..w {
-                // GDI+ ARGB: 0xAARRGGBB — pre-multiply RGB by alpha
+                // GDI+ ARGB: 0xAARRGGBB - pre-multiply RGB by alpha
                 let argb = unsafe { *row_ptr.add(col as usize) };
                 let a = (argb >> 24) & 0xFF;
                 let pixel = if a == 0xFF {
@@ -1161,7 +1161,7 @@ mod win32 {
             dib[i] = to_dib(px);
         }
 
-        // 1b. Overlay (e.g. shockingmeal.png for cms_cw) — alpha-blend on top
+        // 1b. Overlay (e.g. shockingmeal.png for cms_cw) - alpha-blend on top
         //     of the background.  Centered horizontally, placed at a fixed
         //     vertical offset.
         if !s.overlay_pixels.is_empty() {
@@ -1180,7 +1180,7 @@ mod win32 {
             }
         }
 
-        // 2. Title-bar buttons (minimize + close) — alpha-blend over background.
+        // 2. Title-bar buttons (minimize + close) - alpha-blend over background.
         let state_index = |st: BtnState| match st {
             BtnState::Normal  => 0,
             BtnState::Hover   => 1,
@@ -1202,7 +1202,7 @@ mod win32 {
         draw_button(&s.min_btn_pixels[state_index(s.min_btn_state)], MIN_BTN_X, MIN_BTN_Y);
         draw_button(&s.btn_pixels[state_index(s.btn_state)], BTN_X, BTN_Y);
 
-        // 3. Progress bar — two-layer track + fill, blended over background.
+        // 3. Progress bar - two-layer track + fill, blended over background.
         //
         //   Track (drawn first, always full length PROG_TOTAL_W):
         //     A (left cap) + F tiled to fill the middle + E (right cap).
@@ -1288,7 +1288,7 @@ mod win32 {
 
         // 4. Status label.
         //
-        // TextOutW only ever writes RGB into a 32-bit DIB — it never touches
+        // TextOutW only ever writes RGB into a 32-bit DIB - it never touches
         // the alpha channel. Drawing straight onto `hdc_mem` would leave each
         // glyph pixel with whatever alpha the background already had there,
         // which is why the text came out looking faded/transparent instead
@@ -1297,7 +1297,7 @@ mod win32 {
         // Instead we render the glyphs (white on black) into a separate mask
         // DC, use each pixel's brightness as anti-aliased alpha coverage,
         // and alpha-blend the solid label color through our existing
-        // premultiplied blend function — same compositing path as every
+        // premultiplied blend function - same compositing path as every
         // other layer.
         let draw_label = |dib: &mut [u32], text: &str, x: i32, y: i32, color: (u8, u8, u8), font: HGDIOBJ| {
             let wide_text: Vec<u16> = text.encode_utf16().collect();
@@ -1460,10 +1460,10 @@ mod win32 {
                 }
             }
 
-            // Header line — fold/unfold indicator with context-sensitive hint.
+            // Header line - fold/unfold indicator with context-sensitive hint.
             let header_text = if maint_folded {
                 let hint = crate::locale::tr("gui-click-to-expand", &[]);
-                format!("▲ {maint_title} — {hint}")
+                format!("▲ {maint_title} - {hint}")
             } else {
                 let hint = crate::locale::tr("gui-maint-scroll-hint", &[]);
                 format!("▼ {hint}")
@@ -1493,7 +1493,7 @@ mod win32 {
             }
         }
 
-        // HDD notice — drawn at the bottom of the window when the target
+        // HDD notice - drawn at the bottom of the window when the target
         // drive is a mechanical hard disk.  A semi-transparent rounded
         // rectangle provides a subtle background behind the advisory text.
         if !hdd_notice_text.is_empty() {
@@ -1515,14 +1515,14 @@ mod win32 {
                         } else if dx >= HDD_BOX_W - HDD_BOX_RADIUS {
                             dx - (HDD_BOX_W - HDD_BOX_RADIUS)
                         } else {
-                            return true; // horizontal middle — always inside
+                            return true; // horizontal middle - always inside
                         };
                         let ry = if dy < HDD_BOX_RADIUS {
                             HDD_BOX_RADIUS - dy - 1
                         } else if dy >= HDD_BOX_H - HDD_BOX_RADIUS {
                             dy - (HDD_BOX_H - HDD_BOX_RADIUS)
                         } else {
-                            return true; // vertical middle — always inside
+                            return true; // vertical middle - always inside
                         };
                         (rx as f64).powi(2) + (ry as f64).powi(2) < (HDD_BOX_RADIUS as f64).powi(2)
                     };
@@ -1617,7 +1617,7 @@ mod win32 {
         }
         unsafe { SelectObject(hdc_mask, hbmp) };
 
-        // Black background, white text — grayscale value directly becomes
+        // Black background, white text - grayscale value directly becomes
         // our alpha coverage value.
         unsafe {
             SetBkMode(hdc_mask, TRANSPARENT_BKMODE); // no separate bg fill needed
@@ -1976,7 +1976,7 @@ mod win32 {
                     // the window if the owning task requested it.
                     let s = unsafe { &mut *sp };
                     let (_, _, _, _, progress, should_close, _, _, _, _, _) = s.snapshot();
-                    // When the window is minimised there is nothing to paint —
+                    // When the window is minimised there is nothing to paint -
                     // skip the expensive UpdateLayeredWindow call and only
                     // keep the taskbar indicators live.
                     if unsafe { IsIconic(hwnd) } == 0 {
@@ -2079,7 +2079,7 @@ mod win32 {
         let win_y = (sm_cy - WIN_H) / 2;
 
         // WS_EX_LAYERED enables per-pixel alpha via UpdateLayeredWindow.
-        // Do NOT set WS_VISIBLE yet — show after first UpdateLayeredWindow call.
+        // Do NOT set WS_VISIBLE yet - show after first UpdateLayeredWindow call.
         let hwnd = unsafe {
             CreateWindowExW(
                 WS_EX_APPWINDOW | WS_EX_LAYERED,
@@ -2087,7 +2087,7 @@ mod win32 {
                 wide("cmsdl").as_ptr(),
                 // WS_SYSMENU | WS_MINIMIZEBOX enable proper minimize/restore
                 // machinery (and taskbar animation) even though no caption is
-                // drawn — the window is fully custom-painted.
+                // drawn - the window is fully custom-painted.
                 WS_POPUP | WS_SYSMENU | WS_MINIMIZEBOX,
                 win_x, win_y, WIN_W, WIN_H,
                 ptr::null_mut(), ptr::null_mut(), hinstance, ptr::null_mut(),
@@ -2156,7 +2156,7 @@ mod win32 {
         }
         unsafe { ShowWindow(hwnd, 5 /* SW_SHOW */) };
 
-        // Drive repaint ticks with a WM_TIMER — this serves as a secondary
+        // Drive repaint ticks with a WM_TIMER - this serves as a secondary
         // mechanism; the primary refresh is driven by the message-loop
         // timeout below (which is not subject to WM_TIMER's low-priority
         // synthesis rules).

@@ -247,11 +247,11 @@ const FOOTER_MAGIC64: u64 = FOOTER_MAGIC as u64; // zero-extended to 8 bytes
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum EntryType {
-    /// Type byte 0x00 — new file, embedded data follows.
+    /// Type byte 0x00 - new file, embedded data follows.
     Create = 0,
-    /// Type byte 0x01 — rebuild from old + instructions.
+    /// Type byte 0x01 - rebuild from old + instructions.
     Rebuild = 1,
-    /// Type byte 0x02 — delete from old client.
+    /// Type byte 0x02 - delete from old client.
     Delete = 2,
 }
 
@@ -309,7 +309,7 @@ fn diff_files(
     diff_files_hash(old, new, from_file, min_match, on_progress)
 }
 
-/// Exact O(n·m) diff — correct for all inputs, practical only for small files.
+/// Exact O(n·m) diff - correct for all inputs, practical only for small files.
 fn diff_files_exact(
     old: &[u8],
     new: &[u8],
@@ -416,7 +416,7 @@ fn wz_type(path: &str) -> Option<&'static str> {
     None
 }
 
-/// Hash-indexed diff — O(n) build + O(n) scan.  Stores the first occurrence
+/// Hash-indexed diff - O(n) build + O(n) scan.  Stores the first occurrence
 /// of each 8-byte prefix in `old`.  Fast on multi-GB files; may miss matches
 /// when the same 8-byte prefix maps to a later, better-aligned position.
 fn diff_files_hash(
@@ -710,7 +710,7 @@ fn write_patch(out_path: &Path, entries: &[PatchEntry]) -> Result<()> {
         .map(|(i, _)| i)
         .collect();
 
-    // Sort by file size ascending — small files finish first, keeping all
+    // Sort by file size ascending - small files finish first, keeping all
     // threads busy and giving the user visible progress sooner.
     rebuild_indices.sort_by_key(|&i| {
         entries[i]
@@ -766,7 +766,7 @@ fn write_patch(out_path: &Path, entries: &[PatchEntry]) -> Result<()> {
 
         let thread_bars = Arc::new(thread_bars);
 
-        // Shared work cursor — each thread atomically grabs the next job.
+        // Shared work cursor - each thread atomically grabs the next job.
         let rebuild_indices: Arc<[usize]> = rebuild_indices.into();
         let cursor = AtomicUsize::new(0);
 

@@ -169,7 +169,7 @@ pub(crate) fn data_dir() -> &'static str {
 /// CW endpoints without duplicating their implementations.
 pub(crate) fn with_config<T>(cfg: CmsConfig, f: impl FnOnce() -> T) -> T {
     *CONFIG_OVERRIDE.write().unwrap() = Some(cfg);
-    // No guard needed — `f()` runs synchronously and any scoped threads it
+    // No guard needed - `f()` runs synchronously and any scoped threads it
     // spawns will join before `f()` returns.  Clear on return.
     let result = f();
     *CONFIG_OVERRIDE.write().unwrap() = None;
@@ -871,7 +871,7 @@ fn find_build_for_version_from(
 ) -> Result<Option<u32>> {
     const FIND_BUILD_SEARCH_WINDOW: u32 = 320;
 
-    // Check the latest first — it's the most likely match.
+    // Check the latest first - it's the most likely match.
     if let Some((contents, _)) = fetch_client_file_list_for(agent, challenge, latest)? {
         if extract_version_from_header(&contents).as_deref() == Some(target_version) {
             return Ok(Some(latest));

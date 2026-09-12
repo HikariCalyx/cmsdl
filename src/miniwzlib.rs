@@ -100,7 +100,7 @@ pub fn get_wz_version_from_bytes(data: &[u8], file_len: u64) -> Result<WzVersion
 
     // ---- 4-byte signature ----
     if &data[0..4] != PKG1_MAGIC {
-        // PKG2 / random-header / unknown — return version 0.
+        // PKG2 / random-header / unknown - return version 0.
         return Ok(WzVersion {
             version: 0,
             version_hash: 0,
@@ -386,7 +386,7 @@ mod tests {
 
     #[test]
     fn encver_known_values() {
-        // encver is an 8-bit checksum — collisions are expected.
+        // encver is an 8-bit checksum - collisions are expected.
         // Cross-check: version 280 → encver 0x7D (verified against sample file).
         assert_eq!(compute_enc_version(compute_version_hash(280)), 0x7D);
     }

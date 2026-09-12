@@ -410,8 +410,8 @@ fn run_tms(
     // The full client can be published before the patch that reaches it. When
     // that happens for `latest` (and at least one patch is available), fall back
     // to the last version actually reachable through the patch server. When no
-    // patch at all leaves the current version — e.g. a client that is not a TMS
-    // client — there is no upgrade path.
+    // patch at all leaves the current version - e.g. a client that is not a TMS
+    // client - there is no upgrade path.
     let target = match resolve_tms_target(check_client, current, target, plan.reached) {
         TmsTarget::Reached => target,
         TmsTarget::Fallback(reached) => {

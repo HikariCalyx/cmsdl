@@ -713,7 +713,7 @@ fn patch_apply_tms(
 
     // Check for an interrupted repair (patch was applied but repair didn't
     // finish).  A leftover Data/.incomplete means the Data directory is in an
-    // inconsistent state — download the full client from scratch.
+    // inconsistent state - download the full client from scratch.
     let repair_sentinel = target.join("Data/.incomplete");
     if repair_sentinel.exists() {
         println!(

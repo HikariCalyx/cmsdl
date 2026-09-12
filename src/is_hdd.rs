@@ -87,7 +87,7 @@ mod imp {
         additional_parameters: [u8; 4],
     }
 
-    /// DEVICE_SEEK_PENALTY_DESCRIPTOR — version must be set to sizeof(Self)
+    /// DEVICE_SEEK_PENALTY_DESCRIPTOR - version must be set to sizeof(Self)
     /// before the IOCTL call.
     #[repr(C)]
     struct DeviceSeekPenaltyDescriptor {
@@ -97,7 +97,7 @@ mod imp {
         _reserved: [u8; 3],      // alignment padding
     }
 
-    /// DEVICE_TRIM_DESCRIPTOR — version must be set to sizeof(Self) before
+    /// DEVICE_TRIM_DESCRIPTOR - version must be set to sizeof(Self) before
     /// the IOCTL call.
     #[repr(C)]
     struct DeviceTrimDescriptor {
@@ -185,7 +185,7 @@ mod imp {
             if descriptor.incurs_seek_penalty != 0 {
                 return true; // definitely HDD
             }
-            // Seek penalty is 0 — could be SSD, or could be an HDD behind a
+            // Seek penalty is 0 - could be SSD, or could be an HDD behind a
             // USB bridge that doesn't forward the property.  Fall through to
             // the TRIM check.
         }
