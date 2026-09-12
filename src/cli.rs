@@ -92,11 +92,13 @@ pub struct Cli {
     /// Delete files in the Data directory that are not listed in the manifest.
     ///
     /// With `--download`: runs after fetching the manifest and before downloading,
-    /// removing any local files under `mxd/Data` (CMS) or `Data` (TMS) that are
-    /// absent from the manifest.
+    /// removing any local files under `mxd/Data` (CMS),
+    /// `mxdclassic/Maplestory_Classic_Data` (CMS CW), or `Data` (TMS) that
+    /// are absent from the manifest.
     ///
     /// With `--patch latest`: runs after patching completes, removing stray files
-    /// under `mxd/Data` that are not in the latest full client manifest.
+    /// under `mxd/Data` (CMS) or `mxdclassic/Maplestory_Classic_Data` (CMS CW)
+    /// that are not in the latest full client manifest.
     #[arg(long)]
     pub purge_wz_files: bool,
 

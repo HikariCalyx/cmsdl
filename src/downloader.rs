@@ -314,9 +314,6 @@ pub fn download(
     if region == Region::CmsCw && wz_only {
         bail!("--download-wz-only is not supported for region 'cms_cw'");
     }
-    if region == Region::CmsCw && purge_wz_files {
-        bail!("--purge-wz-files is not supported for region 'cms_cw'");
-    }
 
     // Use the graphical downloader on Windows unless suppressed. The GUI shows
     // a progress window and downloads on a background thread; on non-Windows
@@ -643,9 +640,6 @@ fn patch_apply_cms_cw(
     region: Region,
     maint_id: Option<u64>,
 ) -> Result<()> {
-    if purge_wz_files {
-        bail!("--purge-wz-files is not supported for region 'cms_cw'");
-    }
     if keep_old_wz_files {
         bail!("--keep-old-wz-files is not supported for region 'cms_cw'");
     }

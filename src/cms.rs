@@ -113,6 +113,9 @@ pub(crate) struct CmsConfig {
     pub last_client_version_section: &'static str,
     /// Client data directory name (e.g. `"mxd"`, `"mxdclassic"`).
     pub data_dir: &'static str,
+    /// Name of the WZ/data subdirectory under `data_dir`
+    /// (e.g. `"Data"` for CMS, `"Maplestory_Classic_Data"` for CMS CW).
+    pub data_subdir: &'static str,
     /// Human-readable region label for GUI display (e.g. `"CMS"`, `"CMS CW"`).
     pub region_label: &'static str,
     /// Product ID used in the obfuscated file name (e.g. `"5"`, `"791001093"`).
@@ -133,6 +136,7 @@ pub(crate) const CMS_CONFIG: CmsConfig = CmsConfig {
     last_client_version_file: LAST_CLIENT_VERSION_FILE,
     last_client_version_section: "CMS",
     data_dir: "mxd",
+    data_subdir: "Data",
     region_label: "CMS",
     product_id: "5",
     zone_tag: "zone5_8848_v3",
@@ -1284,7 +1288,8 @@ pub fn download_client(
     };
     println!("latest version: {version} {view_display}; starting download.");
 
-    // Purge stray files in mxd/Data/ before downloading (full manifest, pre-filter).
+    // Purge stray files in the region's data directory before downloading
+    // (full manifest, pre-filter).
     if purge_wz_files {
         crate::progress::dl_purging();
         purge_junk_dirs(&target_dir.join(config().data_dir))?;
@@ -1755,7 +1760,7 @@ fn get_shell_folder(name: &str) -> Option<String> {
 /// and they can be safely deleted.
 pub(crate) fn purge_junk_dirs(target_dir: &Path) -> Result<()> {
     let dd = config().data_dir;
-    let protected: &[&str] = &[dd, "Data", "patchdata"];
+    let protected: &[&str] = &[dd, config().data_subdir, "Data", "patchdata"];
 
     let entries: Vec<_> = match std::fs::read_dir(target_dir) {
         Ok(iter) => iter.filter_map(|e| e.ok()).collect(),
@@ -1807,20 +1812,41 @@ fn is_junk_83_dir(name: &str) -> bool {
     }
 }
 
-/// Delete files under `<target_dir>/mxd/Data/` that are not listed in `entries`.
+/// Delete files under `<target_dir>/<data_dir>/<data_subdir>/` that are not
+/// listed in `entries`.
 ///
 /// `entries` should be the full (unfiltered) list parsed from the client file
-/// list. Only the directory `<target_dir>/mxd/Data/` is examined; files outside
-/// it are left untouched.
+/// list. Only the region's data directory (e.g. `<target_dir>/mxd/Data/` for CMS
+/// or `<target_dir>/mxdclassic/Maplestory_Classic_Data/` for CMS CW) is
+/// examined; files outside it are left untouched.
 fn purge_data_files(target_dir: &Path, entries: &[FileEntry]) -> Result<()> {
-    let dd = config().data_dir;
-    let data_dir = target_dir.join(dd).join("Data");
+    purge_data_files_in(
+        target_dir,
+        config().data_dir,
+        config().data_subdir,
+        entries,
+    )
+}
+
+/// Implementation of [`purge_data_files`] with the data directory names passed
+/// explicitly, so it can be unit-tested without relying on the global config.
+fn purge_data_files_in(
+    target_dir: &Path,
+    data_dir_name: &str,
+    data_subdir: &str,
+    entries: &[FileEntry],
+) -> Result<()> {
+    let data_dir = target_dir.join(data_dir_name).join(data_subdir);
     if !data_dir.is_dir() {
         return Ok(());
     }
 
     // Build the set of expected paths (forward slashes, relative to target_dir).
-    let prefix = format!("{}/data/", dd.to_ascii_lowercase());
+    let prefix = format!(
+        "{}/{}/",
+        data_dir_name.to_ascii_lowercase(),
+        data_subdir.to_ascii_lowercase()
+    );
     let expected: std::collections::HashSet<String> = entries
         .iter()
         .map(|e| format!("{}{}", e.file_location, e.file_name))
@@ -1828,7 +1854,14 @@ fn purge_data_files(target_dir: &Path, entries: &[FileEntry]) -> Result<()> {
         .collect();
 
     let mut deleted = 0usize;
-    purge_dir_recursive(&data_dir, &expected, &data_dir, &mut deleted)?;
+    purge_dir_recursive(
+        &data_dir,
+        &expected,
+        &data_dir,
+        data_dir_name,
+        data_subdir,
+        &mut deleted,
+    )?;
 
     if deleted > 0 {
         plog!(
@@ -1843,21 +1876,22 @@ fn purge_data_files(target_dir: &Path, entries: &[FileEntry]) -> Result<()> {
 }
 
 /// Recursively walk `dir`, deleting any file whose path (relative to
-/// `data_dir`, forward-slash, prepended with `mxd/Data/`) is absent from
-/// `expected`. Empty subdirectories are removed after their children have been
-/// processed.
+/// `data_dir`, forward-slash, prepended with `<data_dir_name>/<data_subdir>/`)
+/// is absent from `expected`. Empty subdirectories are removed after their
+/// children have been processed.
 fn purge_dir_recursive(
     dir: &Path,
     expected: &std::collections::HashSet<String>,
     data_dir: &Path,
+    data_dir_name: &str,
+    data_subdir: &str,
     deleted: &mut usize,
 ) -> Result<()> {
-    let dd = config().data_dir;
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
         if path.is_dir() {
-            purge_dir_recursive(&path, expected, data_dir, deleted)?;
+            purge_dir_recursive(&path, expected, data_dir, data_dir_name, data_subdir, deleted)?;
         } else {
             let rel = path
                 .strip_prefix(data_dir)
@@ -1868,7 +1902,7 @@ fn purge_dir_recursive(
             if rel.to_ascii_lowercase().ends_with(".cmsdl") {
                 continue;
             }
-            let manifest_key = format!("{}/Data/{rel}", dd);
+            let manifest_key = format!("{data_dir_name}/{data_subdir}/{rel}");
             if !expected.contains(&manifest_key) {
                 std::fs::remove_file(&path).with_context(|| {
                     format!("failed to delete stray file {}", path.display())
@@ -1886,8 +1920,9 @@ fn purge_dir_recursive(
     Ok(())
 }
 
-/// Fetch the latest client manifest and purge stray files from
-/// `<target_dir>/mxd/Data/`.
+/// Fetch the latest client manifest and purge stray files from the region's
+/// data directory (e.g. `<target_dir>/mxd/Data/` for CMS or
+/// `<target_dir>/mxdclassic/Maplestory_Classic_Data/` for CMS CW).
 ///
 /// Used after patching to clean up files that are no longer referenced by the
 /// latest full client index.
@@ -2525,6 +2560,36 @@ mod tests {
         assert_eq!(entry.file_name, "Android_000.wz");
         assert_eq!(entry.file_size, 236513);
         assert_eq!(entry.md5_checksum, "1CF163EDA833A9E5515494DA52057B63");
+    }
+
+    #[test]
+    fn purge_targets_configured_data_subdir() {
+        let root = std::env::temp_dir().join(format!("cmsdl-purge-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let data = root.join("mxdclassic").join("Maplestory_Classic_Data");
+        std::fs::create_dir_all(data.join("il2cpp_data")).unwrap();
+        std::fs::write(data.join("keep.dat"), b"keep").unwrap();
+        std::fs::write(data.join("stray.dat"), b"stray").unwrap();
+        std::fs::write(data.join("il2cpp_data").join("stray2.dat"), b"stray").unwrap();
+        // A file outside the data subdirectory must never be touched.
+        std::fs::write(root.join("mxdclassic").join("Maplestory_Classic.exe"), b"exe").unwrap();
+
+        let entries = vec![FileEntry {
+            raw_path: "mxdclassic\\Maplestory_Classic_Data\\keep.dat".to_string(),
+            file_location: "mxdclassic/Maplestory_Classic_Data/".to_string(),
+            file_name: "keep.dat".to_string(),
+            file_size: 4,
+            md5_checksum: "0".to_string(),
+        }];
+
+        purge_data_files_in(&root, "mxdclassic", "Maplestory_Classic_Data", &entries).unwrap();
+
+        assert!(data.join("keep.dat").exists());
+        assert!(!data.join("stray.dat").exists());
+        assert!(!data.join("il2cpp_data").exists()); // emptied directory removed
+        assert!(root.join("mxdclassic").join("Maplestory_Classic.exe").exists());
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
