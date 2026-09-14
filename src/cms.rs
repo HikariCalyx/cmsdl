@@ -1592,6 +1592,8 @@ pub fn create_shortcut(target_dir: &Path, lrhook: bool, no_gui: bool, close_afte
     // Step 3: choose shortcut name by OS UI language.
     let shortcut_name = if os_locale_is_simplified_chinese() {
         "冒险岛"
+    } else if os_locale_is_traditional_chinese() {
+        "冒險島"
     } else {
         "MapleStory CN"
     };
@@ -1626,6 +1628,17 @@ fn os_locale_is_simplified_chinese() -> bool {
     hkcu.open_subkey(r"Control Panel\International")
         .and_then(|k| k.get_value::<String, _>("LocaleName"))
         .map(|locale: String| locale == "zh-CN" || locale == "zh-SG")
+        .unwrap_or(false)
+}
+
+/// Return `true` if the OS UI language is Traditional Chinese (zh-TW / zh-HK).
+#[cfg(windows)]
+fn os_locale_is_traditional_chinese() -> bool {
+    use winreg::{enums::HKEY_CURRENT_USER, RegKey};
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    hkcu.open_subkey(r"Control Panel\International")
+        .and_then(|k| k.get_value::<String, _>("LocaleName"))
+        .map(|locale: String| locale == "zh-TW" || locale == "zh-HK")
         .unwrap_or(false)
 }
 

@@ -154,6 +154,8 @@ pub fn create_shortcut(
 
     let shortcut_name = if os_locale_is_simplified_chinese() {
         "冒险岛怀旧服"
+    } else if os_locale_is_traditional_chinese() {
+        "冒險島懷舊服"
     } else {
         "MapleStory Classic World CN"
     };
@@ -275,6 +277,17 @@ fn os_locale_is_simplified_chinese() -> bool {
         .map(|locale: String| locale == "zh-CN" || locale == "zh-SG")
         .unwrap_or(false)
 }
+
+#[cfg(windows)]
+fn os_locale_is_traditional_chinese() -> bool {
+    use winreg::{enums::HKEY_CURRENT_USER, RegKey};
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    hkcu.open_subkey(r"Control Panel\International")
+        .and_then(|k| k.get_value::<String, _>("LocaleName"))
+        .map(|locale: String| locale == "zh-TW" || locale == "zh-HK")
+        .unwrap_or(false)
+}
+
 
 #[cfg(windows)]
 fn strip_extended_prefix(path: &Path) -> String {
