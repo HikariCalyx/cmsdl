@@ -39,6 +39,12 @@ const STALL_TIMEOUT: Duration = Duration::from_secs(10);
 /// Timeout for establishing a connection (and resolving DNS).
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Timeout for small metadata/control requests (patch metadata, control file,
+/// `FileList.dat` sizing). These endpoints serve small, static files, so a
+/// stalled connection is treated as a transient failure and retried by
+/// [`http_get_text`] rather than being allowed to hang indefinitely.
+const METADATA_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Maximum number of consecutive stalls (with no bytes received) tolerated for a
 /// single segment before it is reported as failed. The counter resets whenever
 /// any progress is made, so flaky-but-advancing connections keep going.
@@ -375,11 +381,26 @@ pub struct PatchData {
     pub must: Option<String>,
 }
 
+/// Build an HTTP agent for small metadata/control requests.
+///
+/// A short ([`METADATA_TIMEOUT`]) read/connect timeout is applied so a stalled
+/// connection fails fast instead of hanging; [`http_get_text`] then retries it.
+/// The endpoints this is used for serve small, static files, so a slow link
+/// only ever needs brief pauses.
+pub(crate) fn metadata_agent(allow_insecure: bool, proxy: Option<&str>) -> ureq::Agent {
+    crate::net::agent_builder(allow_insecure, proxy)
+        .timeout_read(METADATA_TIMEOUT)
+        .timeout_connect(METADATA_TIMEOUT)
+        .build()
+}
+
 /// Fetch and parse the CMS patch metadata (`ver2.dat`).
 ///
-/// The metadata is a JSON document served without any signing/challenge.
+/// The metadata is a JSON document served without any signing/challenge. The
+/// request uses [`metadata_agent`], so a stalled connection times out after
+/// [`METADATA_TIMEOUT`] and is retried by [`http_get_text`].
 pub fn get_patch_data(allow_insecure: bool, proxy: Option<&str>) -> Result<PatchData> {
-    let agent = crate::net::agent(allow_insecure, proxy);
+    let agent = metadata_agent(allow_insecure, proxy);
     let body = http_get_text(&agent, config().patch_data_url).context("failed to fetch patch metadata")?;
     serde_json::from_str(&body).context("failed to parse patch metadata JSON")
 }

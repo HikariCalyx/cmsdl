@@ -449,7 +449,7 @@ pub fn patch_list(
                 return Ok(());
             }
 
-            let agent = crate::net::agent(allow_insecure, proxy);
+            let agent = cms::metadata_agent(allow_insecure, proxy);
             let challenge = if is_cw {
                 cms_cw::get_challenge_key(&agent).context("failed to obtain challenge code")?
             } else {
