@@ -66,6 +66,12 @@ pub struct UiModel {
     /// Path to the log file for the current run.  When non-empty, a clickable
     /// "View log" link is drawn in the window.
     pub log_path: String,
+    /// When true, the status line (label1) is drawn as a clickable link that
+    /// retries launching the game after a failed launch.
+    pub retry_available: bool,
+    /// Set by the window procedure when the user clicks the retry affordance;
+    /// consumed (and cleared) by the background patch thread.
+    pub retry_requested: bool,
 }
 
 impl Default for UiModel {
@@ -85,6 +91,8 @@ impl Default for UiModel {
             exit_code: 1,
             region: String::new(),
             log_path: String::new(),
+            retry_available: false,
+            retry_requested: false,
         }
     }
 }
@@ -254,6 +262,20 @@ mod win32 {
     const LOG_LINK_HOVER_B: u8 = 0xFF;
     /// Height of the link's clickable band (text + underline).
     const LOG_LINK_H: i32 = 14;
+
+    // "Retry launch" affordance. When a game launch fails, label1 becomes a
+    // clickable link (its text already says "click to retry"); the label's own
+    // text bounds form the clickable region, so only the colours and band
+    // height are needed here.
+    const RETRY_COLOR_R: u8 = 0x66;
+    const RETRY_COLOR_G: u8 = 0xB2;
+    const RETRY_COLOR_B: u8 = 0xFF;
+    /// Brighter colour while the cursor hovers the retry link.
+    const RETRY_HOVER_R: u8 = 0x99;
+    const RETRY_HOVER_G: u8 = 0xCC;
+    const RETRY_HOVER_B: u8 = 0xFF;
+    /// Height of the clickable band (text + underline).
+    const RETRY_H: i32 = 14;
 
     // HDD notice label (drawn at the bottom of the window when the target
     // drive is a mechanical hard disk).
@@ -611,6 +633,15 @@ mod win32 {
         log_link_hover: bool,
         /// Whether the "View log" link is currently held down.
         log_link_pressed: bool,
+
+        /// Clickable rectangle of the "retry launch" affordance (x0, y0, x1,
+        /// y1), covering the label1 text.  Zero-width while no retry is
+        /// available.  Updated by the renderer, hence a `Cell`.
+        retry_link_rect: std::cell::Cell<(i32, i32, i32, i32)>,
+        /// Whether the cursor is currently over the retry affordance.
+        retry_link_hover: bool,
+        /// Whether the retry affordance is currently held down.
+        retry_link_pressed: bool,
     }
 
     impl WindowState {
@@ -632,6 +663,13 @@ mod win32 {
 
         fn hit_log_link(&self, x: i32, y: i32) -> bool {
             let (x0, y0, x1, y1) = self.log_link_rect.get();
+            x1 > x0 && x >= x0 && x < x1 && y >= y0 && y < y1
+        }
+
+        /// Whether `(x, y)` is inside the clickable "retry launch" region.
+        /// The band is zero-width when no retry is offered, so this is false.
+        fn hit_retry_link(&self, x: i32, y: i32) -> bool {
+            let (x0, y0, x1, y1) = self.retry_link_rect.get();
             x1 > x0 && x >= x0 && x < x1 && y >= y0 && y < y1
         }
 
@@ -1457,8 +1495,38 @@ mod win32 {
 
         draw_label(dib, &label2_text, LABEL2_X, LABEL2_Y,
             (LABEL2_COLOR_R, LABEL2_COLOR_G, LABEL2_COLOR_B), s.label_font);
-        draw_label(dib, &label1_text, LABEL_X, LABEL_Y,
-            (LABEL_COLOR_R, LABEL_COLOR_G, LABEL_COLOR_B), s.label_font);
+        // After a failed game launch, label1 doubles as a clickable "retry"
+        // link (its text already says "click to retry"), so draw it in the
+        // link colour and register a click region under its text.
+        let retry_available = s.ui.lock().map(|m| m.retry_available).unwrap_or(false);
+        let label1_color = if retry_available {
+            if s.retry_link_hover {
+                (RETRY_HOVER_R, RETRY_HOVER_G, RETRY_HOVER_B)
+            } else {
+                (RETRY_COLOR_R, RETRY_COLOR_G, RETRY_COLOR_B)
+            }
+        } else {
+            (LABEL_COLOR_R, LABEL_COLOR_G, LABEL_COLOR_B)
+        };
+        draw_label(dib, &label1_text, LABEL_X, LABEL_Y, label1_color, s.label_font);
+        if retry_available && !label1_text.is_empty() {
+            let text_w = measure_text_width(hdc_screen, s.label_font, &label1_text);
+            // Underline for link affordance.
+            let uy = LABEL_Y + RETRY_H - 1;
+            if uy >= 0 && uy < WIN_H {
+                let (cr, cg, cb) = label1_color;
+                let underline = (0xFFu32 << 24)
+                    | ((cr as u32) << 16) | ((cg as u32) << 8) | cb as u32;
+                for px in LABEL_X.max(0)..(LABEL_X + text_w).min(WIN_W) {
+                    let di = (uy * WIN_W + px) as usize;
+                    dib[di] = alpha_blend_dib(dib[di], underline);
+                }
+            }
+            let x_end = (LABEL_X + text_w).min(WIN_W);
+            s.retry_link_rect.set((LABEL_X, LABEL_Y, x_end, LABEL_Y + RETRY_H));
+        } else {
+            s.retry_link_rect.set((0, 0, 0, 0));
+        }
         // cmsdl's own version, static, same style as label1.
         draw_label(dib, LABEL_VER_TEXT, LABEL_VER_X, LABEL_VER_Y,
             (LABEL_COLOR_R, LABEL_COLOR_G, LABEL_COLOR_B), s.label_font);
@@ -1961,11 +2029,14 @@ mod win32 {
                 let new_close = hover_state(s.btn_state == BtnState::Pressed, s.hit_close(x, y));
                 let new_min = hover_state(s.min_btn_state == BtnState::Pressed, s.hit_min(x, y));
                 let new_log_hover = s.hit_log_link(x, y);
+                let new_retry_hover = s.hit_retry_link(x, y);
                 if new_close != s.btn_state || new_min != s.min_btn_state
-                    || new_log_hover != s.log_link_hover {
+                    || new_log_hover != s.log_link_hover
+                    || new_retry_hover != s.retry_link_hover {
                     s.btn_state = new_close;
                     s.min_btn_state = new_min;
                     s.log_link_hover = new_log_hover;
+                    s.retry_link_hover = new_retry_hover;
                     // None = keep current screen position
                     update_layered(s, None);
                 }
@@ -1982,10 +2053,11 @@ mod win32 {
                 if !sp.is_null() {
                     let s = unsafe { &mut *sp };
                     if s.btn_state != BtnState::Normal || s.min_btn_state != BtnState::Normal
-                        || s.log_link_hover {
+                        || s.log_link_hover || s.retry_link_hover {
                         s.btn_state = BtnState::Normal;
                         s.min_btn_state = BtnState::Normal;
                         s.log_link_hover = false;
+                        s.retry_link_hover = false;
                         update_layered(s, None);
                     }
                 }
@@ -1998,6 +2070,7 @@ mod win32 {
                 let x = (l & 0xFFFF) as i16 as i32;
                 let y = ((l >> 16) & 0xFFFF) as i16 as i32;
                 s.log_link_pressed = false;
+                s.retry_link_pressed = false;
                 if s.hit_close(x, y) {
                     s.btn_state = BtnState::Pressed;
                     update_layered(s, None);
@@ -2013,6 +2086,9 @@ mod win32 {
                 } else if s.hit_log_link(x, y) {
                     s.log_link_pressed = true;
                     update_layered(s, None);
+                } else if s.hit_retry_link(x, y) {
+                    s.retry_link_pressed = true;
+                    update_layered(s, None);
                 }
                 0
             }
@@ -2025,7 +2101,9 @@ mod win32 {
                 let close_was_pressed = s.btn_state == BtnState::Pressed;
                 let min_was_pressed = s.min_btn_state == BtnState::Pressed;
                 let log_was_pressed = s.log_link_pressed;
+                let retry_was_pressed = s.retry_link_pressed;
                 s.log_link_pressed = false;
+                s.retry_link_pressed = false;
                 s.btn_state = if s.hit_close(x, y) { BtnState::Hover } else { BtnState::Normal };
                 s.min_btn_state = if s.hit_min(x, y) { BtnState::Hover } else { BtnState::Normal };
                 if close_was_pressed && s.hit_close(x, y) {
@@ -2036,6 +2114,12 @@ mod win32 {
                 } else if log_was_pressed && s.hit_log_link(x, y) {
                     // Open the log file with the system default handler.
                     s.open_log();
+                    update_layered(s, None);
+                } else if retry_was_pressed && s.hit_retry_link(x, y) {
+                    // Ask the background patch thread to retry the launch.
+                    if let Ok(mut m) = s.ui.lock() {
+                        m.retry_requested = true;
+                    }
                     update_layered(s, None);
                 } else {
                     update_layered(s, None);
@@ -2058,7 +2142,8 @@ mod win32 {
                     let in_min = cx >= MIN_BTN_X && cx < MIN_BTN_X + BTN_W && cy >= MIN_BTN_Y && cy < MIN_BTN_Y + BTN_H;
                     if in_close || in_min
                         || (!sp.is_null() && unsafe { &*sp }.hit_maint_header(cx, cy))
-                        || (!sp.is_null() && unsafe { &*sp }.hit_log_link(cx, cy)) {
+                        || (!sp.is_null() && unsafe { &*sp }.hit_log_link(cx, cy))
+                        || (!sp.is_null() && unsafe { &*sp }.hit_retry_link(cx, cy)) {
                         return HTCLIENT;
                     }
                     return HTCAPTION;
@@ -2083,8 +2168,10 @@ mod win32 {
             }
 
             WM_SETCURSOR => {
-                // A hand cursor signals that the "View log" link is clickable.
-                let hovering_link = !sp.is_null() && unsafe { &*sp }.log_link_hover;
+                // A hand cursor signals that the "View log" or "retry" link is
+                // clickable.
+                let hovering_link = !sp.is_null()
+                    && (unsafe { &*sp }.log_link_hover || unsafe { &*sp }.retry_link_hover);
                 let id = if hovering_link { IDC_HAND } else { IDC_ARROW };
                 let cur = unsafe { LoadCursorW(ptr::null_mut(), id) };
                 unsafe { SetCursor(cur) };
@@ -2281,6 +2368,9 @@ mod win32 {
             log_link_rect: std::cell::Cell::new((0, 0, 0, 0)),
             log_link_hover: false,
             log_link_pressed: false,
+            retry_link_rect: std::cell::Cell::new((0, 0, 0, 0)),
+            retry_link_hover: false,
+            retry_link_pressed: false,
         });
 
         // Attach state to window.

@@ -18,7 +18,7 @@ gui-patcher-patch-successful = 更新完成
 gui-patcher-patch-successful-launch = 更新完成，即将启动游戏
 gui-patcher-nopatch-successful = 没有发现更新
 gui-patcher-nopatch-successful-launch = 没有发现更新，即将启动游戏
-gui-patcher-launch-fail = 游戏启动失败
+gui-patcher-launch-fail = 游戏启动失败。点击重试
 # GUI 错误分类（完整技术细节会写入日志文件）。
 gui-error-network = 网络错误。请检查网络连接后重试。
 gui-error-network-dns = 无法解析服务器地址。请检查网络连接与 DNS 设置。

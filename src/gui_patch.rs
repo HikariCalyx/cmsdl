@@ -8,6 +8,7 @@
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -427,6 +428,25 @@ impl Reporter for GuiReporter {
             }
         }
     }
+
+    fn set_retry_available(&self, available: bool) {
+        self.log(&format!("[gui-debug] Reporter::set_retry_available({available})"));
+        if let Ok(mut m) = self.ui.lock() {
+            m.retry_available = available;
+            // Drop any request made in the brief window before the link is
+            // hidden, so a stale click cannot trigger an extra launch.
+            if !available {
+                m.retry_requested = false;
+            }
+        }
+    }
+
+    fn take_retry_request(&self) -> bool {
+        match self.ui.lock() {
+            Ok(mut m) => std::mem::take(&mut m.retry_requested),
+            Err(_) => false,
+        }
+    }
 }
 
 impl GuiReporter {
@@ -574,13 +594,17 @@ pub fn run_gui_patch(
     let version_buf = version.to_string();
     let proxy_buf = proxy.map(|s| s.to_string());
     let ui_for_result = Arc::clone(&ui);
+    // Set once the window has closed, so the background thread can stop
+    // waiting for a launch retry.
+    let window_closed = Arc::new(AtomicBool::new(false));
+    let window_closed_thread = Arc::clone(&window_closed);
     std::thread::spawn(move || {
         crate::plog!("[gui-debug] background patch thread started");
         let proxy = proxy_buf.as_deref();
         let res = run_patch_flow(
             &target_buf, &version_buf, launch_after,
             allow_insecure, proxy, purge_wz_files, lrhook, close_after_finishing,
-            keep_old_wz_files, region,
+            keep_old_wz_files, region, &window_closed_thread,
         );
         if let Err(e) = &res {
             crate::plog!("error: {e:#}");
@@ -596,6 +620,7 @@ pub fn run_gui_patch(
     // Block on the window's message loop until it closes.
     let ui_hold = Arc::clone(&ui);
     gui::run_window(ui)?;
+    window_closed.store(true, Ordering::SeqCst);
 
     let exit_code = ui_hold.lock().unwrap().exit_code;
     if exit_code != 0 {
@@ -617,6 +642,7 @@ fn run_patch_flow(
     close_after_finishing: bool,
     keep_old_wz_files: bool,
     region: Region,
+    window_closed: &AtomicBool,
 ) -> Result<()> {
     crate::plog!("[gui-debug] run_patch_flow entered, region={}", region);
     if region == Region::Tms {
@@ -668,23 +694,51 @@ fn run_patch_flow(
     };
 
     if launch_after {
-        // Show the "launching" message, then attempt the (UAC-elevated) launch.
-        progress::finish(&finish_message(launch_key, updated), false);
-        let launch_result = match region {
-            Region::Cms => crate::cms_patch::launch_client(target, lrhook),
-            Region::CmsCw => crate::cms_cw::launch_client(target),
-            _ => crate::cms_patch::launch_client(target, lrhook),
+        // Attempt the (UAC-elevated) launch for this region.
+        let try_launch = || -> Result<()> {
+            match region {
+                Region::Cms => crate::cms_patch::launch_client(target, lrhook),
+                Region::CmsCw => crate::cms_cw::launch_client(target),
+                _ => crate::cms_patch::launch_client(target, lrhook),
+            }
         };
-        match launch_result {
+
+        // Show the "launching" message, then attempt the launch.
+        progress::finish(&finish_message(launch_key, updated), false);
+        match try_launch() {
             Ok(()) => {
                 crate::plog!("launch requested; closing patcher.");
                 progress::finish("", true); // close the window
             }
             Err(e) => {
                 // Keep the window open on a launch failure so the error stays
-                // visible, even when --close-after-finishing was requested.
+                // visible, even when --close-after-finishing was requested, and
+                // turn the status line into a clickable retry link.
                 crate::plog!("launch failed or was declined: {e:#}");
                 progress::finish(&tr("gui-patcher-launch-fail", &[]), false);
+                progress::set_retry_available(true);
+                // Wait until the user retries (or closes the window). Retrying
+                // only re-spawns the game process, so repeating it is safe.
+                while !window_closed.load(Ordering::SeqCst) {
+                    if progress::take_retry_request() {
+                        crate::plog!("launch retry requested.");
+                        progress::set_retry_available(false);
+                        progress::finish(&finish_message(launch_key, updated), false);
+                        match try_launch() {
+                            Ok(()) => {
+                                crate::plog!("launch requested; closing patcher.");
+                                progress::finish("", true);
+                                break;
+                            }
+                            Err(e) => {
+                                crate::plog!("launch failed or was declined: {e:#}");
+                                progress::finish(&tr("gui-patcher-launch-fail", &[]), false);
+                                progress::set_retry_available(true);
+                            }
+                        }
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
             }
         }
     } else {
