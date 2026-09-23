@@ -694,6 +694,27 @@ fn run_patch_flow(
     };
 
     if launch_after {
+        // A Windows update is already staged or installed and waiting to finish
+        // (usually a restart owed), so hold here instead of launching: starting
+        // the game now would only be cut short by the pending restart. label1
+        // doubles as a clickable link that opens the Windows Update page, and
+        // the window stays open so the user can retry afterwards.
+        if crate::win_update::pending_updates() {
+            crate::plog!("pending Windows update; holding before launch.");
+            progress::finish(&tr("gui-patcher-pending-windows-update", &[]), false);
+            progress::set_retry_available(true);
+            while !window_closed.load(Ordering::SeqCst) {
+                if progress::take_retry_request() {
+                    crate::plog!("pending Windows Update link clicked; opening its settings page.");
+                    if let Err(e) = crate::win_update::open_settings() {
+                        crate::plog!("warning: could not open the Windows Update settings page: {e:#}");
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            return Ok(());
+        }
+
         // Attempt the (UAC-elevated) launch for this region.
         let try_launch = || -> Result<()> {
             match region {

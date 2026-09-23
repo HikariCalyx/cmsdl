@@ -248,4 +248,16 @@ mod tests {
             );
         }
     }
+
+    /// The patcher's "pending Windows update" status line is likewise rendered
+    /// directly by the window, so guard it separately too.
+    #[test]
+    fn pending_windows_update_key_present_in_all_catalogs() {
+        for (name, src) in [("en", EN), ("zh-CN", ZH_CN), ("zh-TW", ZH_TW)] {
+            assert!(
+                parse(src).contains_key("gui-patcher-pending-windows-update"),
+                "{name} is missing 'gui-patcher-pending-windows-update'"
+            );
+        }
+    }
 }

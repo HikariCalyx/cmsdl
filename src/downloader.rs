@@ -572,6 +572,29 @@ pub fn patch_file(
     Ok(())
 }
 
+/// Console-mode gate for `--launch-after-patching`: when a Windows update is
+/// already staged or installed and waiting to finish (usually a restart owed),
+/// launching the game would only be cut short by the pending restart. Tells the
+/// user, opens the Windows Update page and returns `true` so the caller skips
+/// the launch.
+///
+/// The GUI patcher does not use this: it holds its window open instead (see
+/// `gui_patch::run_patch_flow`).
+fn skip_launch_for_pending_update() -> bool {
+    if !crate::win_update::pending_updates() {
+        return false;
+    }
+    println!(
+        "cmsdl {VERSION}: a Windows update is pending, so the game will not be \
+         launched now. Opening the Windows Update settings page - finish the \
+         update (restarting if asked), then launch the game again."
+    );
+    if let Err(e) = crate::win_update::open_settings() {
+        eprintln!("warning: could not open the Windows Update settings page: {e:#}");
+    }
+    true
+}
+
 /// Shared patch-apply logic for the CMS region (supports `--lrhook`).
 #[allow(clippy::too_many_arguments)]
 fn patch_apply_cms(
@@ -597,7 +620,7 @@ fn patch_apply_cms(
         );
         download(Region::Cms, target, false, None, allow_insecure, proxy, None, false, no_gui, false, None)?;
         create_shortcut(Region::Cms, target, lrhook, no_gui, close_after_finishing)?;
-        if launch_after {
+        if launch_after && !skip_launch_for_pending_update() {
             crate::cms_patch::launch_client(target, lrhook)?;
         }
         return Ok(());
@@ -619,7 +642,7 @@ fn patch_apply_cms(
     if matches!(outcome, crate::cms_patch::PatchOutcome::Updated) {
         crate::nxoverlay::clear_nxoverlay();
     }
-    if launch_after {
+    if launch_after && !skip_launch_for_pending_update() {
         crate::cms_patch::launch_client(target, lrhook)?;
     }
     Ok(())
@@ -653,7 +676,7 @@ fn patch_apply_cms_cw(
         );
         download(Region::CmsCw, target, false, None, allow_insecure, proxy, None, false, no_gui, false, None)?;
         create_shortcut(Region::CmsCw, target, false, no_gui, close_after_finishing)?;
-        if launch_after {
+        if launch_after && !skip_launch_for_pending_update() {
             cms_cw::launch_client(target)?;
         }
         return Ok(());
@@ -677,7 +700,7 @@ fn patch_apply_cms_cw(
     if matches!(outcome, crate::cms_patch::PatchOutcome::Updated) {
         crate::nxoverlay::clear_nxoverlay();
     }
-    if launch_after {
+    if launch_after && !skip_launch_for_pending_update() {
         cms_cw::launch_client(target)?;
     }
     Ok(())

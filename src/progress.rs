@@ -65,12 +65,15 @@ pub trait Reporter: Send + Sync {
     fn nxoverlay(&self);
     /// Terminal state: show `msg` on label1; close the window when `close`.
     fn finish(&self, msg: &str, close: bool);
-    /// Show or hide the clickable "retry" affordance on the status line, used
-    /// after a failed game launch. In console mode no reporter is registered,
-    /// so the default no-op is used.
+    /// Show or hide the clickable link on the status line (label1). Two flows
+    /// use it: retrying a failed game launch, and opening the Windows Update
+    /// page when an update is pending. In console mode no reporter is
+    /// registered, so the default no-op is used.
     fn set_retry_available(&self, _available: bool) {}
-    /// Consume a pending retry request (the user clicked the status line).
-    /// Returns `false` by default, i.e. no interactive retry in console mode.
+    /// Consume a pending click on the status-line link from the user, returning
+    /// whether one was made (see
+    /// [`set_retry_available`](Reporter::set_retry_available)). Returns `false`
+    /// by default, i.e. no interactive link in console mode.
     fn take_retry_request(&self) -> bool { false }
 }
 
@@ -261,14 +264,15 @@ pub fn finish(msg: &str, close: bool) {
     with(|r| r.finish(msg, close));
 }
 
-/// Show or hide the clickable "retry" affordance on the status line (GUI
-/// launch retry); a no-op when no reporter is registered.
+/// Show or hide the clickable link on the status line (GUI launch retry, or the
+/// pending-Windows-update link); a no-op when no reporter is registered.
 pub fn set_retry_available(available: bool) {
     with(|r| r.set_retry_available(available));
 }
 
-/// Consume a pending retry request from the user, returning whether one was
-/// made. Always `false` when no reporter is registered (console mode).
+/// Consume a pending click on the status-line link from the user, returning
+/// whether one was made. Always `false` when no reporter is registered (console
+/// mode).
 pub fn take_retry_request() -> bool {
     let guard = PATCH_REPORTER.read().unwrap();
     match guard.as_ref() {
