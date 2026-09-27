@@ -1495,9 +1495,11 @@ mod win32 {
 
         draw_label(dib, &label2_text, LABEL2_X, LABEL2_Y,
             (LABEL2_COLOR_R, LABEL2_COLOR_G, LABEL2_COLOR_B), s.label_font);
-        // After a failed game launch, label1 doubles as a clickable "retry"
-        // link (its text already says "click to retry"), so draw it in the
-        // link colour and register a click region under its text.
+        // label1 doubles as a clickable link while a click has something to do:
+        // retrying a failed game launch ("click to retry") or opening the
+        // Windows Update page when an update is pending ("click here to learn
+        // more"). Draw it in the link colour and register a click region under
+        // its text.
         let retry_available = s.ui.lock().map(|m| m.retry_available).unwrap_or(false);
         let label1_color = if retry_available {
             if s.retry_link_hover {

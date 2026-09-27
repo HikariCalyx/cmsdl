@@ -24,6 +24,7 @@ mod taskprogress;
 mod tms;
 mod tms_patch;
 mod upgrade_path;
+mod win_update;
 
 use anyhow::Result;
 use clap::Parser;

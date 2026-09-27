@@ -19,6 +19,7 @@ gui-patcher-patch-successful-launch = Update complete, launching game
 gui-patcher-nopatch-successful = No update found
 gui-patcher-nopatch-successful-launch = No update found, launching game
 gui-patcher-launch-fail = Game launch failed. Click to retry
+gui-patcher-pending-windows-update = There's pending Windows Update in progress. Click here to learn more
 # GUI error categories (the full technical detail is written to the log file).
 gui-error-network = Network error. Please check your internet connection and try again.
 gui-error-network-dns = Unable to resolve the server address. Please check your internet connection and DNS settings.
