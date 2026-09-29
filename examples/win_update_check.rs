@@ -11,7 +11,9 @@
 //! cannot discover updates that are merely available for download, because that
 //! means asking the update service (i.e. WUA).
 //!
-//! All three markers live under `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\`:
+//! All three markers live under `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\`
+//! and the first two are either a DWORD value or an empty subkey of that name
+//! (both shapes occur in the wild), so either one counts as "set":
 //!
 //! - `WindowsUpdate\Auto Update\RebootRequired` -- an update was installed and
 //!   is waiting for a restart
@@ -126,21 +128,36 @@ mod imp {
         }
     }
 
-    /// The marker is a value that only exists while it is set, whatever its type.
-    fn value_exists(key_path: &str, value: &str, detail: &str) -> Probe {
+    /// A marker only exists while it is set. It shows up as a value of that name
+    /// on some builds and as an empty subkey on others, so accept either shape
+    /// (on Windows 11 `RebootRequired`/`RebootPending` are empty subkeys).
+    fn marker_exists(key_path: &str, name: &str, detail: &str) -> Probe {
         match open_key(key_path) {
             Err(err) => Probe::Unknown(err),
             Ok(None) => Probe::Clear,
-            Ok(Some(key)) => match key.get_raw_value(value) {
-                Ok(_) => Probe::Set(detail.to_string()),
-                Err(err) if err.kind() == ErrorKind::NotFound => Probe::Clear,
+            Ok(Some(key)) => match marker_present(&key, name) {
+                Ok(true) => Probe::Set(detail.to_string()),
+                Ok(false) => Probe::Clear,
                 Err(err) => Probe::Unknown(err.to_string()),
             },
         }
     }
 
+    fn marker_present(key: &RegKey, name: &str) -> std::io::Result<bool> {
+        match key.get_raw_value(name) {
+            Ok(_) => return Ok(true),
+            Err(err) if err.kind() == ErrorKind::NotFound => {}
+            Err(err) => return Err(err),
+        }
+        match key.open_subkey(name) {
+            Ok(_) => Ok(true),
+            Err(err) if err.kind() == ErrorKind::NotFound => Ok(false),
+            Err(err) => Err(err),
+        }
+    }
+
     fn wu_reboot_required() -> Probe {
-        value_exists(
+        marker_exists(
             WU_AUTO_UPDATE_KEY,
             "RebootRequired",
             r"the WindowsUpdate\Auto Update\RebootRequired marker is set",
@@ -148,7 +165,7 @@ mod imp {
     }
 
     fn cbs_reboot_pending() -> Probe {
-        value_exists(
+        marker_exists(
             CBS_KEY,
             "RebootPending",
             r"the Component Based Servicing\RebootPending marker is set",

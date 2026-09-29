@@ -7,7 +7,9 @@
 //! been downloaded or installed; it cannot discover updates that are merely
 //! available for download (that would need WUA).
 //!
-//! Markers, all under `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\`:
+//! Markers, all under `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\`. The
+//! first two are either a DWORD value or an empty subkey of that name (both
+//! shapes occur), so either one counts as "set":
 //!
 //! - `WindowsUpdate\Auto Update\RebootRequired` -- an update was installed and
 //!   is waiting for a restart
@@ -120,12 +122,12 @@ pub fn open_settings() -> Result<()> {
 fn pending_markers() -> Vec<String> {
     let mut found = Vec::new();
 
-    match registry_value_exists(WU_AUTO_UPDATE_KEY, "RebootRequired") {
+    match registry_marker_exists(WU_AUTO_UPDATE_KEY, "RebootRequired") {
         Ok(true) => found.push(REBOOT_REQUIRED.to_string()),
         Ok(false) => {}
         Err(err) => crate::plog!("windows update check: cannot read {REBOOT_REQUIRED}: {err}"),
     }
-    match registry_value_exists(CBS_KEY, "RebootPending") {
+    match registry_marker_exists(CBS_KEY, "RebootPending") {
         Ok(true) => found.push(REBOOT_PENDING.to_string()),
         Ok(false) => {}
         Err(err) => crate::plog!("windows update check: cannot read {REBOOT_PENDING}: {err}"),
@@ -140,14 +142,17 @@ fn pending_markers() -> Vec<String> {
     found
 }
 
-/// `Ok(true)` when the value exists, `Ok(false)` when it (or its key) does not,
-/// `Err` when it could not be read at all.
+/// `Ok(true)` when a marker called `name` exists under `key_path`, `Ok(false)`
+/// when it does not, `Err` when the key could not be read at all.
+///
+/// Accepts both shapes a marker takes in the wild: a value of that name, or an
+/// (empty) subkey of that name.
 ///
 /// `KEY_WOW64_64KEY` is requested explicitly: the markers only exist in the
 /// 64-bit view of HKLM, so a 32-bit build would otherwise be redirected to
 /// WOW6432Node and find nothing.
 #[cfg(windows)]
-fn registry_value_exists(key_path: &str, value: &str) -> std::io::Result<bool> {
+fn registry_marker_exists(key_path: &str, name: &str) -> std::io::Result<bool> {
     use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_64KEY};
     use winreg::RegKey;
 
@@ -158,7 +163,12 @@ fn registry_value_exists(key_path: &str, value: &str) -> std::io::Result<bool> {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(err) => return Err(err),
     };
-    match key.get_raw_value(value) {
+    match key.get_raw_value(name) {
+        Ok(_) => return Ok(true),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(err),
+    }
+    match key.open_subkey(name) {
         Ok(_) => Ok(true),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
         Err(err) => Err(err),
@@ -185,18 +195,32 @@ fn registry_subkey_count(key_path: &str) -> std::io::Result<usize> {
 mod tests {
     use super::*;
 
-    /// A missing key (or value) must read as "not set" rather than as an error,
+    /// A missing marker must read as "not set" rather than as an error,
     /// otherwise every check on a clean machine would look like a failure. The
     /// path below is read-only and is not created by anything.
     #[test]
     fn missing_markers_are_not_pending() {
         const MISSING_KEY: &str = r"SOFTWARE\cmsdl-nonexistent-win-update-test";
-        assert!(!registry_value_exists(MISSING_KEY, "RebootRequired").unwrap());
+        assert!(!registry_marker_exists(MISSING_KEY, "RebootRequired").unwrap());
         assert_eq!(registry_subkey_count(MISSING_KEY).unwrap(), 0);
         assert_eq!(
             registry_subkey_count(&format!(r"{MISSING_KEY}\PackagesPending")).unwrap(),
             0
         );
+    }
+
+    /// Both marker shapes have to be recognised: a value (`ProductName` under
+    /// `Windows NT\CurrentVersion`) and an empty subkey (`Windows` under
+    /// `SOFTWARE\Microsoft`, which is how `RebootRequired`/`RebootPending`
+    /// appear on Windows 11). Both are present on any Windows install.
+    #[test]
+    fn markers_are_found_as_value_or_subkey() {
+        assert!(registry_marker_exists(
+            r"SOFTWARE\Microsoft\Windows NT\CurrentVersion",
+            "ProductName"
+        )
+        .unwrap());
+        assert!(registry_marker_exists(r"SOFTWARE\Microsoft", "Windows").unwrap());
     }
 
     /// `pending_updates` must be a safe, panic-free read on any machine.
