@@ -25,7 +25,7 @@ Unicode true
 !endif
 
 ; Version
-!define VERSION "4.228.1.3"
+!define VERSION "4.229.1.0"
 
 ; Product Info (English)
 !define PRODUCT_NAME "MapleStory CN"
@@ -358,8 +358,8 @@ FunctionEnd
 ; Helper: automatic build flag for a full install
 ; ============================================================================
 
-; If the current date is on or before October 20, 2026, add --build 1120 (CMS)
-; and --build 1126 (CMS CW) to the download commands (required for specific
+; If the current date is on or before December 1, 2026, add --build 1160 (CMS)
+; and --build 1158 (CMS CW) to the download commands (required for specific
 ; game build rollouts).
 Function SetDefaultBuildFlag
   ${GetTime} "" "L" $0 $1 $2 $3 $4 $5 $6
@@ -368,12 +368,12 @@ Function SetDefaultBuildFlag
   StrCpy $BuildFlagCW ""
   IntCmp $2 2026 yearEq beforeCutoff afterCutoff
   yearEq:
-    IntCmp $1 10 monthEq beforeCutoff afterCutoff
+    IntCmp $1 12 monthEq beforeCutoff afterCutoff
   monthEq:
-    IntCmp $0 20 beforeCutoff beforeCutoff afterCutoff
+    IntCmp $0 1 beforeCutoff beforeCutoff afterCutoff
   beforeCutoff:
-    StrCpy $BuildFlag "--build 1120"
-    StrCpy $BuildFlagCW "--build 1126"
+    StrCpy $BuildFlag "--build 1160"
+    StrCpy $BuildFlagCW "--build 1158"
   afterCutoff:
 FunctionEnd
 
