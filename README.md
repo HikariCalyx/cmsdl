@@ -2,6 +2,8 @@
 [简体中文](https://github.com/HikariCalyx/cmsdl/tree/main/README.zh-CN.md)
 [繁體中文](https://github.com/HikariCalyx/cmsdl/tree/main/README.zh-TW.md)
 
+> CMSDL is now considered feature complete. No further feature updates shall be provided unless a breaking change is discovered.
+
 A downloader designed for Greater China region mushroom game.
 
 *This project is not officially supported or endorsed by SQ Games and Black Orange Games*
