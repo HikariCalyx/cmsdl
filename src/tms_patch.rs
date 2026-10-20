@@ -10,9 +10,14 @@
 //!
 //! 1. A header: magic `WzPatch\x1A` (8 bytes), version (i32), checksum (u32)
 //! 2. Zlib-compressed patch data
-//! 3. An optional footer at the end of the file:
-//!    - Last 4 bytes: `0xF2F7FBF3` end marker
-//!    - Preceding 8 bytes: patch block length (u32) + notice length (u32)
+//! 3. An optional notice text and footer at the end of the file:
+//!    - Last 4 bytes: `0xF2F7FBF3` end marker (the 64-bit form is that value
+//!      followed by four zero bytes)
+//!    - Preceding 8 bytes: patch block length + notice length (u32 each, or
+//!      u64 each for the 64-bit footer)
+//!    - Preceding the footer: the notice text (notice length bytes)
+//!
+//! The notice text is decoded and printed before the patch is applied.
 //!
 //! After decompression, the stream contains a sequence of patch parts:
 //!
@@ -352,16 +357,57 @@ struct BlockRange {
     start: u64,
     /// Length of the block in bytes.
     len: u64,
+    /// Notice text that follows the block, when a footer declared one.
+    notice: Option<NoticeRange>,
+}
+
+/// Byte range of the notice text stored between the block and the footer.
+struct NoticeRange {
+    start: u64,
+    len: u64,
+}
+
+/// Upper bound for a notice text; keeps a corrupt footer from allocating an
+/// arbitrarily large buffer.
+const MAX_NOTICE_LEN: u64 = 1 << 20; // 1 MiB
+
+/// Resolve a footer's lengths into the range of the patch block.
+///
+/// `footer_start` is the absolute offset of the patch block length; the block
+/// is preceded by the notice text, so it starts `notice_len + patch_len` bytes
+/// before the footer.  A footer that does not point at the WzPatch magic is
+/// ignored (`None`) so that the caller can fall back to scanning the file.
+fn block_range_from_footer(
+    file: &File,
+    footer_start: u64,
+    patch_len: u64,
+    notice_len: u64,
+) -> Result<Option<BlockRange>> {
+    let Some(payload_len) = patch_len.checked_add(notice_len) else {
+        return Ok(None);
+    };
+    if payload_len > footer_start {
+        return Ok(None);
+    }
+    let start = footer_start - payload_len;
+    let mut magic = [0u8; 8];
+    read_exact_at(file, start, &mut magic)?;
+    if &magic != WZPATCH_MAGIC {
+        return Ok(None);
+    }
+    let notice = (notice_len > 0 && notice_len <= MAX_NOTICE_LEN)
+        .then_some(NoticeRange { start: start + patch_len, len: notice_len });
+    Ok(Some(BlockRange { start, len: patch_len, notice }))
 }
 
 /// Locate the WzPatch block inside `file`.
 ///
-/// TMS patches are usually the whole file, optionally followed by a 32- or
-/// 64-bit footer (block length + notice length + end marker).  Only the head
-/// and tail of the file are inspected, so a multi-gigabyte patch is never read
-/// into memory just to find the block.
+/// TMS patches are usually the whole file, optionally followed by a notice
+/// text and a 32- or 64-bit footer (block length + notice length + end
+/// marker).  Only the head and tail of the file are inspected, so a
+/// multi-gigabyte patch is never read into memory just to find the block.
 fn locate_patch_block(file: &File, file_len: u64) -> Result<BlockRange> {
-    // 32-bit footer.
+    // 32-bit footer: patch length, notice length, end marker (u32 each).
     if file_len >= 12 {
         let mut tail = [0u8; 4];
         read_exact_at(file, file_len - 4, &mut tail)?;
@@ -369,26 +415,31 @@ fn locate_patch_block(file: &File, file_len: u64) -> Result<BlockRange> {
             let mut lens = [0u8; 8];
             read_exact_at(file, file_len - 12, &mut lens)?;
             let patch_len = u32::from_le_bytes(lens[..4].try_into().unwrap()) as u64;
-            let block_end = file_len - 12;
-            if patch_len <= block_end {
-                return Ok(BlockRange { start: block_end - patch_len, len: patch_len });
+            let notice_len = u32::from_le_bytes(lens[4..].try_into().unwrap()) as u64;
+            if let Some(range) =
+                block_range_from_footer(file, file_len - 12, patch_len, notice_len)?
+            {
+                return Ok(range);
             }
         }
     }
 
-    // 64-bit footer: the end marker is followed by four zero bytes.
+    // 64-bit footer: patch length and notice length (u64 each), then the end
+    // marker followed by four zero bytes.
     if file_len >= 24 {
         let mut tail = [0u8; 8];
         read_exact_at(file, file_len - 8, &mut tail)?;
         let lo = u32::from_le_bytes(tail[..4].try_into().unwrap());
         let hi = u32::from_le_bytes(tail[4..].try_into().unwrap());
         if lo == END_MARKER && hi == 0 {
-            let mut lens = [0u8; 8];
+            let mut lens = [0u8; 16];
             read_exact_at(file, file_len - 24, &mut lens)?;
-            let patch_len = u64::from_le_bytes(lens);
-            let block_end = file_len - 24;
-            if patch_len <= block_end {
-                return Ok(BlockRange { start: block_end - patch_len, len: patch_len });
+            let patch_len = u64::from_le_bytes(lens[..8].try_into().unwrap());
+            let notice_len = u64::from_le_bytes(lens[8..].try_into().unwrap());
+            if let Some(range) =
+                block_range_from_footer(file, file_len - 24, patch_len, notice_len)?
+            {
+                return Ok(range);
             }
         }
     }
@@ -410,7 +461,7 @@ fn locate_patch_block(file: &File, file_len: u64) -> Result<BlockRange> {
             .position(|w| w == WZPATCH_MAGIC)
         {
             let start = pos - carry.len() as u64 + i as u64;
-            return Ok(BlockRange { start, len: file_len - start });
+            return Ok(BlockRange { start, len: file_len - start, notice: None });
         }
         carry.clear();
         let keep = window.len().min(WZPATCH_MAGIC.len() - 1);
@@ -419,7 +470,7 @@ fn locate_patch_block(file: &File, file_len: u64) -> Result<BlockRange> {
     }
 
     // Fallback: treat the whole file as the patch block.
-    Ok(BlockRange { start: 0, len: file_len })
+    Ok(BlockRange { start: 0, len: file_len, notice: None })
 }
 
 /// Decompress the body of a WzPatch block into `scratch`.
@@ -469,6 +520,78 @@ fn decompress_body_to_file(
     Ok(())
 }
 
+/// Read and print the notice text that precedes the footer.
+fn print_patch_notice(file: &File, notice: &NoticeRange) -> Result<()> {
+    let len = usize::try_from(notice.len).context("patch notice is too large")?;
+    let mut buf = vec![0u8; len];
+    read_exact_at(file, notice.start, &mut buf)?;
+    let text = format_patch_notice(&buf);
+    if !text.is_empty() {
+        plog!("patch notice:\n{text}");
+    }
+    Ok(())
+}
+
+/// Decode the notice payload.
+///
+/// TMS publishes notices in Big5 (the reference patcher uses the system ANSI
+/// code page).  UTF-8 is accepted as-is and GBK is tried when Big5 reports
+/// undecodable bytes.
+fn decode_patch_notice(bytes: &[u8]) -> String {
+    if let Ok(text) = std::str::from_utf8(bytes) {
+        return text.trim_start_matches('\u{feff}').to_owned();
+    }
+    let (text, _, had_errors) = encoding_rs::BIG5.decode(bytes);
+    if !had_errors {
+        return text.into_owned();
+    }
+    let (text, _, _) = encoding_rs::GBK.decode(bytes);
+    text.into_owned()
+}
+
+/// Turn the notice payload into display text: decode it and drop the HTML
+/// wrapper used by the official patcher, where `<BR>` marks a line break.
+fn format_patch_notice(bytes: &[u8]) -> String {
+    let decoded = decode_patch_notice(bytes)
+        .replace("\r\n", "\n")
+        .replace('\r', "\n");
+
+    let mut text = String::with_capacity(decoded.len());
+    let mut rest = decoded.as_str();
+    while let Some(lt) = rest.find('<') {
+        text.push_str(&rest[..lt]);
+        let Some(gt) = rest[lt..].find('>') else {
+            text.push_str(&rest[lt..]);
+            rest = "";
+            break;
+        };
+        let tag = rest[lt + 1..lt + gt].trim();
+        if tag.trim_end_matches('/').eq_ignore_ascii_case("br") {
+            text.push('\n');
+        }
+        rest = &rest[lt + gt + 1..];
+    }
+    text.push_str(rest);
+
+    // Collapse runs of blank lines left by the HTML layout.
+    let mut out = String::with_capacity(text.len());
+    let mut blank_lines = 0;
+    for line in text.lines() {
+        let line = line.trim_end();
+        if line.is_empty() {
+            blank_lines += 1;
+            if blank_lines > 1 {
+                continue;
+            }
+        } else {
+            blank_lines = 0;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out.trim_matches('\n').to_string()
+}
+
 /// Read a `.patch` file, spilling its decompressed stream to `scratch_dir`.
 ///
 /// Neither the compressed file nor the decompressed stream is held in memory:
@@ -495,6 +618,10 @@ fn load_wzpatch(path: &Path, scratch_dir: &Path) -> Result<WzPatch> {
     }
     let _version = i32::from_le_bytes(header[8..12].try_into().unwrap());
     let _checksum0 = u32::from_le_bytes(header[12..16].try_into().unwrap());
+
+    if let Some(notice) = &block.notice {
+        print_patch_notice(&file, notice)?;
+    }
 
     let scratch = scratch_dir.join(PATCH_STREAM_FILE);
     decompress_body_to_file(&file, block.start + 16, block.len - 16, &scratch)?;
@@ -3044,6 +3171,116 @@ mod tests {
         let path = root.join("stream.bin");
         std::fs::write(&path, bytes).unwrap();
         PatchStream::open(path).unwrap()
+    }
+
+    /// A minimal 64-byte block that starts with the WzPatch magic.
+    fn synthetic_block() -> Vec<u8> {
+        let mut block = WZPATCH_MAGIC.to_vec();
+        block.resize(64, 0);
+        block
+    }
+
+    /// Manual patches (CMS 209→210, TMS 263→264, the local 282→283 file)
+    /// append a notice text before the footer.  The block must be located
+    /// before the notice, not directly before the lengths.
+    #[test]
+    fn locates_block_before_64bit_footer_with_notice() -> Result<()> {
+        let root = temp_root("locate_footer64_notice");
+        let path = root.join("patch.patch");
+        let block = synthetic_block();
+        let notice = b"<BODY>notice text</BODY>";
+
+        let mut data = block.clone();
+        data.extend_from_slice(notice);
+        data.extend_from_slice(&(block.len() as u64).to_le_bytes());
+        data.extend_from_slice(&(notice.len() as u64).to_le_bytes());
+        data.extend_from_slice(&0xf2f7fbf3u64.to_le_bytes());
+        std::fs::write(&path, &data)?;
+
+        let file = File::open(&path)?;
+        let range = locate_patch_block(&file, data.len() as u64)?;
+        assert_eq!(range.start, 0);
+        assert_eq!(range.len, block.len() as u64);
+        let notice_range = range.notice.as_ref().expect("notice range");
+        assert_eq!(notice_range.start, block.len() as u64);
+        assert_eq!(notice_range.len, notice.len() as u64);
+        let mut got = vec![0u8; notice.len()];
+        read_exact_at(&file, notice_range.start, &mut got)?;
+        assert_eq!(got, notice);
+        drop(file);
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    /// Self-extracting patches may use the 32-bit footer, which also carries
+    /// a notice length.
+    #[test]
+    fn locates_block_before_32bit_footer_with_notice() -> Result<()> {
+        let root = temp_root("locate_footer32_notice");
+        let path = root.join("patch.patch");
+        let block = synthetic_block();
+        let notice = b"self-extracting notice";
+
+        let mut data = block.clone();
+        data.extend_from_slice(notice);
+        data.extend_from_slice(&(block.len() as u32).to_le_bytes());
+        data.extend_from_slice(&(notice.len() as u32).to_le_bytes());
+        data.extend_from_slice(&END_MARKER.to_le_bytes());
+        std::fs::write(&path, &data)?;
+
+        let file = File::open(&path)?;
+        let range = locate_patch_block(&file, data.len() as u64)?;
+        assert_eq!(range.start, 0);
+        assert_eq!(range.len, block.len() as u64);
+        let notice_range = range.notice.as_ref().expect("notice range");
+        assert_eq!(notice_range.start, block.len() as u64);
+        assert_eq!(notice_range.len, notice.len() as u64);
+        drop(file);
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    /// A footer with an empty notice still locates the block at the start.
+    #[test]
+    fn locates_block_before_footer_without_notice() -> Result<()> {
+        let root = temp_root("locate_footer_no_notice");
+        let path = root.join("patch.patch");
+        let block = synthetic_block();
+
+        let mut data = block.clone();
+        data.extend_from_slice(&(block.len() as u64).to_le_bytes());
+        data.extend_from_slice(&0u64.to_le_bytes());
+        data.extend_from_slice(&0xf2f7fbf3u64.to_le_bytes());
+        std::fs::write(&path, &data)?;
+
+        let file = File::open(&path)?;
+        let range = locate_patch_block(&file, data.len() as u64)?;
+        assert_eq!(range.start, 0);
+        assert_eq!(range.len, block.len() as u64);
+        assert!(range.notice.is_none());
+        drop(file);
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    /// TMS notices are Big5 with an HTML wrapper; `<BR>` becomes a line break
+    /// and the remaining tags are dropped.
+    #[test]
+    fn formats_big5_notice_as_plain_text() {
+        let (bytes, _, had_errors) =
+            encoding_rs::BIG5.encode("親愛的冒險者們：<BR><BR>2020年02月19日<BR>版本說明");
+        assert!(!had_errors);
+        assert_eq!(
+            format_patch_notice(&bytes),
+            "親愛的冒險者們：\n\n2020年02月19日\n版本說明"
+        );
+    }
+
+    /// UTF-8 notices are printed as-is, minus the HTML wrapper.
+    #[test]
+    fn formats_utf8_notice_as_plain_text() {
+        let text = b"<HTML><BODY>Hello<BR>World</BODY></HTML>";
+        assert_eq!(format_patch_notice(text), "Hello\nWorld");
     }
 
     #[test]

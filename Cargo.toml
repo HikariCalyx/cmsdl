@@ -1,6 +1,6 @@
 [package]
 name = "cmsdl"
-version = "0.2.9"
+version = "0.3.0-prerelease1"
 edition = "2021"
 description = "A downloader designed for Greater China region mushroom game"
 license = "MIT"
@@ -16,6 +16,7 @@ winresource = "0.1"
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
+encoding_rs = "0.8"
 ureq = { version = "2", features = ["cookies", "socks-proxy"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 roxmltree = "0.20"
