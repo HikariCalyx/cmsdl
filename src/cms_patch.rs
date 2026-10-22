@@ -376,7 +376,7 @@ pub(crate) fn apply_zip(
             if entry.is_dir() {
                 continue;
             }
-            let name = norm_backslash(entry.name());
+            let name = norm_backslash(&entry.name()?);
             if name.eq_ignore_ascii_case(MANIFEST_NAME) {
                 continue;
             }

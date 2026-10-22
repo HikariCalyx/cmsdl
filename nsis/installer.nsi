@@ -25,7 +25,7 @@ Unicode true
 !endif
 
 ; Version
-!define VERSION "4.229.1.0"
+!define VERSION "4.229.3.0"
 
 ; Product Info (English)
 !define PRODUCT_NAME "MapleStory CN"
@@ -372,8 +372,8 @@ Function SetDefaultBuildFlag
   monthEq:
     IntCmp $0 1 beforeCutoff beforeCutoff afterCutoff
   beforeCutoff:
-    StrCpy $BuildFlag "--build 1160"
-    StrCpy $BuildFlagCW "--build 1158"
+    StrCpy $BuildFlag "--build 1165"
+    StrCpy $BuildFlagCW "--build 1164"
   afterCutoff:
 FunctionEnd
 
