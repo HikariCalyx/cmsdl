@@ -18,6 +18,11 @@ Unicode true
 ; Version
 !define VERSION "6.283.1.0"
 
+; Windows 10 builds older than this (19041 = version 2004, e.g. 14393 = 1607)
+; only get a non-blocking warning: they are out of support and the game client
+; may not run correctly.
+!define MIN_RECOMMENDED_WIN10_BUILD 19041
+
 ; Product Info (English)
 !define PRODUCT_NAME "MapleStory TW"
 
@@ -68,6 +73,10 @@ Var ProxyFlag
 Var PortableFlag
 ; Result of the upgrade-path check: "patch", "reinstall" or "abort".
 Var UpgradeAction
+; Windows build detection (filled by GetWindowsBuild).
+Var WinBuild
+Var WinBuildRevision
+Var WinBuildFull
 
 ; ============================================================================
 ; MUI2 Settings
@@ -104,6 +113,8 @@ LangString STR_SHORTCUT_FAILED ${LANG_ENGLISH} "Shortcut creation failed with er
 LangString STR_LAUNCH_PROMPT ${LANG_ENGLISH} "Installation completed. Would you like to launch the game now?"
 LangString STR_UNSUPPORTED_OS ${LANG_ENGLISH} "This application requires Windows 10 or later on x64 architecture.$\nYour system does not meet the requirements."
 LangString STR_UNSUPPORTED_ARCH ${LANG_ENGLISH} "This application requires x64 architecture.$\nYour system is not x64 compatible."
+LangString STR_DETECTED_OS_BUILD ${LANG_ENGLISH} "Detected OS build: "
+LangString STR_OLD_BUILD_WARNING ${LANG_ENGLISH} "Your Windows 10 build might be too old to play the game.$\nPlease consider to update OS before proceed."
 LangString STR_PRODUCT_NAME ${LANG_ENGLISH} "${PRODUCT_NAME}"
 LangString STR_MODE_TITLE ${LANG_ENGLISH} "Choose Operation"
 LangString STR_MODE_SUBTITLE ${LANG_ENGLISH} "Select whether to install or update the game."
@@ -147,6 +158,8 @@ LangString STR_SHORTCUT_FAILED ${LANG_TRADCHINESE} "創建捷徑失敗，錯誤�
 LangString STR_LAUNCH_PROMPT ${LANG_TRADCHINESE} "安裝完成。您要立即啟動遊戲嗎？"
 LangString STR_UNSUPPORTED_OS ${LANG_TRADCHINESE} "此程式需要 Windows 10 或更高版本（64位元）。$\n請升級作業系統後再使用。"
 LangString STR_UNSUPPORTED_ARCH ${LANG_TRADCHINESE} "此程式需要64位元。$\n您的系統不是64位元。"
+LangString STR_DETECTED_OS_BUILD ${LANG_TRADCHINESE} "偵測到的系統版本號："
+LangString STR_OLD_BUILD_WARNING ${LANG_TRADCHINESE} "您的 Windows 10 版本過舊，可能無法正常遊玩遊戲。$\n建議在繼續之前更新作業系統。"
 LangString STR_PRODUCT_NAME ${LANG_TRADCHINESE} "${PRODUCT_NAME_ZH}"
 LangString STR_MODE_TITLE ${LANG_TRADCHINESE} "選擇操作"
 LangString STR_MODE_SUBTITLE ${LANG_TRADCHINESE} "請選擇是安裝還是更新遊戲。"
@@ -265,6 +278,10 @@ Function .onInit
     MessageBox MB_OK|MB_ICONINFORMATION "$(STR_CN_GAMING_VPN)"
   cnDone:
 
+  ; Detect the Windows build number so a failed requirement check can report
+  ; it, and so the details log records the exact OS the installer ran on.
+  Call GetWindowsBuild
+
   ; Check if system is x64
   ${IfNot} ${RunningX64}
     MessageBox MB_ICONSTOP "$(STR_UNSUPPORTED_ARCH)"
@@ -273,8 +290,45 @@ Function .onInit
 
   ; Check Windows version (Windows 10 and later)
   ${IfNot} ${AtLeastWin10}
-    MessageBox MB_ICONSTOP "$(STR_UNSUPPORTED_OS)"
+    StrCpy $R9 "$(STR_UNSUPPORTED_OS)$\n$\n$(STR_DETECTED_OS_BUILD)$WinBuildFull"
+    MessageBox MB_ICONSTOP "$R9"
     Quit
+  ${EndIf}
+
+  ; Windows 10 builds older than 2004 (19041) are long out of support and the
+  ; game client may not run correctly. Warn, but let the user continue.
+  ${If} $WinBuild != "unknown"
+  ${AndIf} $WinBuild < ${MIN_RECOMMENDED_WIN10_BUILD}
+    MessageBox MB_OK|MB_ICONEXCLAMATION "$(STR_OLD_BUILD_WARNING)" /SD IDOK
+  ${EndIf}
+FunctionEnd
+
+; ============================================================================
+; Helper: detect the Windows build number
+; ============================================================================
+
+; Fills:
+;   $WinBuild         - build number, e.g. "26100" ("unknown" when unreadable)
+;   $WinBuildRevision - UBR (revision) from the registry, empty when unknown
+;   $WinBuildFull     - display string, e.g. "26100.1742"
+; The registry stores the build number as a string and the revision (UBR),
+; which neither GetVersionEx nor WinVer.nsh can report; ${WinVerGetBuild} is
+; used as a fallback because its build value is masked to 16 bits.
+Function GetWindowsBuild
+  StrCpy $WinBuild ""
+  StrCpy $WinBuildRevision ""
+  ReadRegStr $WinBuild HKLM "SOFTWARE\Microsoft\Windows NT\CurrentVersion" "CurrentBuildNumber"
+  ReadRegDWORD $WinBuildRevision HKLM "SOFTWARE\Microsoft\Windows NT\CurrentVersion" "UBR"
+  ${If} $WinBuild == ""
+    ${WinVerGetBuild} $WinBuild
+  ${EndIf}
+  ${If} $WinBuild == ""
+    StrCpy $WinBuild "unknown"
+  ${EndIf}
+  ${If} $WinBuildRevision == ""
+    StrCpy $WinBuildFull "$WinBuild"
+  ${Else}
+    StrCpy $WinBuildFull "$WinBuild.$WinBuildRevision"
   ${EndIf}
 FunctionEnd
 
@@ -622,6 +676,9 @@ FunctionEnd
 ; ============================================================================
 
 Section "Install"
+  ; Record the detected Windows build in the details log for troubleshooting.
+  DetailPrint "Windows build: $WinBuildFull"
+
   ; 360 Total Security is known to corrupt or quarantine game files while
   ; downloading or patching. Ask the user to close it first, and abort the
   ; installation if they cannot. Only install and update modes are affected.
