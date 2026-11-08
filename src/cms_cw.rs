@@ -129,11 +129,11 @@ pub fn create_shortcut(
         .canonicalize()
         .with_context(|| format!("failed to resolve '{}'", target_dir.display()))?;
 
-    let use_lrhook = lrhook && locale_remulator_available(&target_dir);
+    let use_lrhook = lrhook && rslocalehook_available(&target_dir);
     if lrhook && !use_lrhook {
         println!(
-            "warning: --lrhook was specified but LocaleRemulator files are missing; \
-             shortcut will launch without Locale Remulator."
+            "warning: --lrhook was specified but rslocalehook files are missing; \
+             shortcut will launch without rslocalehook."
         );
     }
 
@@ -184,15 +184,11 @@ pub fn create_shortcut(
     bail!("--create-shortcut is only supported on Windows")
 }
 
-/// Return `true` if all required LocaleRemulator files exist under
-/// `<target_dir>/LocaleRemulator/`.
-pub fn locale_remulator_available(target_dir: &Path) -> bool {
-    let lr = target_dir.join("LocaleRemulator");
-    lr.join("LRConfig.xml").is_file()
-        && lr.join("LRHookx32.dll").is_file()
-        && lr.join("LRHookx64.dll").is_file()
-        && lr.join("LRProc.exe").is_file()
-        && lr.join("LRSubMenus.dll").is_file()
+/// Return `true` if the `rslocalehook` launcher and hook DLL exist under
+/// `<target_dir>/rslocalehook/`.
+pub fn rslocalehook_available(target_dir: &Path) -> bool {
+    let dir = target_dir.join("rslocalehook");
+    dir.join("rslocalehook.exe").is_file() && dir.join("rslocalehook_hook.dll").is_file()
 }
 
 // ── Launch ───────────────────────────────────────────────────────────────────
@@ -200,7 +196,7 @@ pub fn locale_remulator_available(target_dir: &Path) -> bool {
 /// Launch `<target_dir>/mxdclassic/Maplestory_Classic.exe --sqLauncher`.
 ///
 /// The process is spawned without waiting, so cmsdl can exit while the game
-/// keeps running.  Locale Remulator (`--lrhook`) is not supported for CMS CW.
+/// keeps running.  rslocalehook (`--lrhook`) is not supported for CMS CW.
 #[cfg(windows)]
 pub fn launch_client(target_dir: &Path) -> Result<()> {
     use std::ffi::OsStr;

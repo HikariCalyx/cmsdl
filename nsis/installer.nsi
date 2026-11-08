@@ -164,7 +164,7 @@ LangString STR_FIX_SDOLOGIN_UAC_RETRY ${LANG_ENGLISH} "Firewall rules could not 
 LangString STR_LINK_TROUBLESHOOTING ${LANG_ENGLISH} "Troubleshooting (Simplified Chinese only)"
 LangString STR_UPDATE_ABORT ${LANG_ENGLISH} "No existing game installation was found in the selected directory. Update cannot continue."
 LangString STR_NO_WRITE_PERMISSION ${LANG_ENGLISH} "The target folder cannot be written to.$\nPlease run this installer with Administrator privileges."
-LangString STR_DO_NOT_INCLUDE_LR ${LANG_ENGLISH} "Do not include Locale Remulator"
+LangString STR_DO_NOT_INCLUDE_LR ${LANG_ENGLISH} "Do not include rslocalehook (Simplified Chinese locale support)"
 LangString STR_USE_CONSOLE_TYPE ${LANG_ENGLISH} "Use the console-type CMSDL interface"
 LangString STR_REMOVE_OFFICIAL_LAUNCHER ${LANG_ENGLISH} "Would you like to remove the official game launcher? Removing it does not affect game launching."
 LangString STR_REMOVE_OFFICIAL_LAUNCHER_UAC ${LANG_ENGLISH} "You're currently running official launcher, but you didn't close it. Once you finish closing, please click Retry."
@@ -228,7 +228,7 @@ LangString STR_FIX_SDOLOGIN_UAC_RETRY ${LANG_SIMPCHINESE} "无法添加防火墙
 LangString STR_LINK_TROUBLESHOOTING ${LANG_SIMPCHINESE} "使用遇到问题了？点击查看帮助"
 LangString STR_UPDATE_ABORT ${LANG_SIMPCHINESE} "在所选目录中未找到现有的游戏安装。无法继续更新。"
 LangString STR_NO_WRITE_PERMISSION ${LANG_SIMPCHINESE} "无法写入目标文件夹。$\n请以管理员身份运行此安装程序。"
-LangString STR_DO_NOT_INCLUDE_LR ${LANG_SIMPCHINESE} "安装过程中不包含 Locale Remulator"
+LangString STR_DO_NOT_INCLUDE_LR ${LANG_SIMPCHINESE} "安装过程中不包含 rslocalehook（简体中文区域设置支持）"
 LangString STR_USE_CONSOLE_TYPE ${LANG_SIMPCHINESE} "使用命令行样式的CMSDL界面"
 LangString STR_REMOVE_OFFICIAL_LAUNCHER ${LANG_SIMPCHINESE} "您想要移除官方游戏启动器吗？移除该启动器不会影响启动游戏。"
 LangString STR_REMOVE_OFFICIAL_LAUNCHER_UAC ${LANG_SIMPCHINESE} "您当前正在运行官方启动器，但尚未关闭它。关闭后，请点击重试。"
@@ -330,7 +330,7 @@ Function .onInit
   ${EndIf}
   langDone:
 
-  ; Locale Remulator is only useful when the system language is NOT
+  ; rslocalehook is only useful when the system language is NOT
   ; Simplified Chinese (legacy locale-based app compat is not needed).
   ; For Simplified Chinese systems, leave the flag empty.
   StrCpy $LrHookFlag " --lrhook"
@@ -467,7 +467,7 @@ Function ModeSelectPage
   Pop $LinkTroubleshooting
   ${NSD_OnClick} $LinkTroubleshooting OpenTroubleshootingLink
 
-  ; Locale Remulator opt-out checkbox (only visible on non-zh-CN systems).
+  ; rslocalehook opt-out checkbox (only visible on non-zh-CN systems).
   StrCmp $LrHookFlag "" restoreSelection
     ${NSD_CreateCheckbox} 10u 112u 95% 12u "$(STR_DO_NOT_INCLUDE_LR)"
     Pop $CheckNoLR
@@ -1011,18 +1011,18 @@ Section "Install"
 
   SetOutPath "$INSTDIR"
 
-  ; Fix SDOLogin mode: skip LR extraction, registry, and uninstaller.
+  ; Fix SDOLogin mode: skip rslocalehook extraction, registry, and uninstaller.
   StrCmp $InstallMode "5" modeFixSDOLogin
 
-  ; Extract LocaleRemulator files (only for non-Simplified-Chinese systems).
+  ; Extract rslocalehook files (only for non-Simplified-Chinese systems).
   ; The flag variable is empty on zh-CN systems, contains " --lrhook" otherwise.
+  ; The legacy Locale Remulator directory from earlier versions is removed.
+  RMDir /r "$INSTDIR\LocaleRemulator"
   StrCmp $LrHookFlag "" skipLR
-    SetOutPath "$INSTDIR\LocaleRemulator"
-    File "LRConfig.xml"
-    File "LRHookx32.dll"
-    File "LRHookx64.dll"
-    File "LRProc.exe"
-    File "LRSubMenus.dll"
+    SetOutPath "$INSTDIR\rslocalehook"
+    File "rslocalehook\rslocalehook.exe"
+    File "rslocalehook\rslocalehook_hook.dll"
+    File "rslocalehook\rslocalehook_hook32.dll"
     SetOutPath "$INSTDIR"
   skipLR:
 
@@ -1098,14 +1098,14 @@ Section "Install"
       SetOutPath "$INSTDIR"
       File "..\target\release\cmsdl.exe"
 
-      ; Extract LocaleRemulator files (only for non-Simplified-Chinese systems).
+      ; Extract rslocalehook files (only for non-Simplified-Chinese systems).
+      ; The legacy Locale Remulator directory from earlier versions is removed.
+      RMDir /r "$INSTDIR\LocaleRemulator"
       StrCmp $LrHookFlag "" updSkipLR
-        SetOutPath "$INSTDIR\LocaleRemulator"
-        File "LRConfig.xml"
-        File "LRHookx32.dll"
-        File "LRHookx64.dll"
-        File "LRProc.exe"
-        File "LRSubMenus.dll"
+        SetOutPath "$INSTDIR\rslocalehook"
+        File "rslocalehook\rslocalehook.exe"
+        File "rslocalehook\rslocalehook_hook.dll"
+        File "rslocalehook\rslocalehook_hook32.dll"
         SetOutPath "$INSTDIR"
       updSkipLR:
 

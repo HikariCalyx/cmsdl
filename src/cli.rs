@@ -113,16 +113,16 @@ pub struct Cli {
     #[arg(long, alias = "keep-old-wz")]
     pub keep_old_wz_files: bool,
 
-    /// Launch the game through Locale Remulator when present.
+    /// Launch the game through rslocalehook when present.
     ///
-    /// With `--create-shortcut`: if the LocaleRemulator directory with all
+    /// With `--create-shortcut`: if the rslocalehook directory with all
     /// required files exists under the target directory, the created shortcut
-    /// will include `--lrhook` so subsequent launches also use Locale Remulator.
+    /// will include `--lrhook` so subsequent launches also use rslocalehook.
     ///
-    /// With `--patch --launch-after-patching`: if the LocaleRemulator directory
-    /// is present, the game is launched through `LRProc.exe` with the pre-
-    /// configured profile GUID; otherwise a warning is printed and the game
-    /// launches directly.
+    /// With `--patch --launch-after-patching`: if the rslocalehook directory
+    /// is present, the game is launched through `rslocalehook.exe run` with the
+    /// pre-configured Simplified Chinese locale; otherwise a warning is printed
+    /// and the game launches directly.
     #[arg(long)]
     pub lrhook: bool,
 

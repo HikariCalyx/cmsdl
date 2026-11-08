@@ -235,5 +235,6 @@ cargo build --release
 ## Credits
 - @Deneo , for reverse-enginerring job
 - @InWILL for Locale Remulator
+- [rslocalehook](https://github.com/HikariCalyx/rslocalehook)，用於以簡體中文地區設定啟動遊戲的 Locale Remulator Rust 移植版
 - [choyang](https://x.com/choyang___) & [shio_rice](https://x.com/shio_rice0) for splash screen
 - GUI part used [Maplestory OTF fonttype](https://maplestory.nexon.com/Media/Font)

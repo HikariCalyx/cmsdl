@@ -245,5 +245,6 @@ cargo build --release
 ## Credits
 - @Deneo , for reverse-enginerring job
 - @InWILL for Locale Remulator
+- [rslocalehook](https://github.com/HikariCalyx/rslocalehook), a Rust port of Locale Remulator used to run the client under a Simplified Chinese locale
 - [choyang](https://x.com/choyang___) & [shio_rice](https://x.com/shio_rice0) for splash screen
 - GUI part used [Maplestory OTF fonttype](https://maplestory.nexon.com/Media/Font)

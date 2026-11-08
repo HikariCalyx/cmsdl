@@ -724,10 +724,10 @@ fn write_installed_version(target_dir: &Path, version: &str, version_view: &str)
 /// The process is spawned without waiting, so cmsdl can exit while the game
 /// keeps running.
 ///
-/// When `lrhook` is true and all LocaleRemulator files exist under
-/// `<target_dir>/LocaleRemulator/`, the game is launched through `LRProc.exe`
-/// with the pre-configured Locale Remulator profile GUID.
-/// Otherwise a warning is printed and the game launches directly.
+/// When `lrhook` is true and the `rslocalehook` launcher and hook DLL exist
+/// under `<target_dir>/rslocalehook/`, the game is launched through
+/// `rslocalehook.exe run` with the pre-configured Simplified Chinese locale
+/// settings. Otherwise a warning is printed and the game launches directly.
 pub fn launch_client(target_dir: &Path, lrhook: bool) -> Result<()> {
     let dd = crate::cms::data_dir();
     let mxd = target_dir.join(dd);
@@ -736,87 +736,60 @@ pub fn launch_client(target_dir: &Path, lrhook: bool) -> Result<()> {
         bail!("cannot launch: {} not found", exe.display());
     }
 
-    if lrhook && crate::cms::locale_remulator_available(target_dir) {
-        let lr_proc = target_dir.join("LocaleRemulator").join("LRProc.exe");
+    if lrhook && crate::cms::rslocalehook_available(target_dir) {
+        let launcher = crate::cms::rslocalehook_dir(target_dir).join("rslocalehook.exe");
         println!(
-            "launching \"{}\" --sqLauncher with Locale Remulator",
+            "launching \"{}\" --sqLauncher with rslocalehook",
             exe.display()
         );
-        launch_with_lr(&lr_proc, &exe)
+        launch_with_rslocalehook(&launcher, &exe, &mxd)
     } else {
         if lrhook {
-            println!("warning: Locale Remulator doesn't exist. launching game directly.");
+            println!("warning: rslocalehook doesn't exist. launching game directly.");
         }
         println!("launching {} --sqLauncher", exe.display());
         launch_exe(&exe, &mxd)
     }
 }
 
-/// Launch the game through Locale Remulator.
+/// Locale settings passed to `rslocalehook`, mirroring the Locale Remulator
+/// profile cmsdl used to ship: Simplified Chinese (LCID 2052), code page 936,
+/// China Standard Time, with the IME and LCID hooks enabled.
+const RSLH_NLS: &str = "0804";
+const RSLH_CODEPAGE: &str = "936";
+const RSLH_TIMEZONE: &str = "Asia/Shanghai";
+
+/// Launch the game through `rslocalehook`.
 ///
-/// Uses the pre-configured profile GUID `55fbcb37-1d64-4344-8dd2-731cd6150f52`.
-/// Calls `ShellExecuteW` with the `runas` verb so UAC elevation works properly
-/// (no PowerShell intermediary means no console flash and no suppressed UAC).
+/// `--elevate` makes the launcher re-run itself through a UAC prompt, because
+/// `MapleStory.exe` requires administrator rights and the hook DLL must be
+/// injected from a process with the same integrity level. The launcher is
+/// spawned without waiting, so it (and the game) keep running after cmsdl exits.
 #[cfg(windows)]
-fn launch_with_lr(lr_proc: &Path, exe: &Path) -> Result<()> {
-    use std::ffi::OsStr;
-    use std::os::windows::ffi::OsStrExt;
-
-    extern "system" {
-        fn ShellExecuteW(
-            hwnd: isize,
-            lpOperation: *const u16,
-            lpFile: *const u16,
-            lpParameters: *const u16,
-            lpDirectory: *const u16,
-            nShowCmd: i32,
-        ) -> isize;
-    }
-
-    fn to_wide(s: &OsStr) -> Vec<u16> {
-        let mut v: Vec<u16> = s.encode_wide().collect();
-        v.push(0);
-        v
-    }
-
-    let guid = "55fbcb37-1d64-4344-8dd2-731cd6150f52";
-    let params_str = format!("{guid} \"{}\" --sqLauncher", exe.display());
-    let params = to_wide(OsStr::new(&params_str));
-    let file = to_wide(lr_proc.as_os_str());
-    let dir = to_wide(
-        lr_proc
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .as_os_str(),
-    );
-    let operation = to_wide(OsStr::new("runas"));
-
-    const SW_SHOW: i32 = 5;
-    // Values ≤ 32 indicate failure (see ShellExecute documentation).
-    let ret = unsafe {
-        ShellExecuteW(
-            0,
-            operation.as_ptr(),
-            file.as_ptr(),
-            params.as_ptr(),
-            dir.as_ptr(),
-            SW_SHOW,
-        )
-    };
-
-    if ret <= 32 {
-        bail!(
-            "could not launch the client with Locale Remulator \
-             (ShellExecute error {ret}; the UAC elevation prompt may have been declined)"
-        );
-    }
+fn launch_with_rslocalehook(launcher: &Path, exe: &Path, working_dir: &Path) -> Result<()> {
+    std::process::Command::new(launcher)
+        .arg("run")
+        .arg(exe)
+        .args(["--nls", RSLH_NLS])
+        .args(["--timezone", RSLH_TIMEZONE])
+        .args(["--codepage", RSLH_CODEPAGE])
+        .args(["--hookime", "--hooklcid", "--elevate"])
+        .args(["--args", "--sqLauncher"])
+        .current_dir(working_dir)
+        .spawn()
+        .with_context(|| {
+            format!(
+                "could not launch the client with rslocalehook ({})",
+                launcher.display()
+            )
+        })?;
     Ok(())
 }
 
 /// Stub for non-Windows platforms.
 #[cfg(not(windows))]
-fn launch_with_lr(_lr_proc: &Path, _exe: &Path) -> Result<()> {
-    bail!("Locale Remulator is only supported on Windows")
+fn launch_with_rslocalehook(_launcher: &Path, _exe: &Path, _working_dir: &Path) -> Result<()> {
+    bail!("rslocalehook is only supported on Windows")
 }
 
 /// Launch `exe --sqLauncher` through the Windows shell.

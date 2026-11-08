@@ -16,7 +16,7 @@ use rsa::pkcs8::DecodePublicKey;
 use rsa::traits::PublicKeyParts;
 use rsa::{BigUint, RsaPublicKey};
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -1585,12 +1585,12 @@ pub fn create_shortcut(target_dir: &Path, lrhook: bool, no_gui: bool, close_afte
         );
     }
 
-    // Step 1.5: if --lrhook is requested, verify LocaleRemulator files exist.
-    let use_lrhook = lrhook && locale_remulator_available(&target_dir);
+    // Step 1.5: if --lrhook is requested, verify rslocalehook files exist.
+    let use_lrhook = lrhook && rslocalehook_available(&target_dir);
     if lrhook && !use_lrhook {
         println!(
-            "warning: --lrhook was specified but LocaleRemulator files are missing; \
-             shortcut will launch without Locale Remulator."
+            "warning: --lrhook was specified but rslocalehook files are missing; \
+             shortcut will launch without rslocalehook."
         );
     }
 
@@ -1624,15 +1624,16 @@ pub fn create_shortcut(target_dir: &Path, lrhook: bool, no_gui: bool, close_afte
     run_create_shortcut_script(&target_dir, &cmsdl_in_target, &maple_exe, &lnk_name, use_lrhook, no_gui, close_after_finishing)
 }
 
-/// Return `true` if all required LocaleRemulator files exist under
-/// `<target_dir>/LocaleRemulator/`.
-pub fn locale_remulator_available(target_dir: &Path) -> bool {
-    let lr = target_dir.join("LocaleRemulator");
-    lr.join("LRConfig.xml").is_file()
-        && lr.join("LRHookx32.dll").is_file()
-        && lr.join("LRHookx64.dll").is_file()
-        && lr.join("LRProc.exe").is_file()
-        && lr.join("LRSubMenus.dll").is_file()
+/// Directory holding the `rslocalehook` launcher and hook DLL.
+pub fn rslocalehook_dir(target_dir: &Path) -> PathBuf {
+    target_dir.join("rslocalehook")
+}
+
+/// Return `true` if the `rslocalehook` launcher and hook DLL exist under
+/// `<target_dir>/rslocalehook/`.
+pub fn rslocalehook_available(target_dir: &Path) -> bool {
+    let dir = rslocalehook_dir(target_dir);
+    dir.join("rslocalehook.exe").is_file() && dir.join("rslocalehook_hook.dll").is_file()
 }
 
 /// Stub for non-Windows platforms.

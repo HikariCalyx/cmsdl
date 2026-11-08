@@ -518,7 +518,7 @@ pub fn patch_list(
 ///
 /// When `launch_after` is set, the client is launched once patching completes
 /// successfully. When `lrhook` is also set, the client is launched through
-/// Locale Remulator if its files are present. Only the CMS region supports
+/// rslocalehook if its files are present. Only the CMS region supports
 /// patching.
 pub fn patch_apply(
     region: Region,
@@ -787,8 +787,8 @@ pub fn manual_download(
 /// Create a launcher shortcut for the CMS client at `target_path`.
 ///
 /// Only supported for the CMS region on Windows. When `lrhook` is true and
-/// LocaleRemulator files are present, the shortcut will include `--lrhook` so
-/// subsequent patch-and-launch operations also use Locale Remulator.
+/// rslocalehook files are present, the shortcut will include `--lrhook` so
+/// subsequent patch-and-launch operations also use rslocalehook.
 pub fn create_shortcut(region: Region, target_path: &Path, lrhook: bool, no_gui: bool, close_after_finishing: bool) -> Result<()> {
     match region {
         Region::Cms => cms::create_shortcut(target_path, lrhook, no_gui, close_after_finishing)?,
