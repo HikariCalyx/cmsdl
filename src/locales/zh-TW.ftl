@@ -19,6 +19,8 @@ gui-patcher-patch-successful-launch = 更新完成，即將啟動遊戲
 gui-patcher-nopatch-successful = 沒有發現更新
 gui-patcher-nopatch-successful-launch = 沒有發現更新，即將啟動遊戲
 gui-patcher-launch-fail = 遊戲啟動失敗。點擊重試
+gui-patcher-launch-anyway = 仍然嘗試啟動遊戲
+gui-patcher-launching = 正在啟動遊戲
 gui-patcher-pending-windows-update = 有尚未完成的 Windows 更新。點擊此處瞭解更多
 # GUI 錯誤分類（完整技術細節會寫入記錄檔）。
 gui-error-network = 網路錯誤。請檢查網路連線後再試一次。

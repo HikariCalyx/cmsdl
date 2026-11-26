@@ -72,6 +72,13 @@ pub struct UiModel {
     /// Set by the window procedure when the user clicks the retry affordance;
     /// consumed (and cleared) by the background patch thread.
     pub retry_requested: bool,
+    /// When true, a "Try to launch anyway" link is drawn right after the
+    /// status line (label1). It launches the installed client without
+    /// updating, after the patch server could not be reached.
+    pub launch_anyway_available: bool,
+    /// Set by the window procedure when the user clicks the "Try to launch
+    /// anyway" link; consumed (and cleared) by the background patch thread.
+    pub launch_anyway_requested: bool,
 }
 
 impl Default for UiModel {
@@ -93,6 +100,8 @@ impl Default for UiModel {
             log_path: String::new(),
             retry_available: false,
             retry_requested: false,
+            launch_anyway_available: false,
+            launch_anyway_requested: false,
         }
     }
 }
@@ -276,6 +285,22 @@ mod win32 {
     const RETRY_HOVER_B: u8 = 0xFF;
     /// Height of the clickable band (text + underline).
     const RETRY_H: i32 = 14;
+
+    // "Try to launch anyway" link, drawn right after label1's text when the
+    // patch server could not be reached. When the message and the link do not
+    // both fit before the "View log" link, the message is shortened with "…".
+    const LAUNCH_ANYWAY_COLOR_R: u8 = 0x66;
+    const LAUNCH_ANYWAY_COLOR_G: u8 = 0xB2;
+    const LAUNCH_ANYWAY_COLOR_B: u8 = 0xFF;
+    /// Brighter colour while the cursor hovers the link.
+    const LAUNCH_ANYWAY_HOVER_R: u8 = 0x99;
+    const LAUNCH_ANYWAY_HOVER_G: u8 = 0xCC;
+    const LAUNCH_ANYWAY_HOVER_B: u8 = 0xFF;
+    /// Height of the clickable band (text + underline).
+    const LAUNCH_ANYWAY_H: i32 = 14;
+    /// Gap between the link and label1's text, and between the link and
+    /// the "View log" link.
+    const LAUNCH_ANYWAY_GAP: i32 = 12;
 
     // HDD notice label (drawn at the bottom of the window when the target
     // drive is a mechanical hard disk).
@@ -642,6 +667,15 @@ mod win32 {
         retry_link_hover: bool,
         /// Whether the retry affordance is currently held down.
         retry_link_pressed: bool,
+
+        /// Clickable rectangle of the "Try to launch anyway" link (x0, y0,
+        /// x1, y1).  Zero-width while the link is hidden.  Updated by the
+        /// renderer, hence a `Cell`.
+        launch_anyway_rect: std::cell::Cell<(i32, i32, i32, i32)>,
+        /// Whether the cursor is currently over the "Try to launch anyway" link.
+        launch_anyway_hover: bool,
+        /// Whether the "Try to launch anyway" link is currently held down.
+        launch_anyway_pressed: bool,
     }
 
     impl WindowState {
@@ -670,6 +704,13 @@ mod win32 {
         /// The band is zero-width when no retry is offered, so this is false.
         fn hit_retry_link(&self, x: i32, y: i32) -> bool {
             let (x0, y0, x1, y1) = self.retry_link_rect.get();
+            x1 > x0 && x >= x0 && x < x1 && y >= y0 && y < y1
+        }
+
+        /// Whether `(x, y)` is inside the "Try to launch anyway" link. The
+        /// band is zero-width while the link is hidden, so this is false.
+        fn hit_launch_anyway(&self, x: i32, y: i32) -> bool {
+            let (x0, y0, x1, y1) = self.launch_anyway_rect.get();
             x1 > x0 && x >= x0 && x < x1 && y >= y0 && y < y1
         }
 
@@ -1105,6 +1146,55 @@ mod win32 {
     mod tests {
         use super::*;
 
+        /// Fake text measurement: every character is 6 px wide, like the ASCII
+        /// glyphs of the 9pt label font.
+        fn six_px(text: &str) -> i32 {
+            text.chars().count() as i32 * 6
+        }
+
+        #[test]
+        fn ellipsize_keeps_text_that_fits() {
+            assert_eq!(ellipsize("abcdef", 36, six_px), "abcdef");
+            assert_eq!(ellipsize("", 0, six_px), "");
+        }
+
+        #[test]
+        fn ellipsize_cuts_to_the_longest_fitting_prefix() {
+            assert_eq!(ellipsize("abcdef", 30, six_px), "abcd…");
+            // Whitespace before the cut is dropped rather than kept before "…".
+            assert_eq!(ellipsize("ab cd", 24, six_px), "ab…");
+            // Multi-byte characters are cut on character boundaries.
+            assert_eq!(ellipsize("无法连接到服务器", 30, six_px), "无法连接…");
+            // Nothing but the ellipsis fits.
+            assert_eq!(ellipsize("abcdef", 3, six_px), "…");
+        }
+
+        /// The link directly follows a label that fits, after the gap.
+        #[test]
+        fn launch_anyway_follows_a_short_label() {
+            let (label, link_x) = layout_launch_anyway("abc", 120, 548, six_px);
+            assert_eq!(label, "abc");
+            assert_eq!(link_x, LABEL_X + 18 + LAUNCH_ANYWAY_GAP);
+        }
+
+        /// A label too long to share the row is shortened so the link still
+        /// ends before the right limit (the "View log" link).
+        #[test]
+        fn launch_anyway_shortens_a_long_label() {
+            let label1 = "Unable to connect to the server. Please check your internet \
+                          connection, firewall, or proxy settings.";
+            let (link_w, right) = (120, 548);
+            let (label, link_x) = layout_launch_anyway(label1, link_w, right, six_px);
+            assert!(label.ends_with('…') && label1.starts_with(label.trim_end_matches('…')));
+            assert_eq!(link_x, LABEL_X + six_px(&label) + LAUNCH_ANYWAY_GAP);
+            assert!(link_x + link_w <= right, "link ends at {} > {right}", link_x + link_w);
+        }
+
+        #[test]
+        fn launch_anyway_without_a_label_starts_at_the_label_position() {
+            assert_eq!(layout_launch_anyway("", 120, 548, six_px), (String::new(), LABEL_X));
+        }
+
         /// Every embedded resource must decode through the in-memory GDI+ path.
         #[test]
         fn embedded_resources_decode_from_memory() {
@@ -1495,12 +1585,40 @@ mod win32 {
 
         draw_label(dib, &label2_text, LABEL2_X, LABEL2_Y,
             (LABEL2_COLOR_R, LABEL2_COLOR_G, LABEL2_COLOR_B), s.label_font);
+
+        let (retry_available, launch_anyway) = s.ui.lock()
+            .map(|m| (m.retry_available, m.launch_anyway_available))
+            .unwrap_or((false, false));
+        let measure = |text: &str| measure_text_width(hdc_screen, s.label_font, text);
+        // The "View log" link (drawn below) is measured up front: the "Try to
+        // launch anyway" link must end before it.
+        let log_text = crate::locale::tr("gui-view-log", &[]);
+        let log_text_w = measure(&log_text);
+        let log_link_x = (LOG_LINK_RIGHT_X - log_text_w).max(0);
+        // The "Try to launch anyway" link follows label1's text. label1 is
+        // shortened when both do not fit.
+        let launch_anyway_text = if launch_anyway {
+            crate::locale::tr("gui-patcher-launch-anyway", &[])
+        } else {
+            String::new()
+        };
+        let launch_anyway_w = measure(&launch_anyway_text);
+        let (label1_text, launch_anyway_x) = if launch_anyway {
+            let right = if log_path.is_empty() {
+                LOG_LINK_RIGHT_X
+            } else {
+                log_link_x - LAUNCH_ANYWAY_GAP
+            };
+            layout_launch_anyway(&label1_text, launch_anyway_w, right, measure)
+        } else {
+            (label1_text, 0)
+        };
+
         // label1 doubles as a clickable link while a click has something to do:
         // retrying a failed game launch ("click to retry") or opening the
         // Windows Update page when an update is pending ("click here to learn
         // more"). Draw it in the link colour and register a click region under
         // its text.
-        let retry_available = s.ui.lock().map(|m| m.retry_available).unwrap_or(false);
         let label1_color = if retry_available {
             if s.retry_link_hover {
                 (RETRY_HOVER_R, RETRY_HOVER_G, RETRY_HOVER_B)
@@ -1512,7 +1630,7 @@ mod win32 {
         };
         draw_label(dib, &label1_text, LABEL_X, LABEL_Y, label1_color, s.label_font);
         if retry_available && !label1_text.is_empty() {
-            let text_w = measure_text_width(hdc_screen, s.label_font, &label1_text);
+            let text_w = measure(&label1_text);
             // Underline for link affordance.
             let uy = LABEL_Y + RETRY_H - 1;
             if uy >= 0 && uy < WIN_H {
@@ -1528,6 +1646,30 @@ mod win32 {
             s.retry_link_rect.set((LABEL_X, LABEL_Y, x_end, LABEL_Y + RETRY_H));
         } else {
             s.retry_link_rect.set((0, 0, 0, 0));
+        }
+        // "Try to launch anyway" link, right after label1's text.
+        if launch_anyway {
+            let link_x = launch_anyway_x;
+            let (cr, cg, cb) = if s.launch_anyway_hover {
+                (LAUNCH_ANYWAY_HOVER_R, LAUNCH_ANYWAY_HOVER_G, LAUNCH_ANYWAY_HOVER_B)
+            } else {
+                (LAUNCH_ANYWAY_COLOR_R, LAUNCH_ANYWAY_COLOR_G, LAUNCH_ANYWAY_COLOR_B)
+            };
+            draw_label(dib, &launch_anyway_text, link_x, LABEL_Y, (cr, cg, cb), s.label_font);
+            // Underline for link affordance.
+            let uy = LABEL_Y + LAUNCH_ANYWAY_H - 1;
+            if uy >= 0 && uy < WIN_H {
+                let underline = (0xFFu32 << 24)
+                    | ((cr as u32) << 16) | ((cg as u32) << 8) | cb as u32;
+                for px in link_x.max(0)..(link_x + launch_anyway_w).min(WIN_W) {
+                    let di = (uy * WIN_W + px) as usize;
+                    dib[di] = alpha_blend_dib(dib[di], underline);
+                }
+            }
+            let x_end = (link_x + launch_anyway_w).min(WIN_W);
+            s.launch_anyway_rect.set((link_x, LABEL_Y, x_end, LABEL_Y + LAUNCH_ANYWAY_H));
+        } else {
+            s.launch_anyway_rect.set((0, 0, 0, 0));
         }
         // cmsdl's own version, static, same style as label1.
         draw_label(dib, LABEL_VER_TEXT, LABEL_VER_X, LABEL_VER_Y,
@@ -1557,9 +1699,9 @@ mod win32 {
         if log_path.is_empty() {
             s.log_link_rect.set((0, 0, 0, 0));
         } else {
-            let text = crate::locale::tr("gui-view-log", &[]);
-            let text_w = measure_text_width(hdc_screen, s.label_font, &text);
-            let link_x = (LOG_LINK_RIGHT_X - text_w).max(0);
+            let text = log_text;
+            let text_w = log_text_w;
+            let link_x = log_link_x;
             let (cr, cg, cb) = if s.log_link_hover {
                 (LOG_LINK_HOVER_R, LOG_LINK_HOVER_G, LOG_LINK_HOVER_B)
             } else {
@@ -1970,6 +2112,48 @@ mod win32 {
         extent.cx
     }
 
+    /// Lay out label1 followed by the "Try to launch anyway" link (`link_w`
+    /// pixels wide) so that the link ends at or before x = `right`.
+    ///
+    /// Returns the label1 text to draw, shortened with "…" when the full text
+    /// and the link do not both fit, and the x position of the link.
+    fn layout_launch_anyway(
+        label1: &str,
+        link_w: i32,
+        right: i32,
+        measure: impl Fn(&str) -> i32,
+    ) -> (String, i32) {
+        let max_label_w = right - link_w - LAUNCH_ANYWAY_GAP - LABEL_X;
+        let label = ellipsize(label1, max_label_w, &measure);
+        let label_w = measure(&label);
+        let link_x = if label_w > 0 { LABEL_X + label_w + LAUNCH_ANYWAY_GAP } else { LABEL_X };
+        (label, link_x)
+    }
+
+    /// Shorten `text` with a trailing "…" so that `measure` reports it no
+    /// wider than `max_w` pixels. Text that already fits is returned as is;
+    /// when not even "…" fits, "…" is returned.
+    fn ellipsize(text: &str, max_w: i32, measure: impl Fn(&str) -> i32) -> String {
+        if text.is_empty() || measure(text) <= max_w {
+            return text.to_string();
+        }
+        // Byte offset of every character: the places the text can be cut.
+        let cuts: Vec<usize> = text.char_indices().map(|(i, _)| i).collect();
+        let shortened = |kept: usize| format!("{}…", text[..cuts[kept]].trim_end());
+        // The width only grows with the number of characters kept, so binary
+        // search for the most characters whose shortened form still fits.
+        let (mut lo, mut hi) = (0, cuts.len() - 1);
+        while lo < hi {
+            let mid = (lo + hi).div_ceil(2);
+            if measure(&shortened(mid)) <= max_w {
+                lo = mid;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        shortened(lo)
+    }
+
     /// Open `path` with the system default handler (`ShellExecuteW` "open"),
     /// used by the "View log" link.  Failures are ignored: the link simply
     /// does nothing when no handler is registered for the file type.
@@ -2032,13 +2216,16 @@ mod win32 {
                 let new_min = hover_state(s.min_btn_state == BtnState::Pressed, s.hit_min(x, y));
                 let new_log_hover = s.hit_log_link(x, y);
                 let new_retry_hover = s.hit_retry_link(x, y);
+                let new_launch_anyway_hover = s.hit_launch_anyway(x, y);
                 if new_close != s.btn_state || new_min != s.min_btn_state
                     || new_log_hover != s.log_link_hover
-                    || new_retry_hover != s.retry_link_hover {
+                    || new_retry_hover != s.retry_link_hover
+                    || new_launch_anyway_hover != s.launch_anyway_hover {
                     s.btn_state = new_close;
                     s.min_btn_state = new_min;
                     s.log_link_hover = new_log_hover;
                     s.retry_link_hover = new_retry_hover;
+                    s.launch_anyway_hover = new_launch_anyway_hover;
                     // None = keep current screen position
                     update_layered(s, None);
                 }
@@ -2055,11 +2242,12 @@ mod win32 {
                 if !sp.is_null() {
                     let s = unsafe { &mut *sp };
                     if s.btn_state != BtnState::Normal || s.min_btn_state != BtnState::Normal
-                        || s.log_link_hover || s.retry_link_hover {
+                        || s.log_link_hover || s.retry_link_hover || s.launch_anyway_hover {
                         s.btn_state = BtnState::Normal;
                         s.min_btn_state = BtnState::Normal;
                         s.log_link_hover = false;
                         s.retry_link_hover = false;
+                        s.launch_anyway_hover = false;
                         update_layered(s, None);
                     }
                 }
@@ -2073,6 +2261,7 @@ mod win32 {
                 let y = ((l >> 16) & 0xFFFF) as i16 as i32;
                 s.log_link_pressed = false;
                 s.retry_link_pressed = false;
+                s.launch_anyway_pressed = false;
                 if s.hit_close(x, y) {
                     s.btn_state = BtnState::Pressed;
                     update_layered(s, None);
@@ -2091,6 +2280,9 @@ mod win32 {
                 } else if s.hit_retry_link(x, y) {
                     s.retry_link_pressed = true;
                     update_layered(s, None);
+                } else if s.hit_launch_anyway(x, y) {
+                    s.launch_anyway_pressed = true;
+                    update_layered(s, None);
                 }
                 0
             }
@@ -2104,8 +2296,10 @@ mod win32 {
                 let min_was_pressed = s.min_btn_state == BtnState::Pressed;
                 let log_was_pressed = s.log_link_pressed;
                 let retry_was_pressed = s.retry_link_pressed;
+                let launch_anyway_was_pressed = s.launch_anyway_pressed;
                 s.log_link_pressed = false;
                 s.retry_link_pressed = false;
+                s.launch_anyway_pressed = false;
                 s.btn_state = if s.hit_close(x, y) { BtnState::Hover } else { BtnState::Normal };
                 s.min_btn_state = if s.hit_min(x, y) { BtnState::Hover } else { BtnState::Normal };
                 if close_was_pressed && s.hit_close(x, y) {
@@ -2121,6 +2315,16 @@ mod win32 {
                     // Ask the background patch thread to retry the launch.
                     if let Ok(mut m) = s.ui.lock() {
                         m.retry_requested = true;
+                    }
+                    update_layered(s, None);
+                } else if launch_anyway_was_pressed && s.hit_launch_anyway(x, y) {
+                    // Ask the background patch thread to launch the client.
+                    // The hit rectangle lags one repaint behind the model, so
+                    // ignore a click on a link that was just hidden.
+                    if let Ok(mut m) = s.ui.lock() {
+                        if m.launch_anyway_available {
+                            m.launch_anyway_requested = true;
+                        }
                     }
                     update_layered(s, None);
                 } else {
@@ -2145,7 +2349,8 @@ mod win32 {
                     if in_close || in_min
                         || (!sp.is_null() && unsafe { &*sp }.hit_maint_header(cx, cy))
                         || (!sp.is_null() && unsafe { &*sp }.hit_log_link(cx, cy))
-                        || (!sp.is_null() && unsafe { &*sp }.hit_retry_link(cx, cy)) {
+                        || (!sp.is_null() && unsafe { &*sp }.hit_retry_link(cx, cy))
+                        || (!sp.is_null() && unsafe { &*sp }.hit_launch_anyway(cx, cy)) {
                         return HTCLIENT;
                     }
                     return HTCAPTION;
@@ -2170,10 +2375,11 @@ mod win32 {
             }
 
             WM_SETCURSOR => {
-                // A hand cursor signals that the "View log" or "retry" link is
-                // clickable.
+                // A hand cursor signals that the "View log", "retry" or "Try to
+                // launch anyway" link is clickable.
                 let hovering_link = !sp.is_null()
-                    && (unsafe { &*sp }.log_link_hover || unsafe { &*sp }.retry_link_hover);
+                    && (unsafe { &*sp }.log_link_hover || unsafe { &*sp }.retry_link_hover
+                        || unsafe { &*sp }.launch_anyway_hover);
                 let id = if hovering_link { IDC_HAND } else { IDC_ARROW };
                 let cur = unsafe { LoadCursorW(ptr::null_mut(), id) };
                 unsafe { SetCursor(cur) };
@@ -2373,6 +2579,9 @@ mod win32 {
             retry_link_rect: std::cell::Cell::new((0, 0, 0, 0)),
             retry_link_hover: false,
             retry_link_pressed: false,
+            launch_anyway_rect: std::cell::Cell::new((0, 0, 0, 0)),
+            launch_anyway_hover: false,
+            launch_anyway_pressed: false,
         });
 
         // Attach state to window.

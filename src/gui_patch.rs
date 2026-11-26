@@ -17,7 +17,7 @@ use anyhow::{bail, Result};
 use crate::cli::Region;
 use crate::gui::{self, UiModel};
 use crate::gui_downloader::format_eta;
-use crate::locale::{tr, tr_error};
+use crate::locale::{is_network_connect_error, tr, tr_error};
 use crate::maintenance;
 use crate::progress::{self, format_speed, Reporter};
 
@@ -447,6 +447,25 @@ impl Reporter for GuiReporter {
             Err(_) => false,
         }
     }
+
+    fn set_launch_anyway_available(&self, available: bool) {
+        self.log(&format!("[gui-debug] Reporter::set_launch_anyway_available({available})"));
+        if let Ok(mut m) = self.ui.lock() {
+            m.launch_anyway_available = available;
+            // Drop a click made just before the link is hidden, so it cannot
+            // trigger an extra launch.
+            if !available {
+                m.launch_anyway_requested = false;
+            }
+        }
+    }
+
+    fn take_launch_anyway_request(&self) -> bool {
+        match self.ui.lock() {
+            Ok(mut m) => std::mem::take(&mut m.launch_anyway_requested),
+            Err(_) => false,
+        }
+    }
 }
 
 impl GuiReporter {
@@ -612,6 +631,12 @@ pub fn run_gui_patch(
             // The raw error is kept in the log above, and the label shows a
             // short localized message.
             progress::finish(&tr_error(e), false);
+            // The patch server could not be reached, but the installed client
+            // may still be playable, so offer to launch it as requested. TMS
+            // patching does not launch the game.
+            if launch_after && region != Region::Tms && is_network_connect_error(e) {
+                offer_launch_anyway(&target_buf, region, lrhook, &window_closed_thread);
+            }
         } else if let Ok(mut m) = ui_for_result.lock() {
             m.exit_code = 0;
         }
@@ -716,13 +741,7 @@ fn run_patch_flow(
         }
 
         // Attempt the (UAC-elevated) launch for this region.
-        let try_launch = || -> Result<()> {
-            match region {
-                Region::Cms => crate::cms_patch::launch_client(target, lrhook),
-                Region::CmsCw => crate::cms_cw::launch_client(target),
-                _ => crate::cms_patch::launch_client(target, lrhook),
-            }
-        };
+        let try_launch = || launch_game(target, region, lrhook);
 
         // Show the "launching" message, then attempt the launch.
         progress::finish(&finish_message(launch_key, updated), false);
@@ -768,6 +787,49 @@ fn run_patch_flow(
     }
 
     Ok(())
+}
+
+/// Launch the client for `region` with `--sqLauncher` (through rslocalehook
+/// for CMS when `lrhook` is set and installed). The client's manifest makes
+/// Windows ask for elevation.
+fn launch_game(target: &Path, region: Region, lrhook: bool) -> Result<()> {
+    match region {
+        Region::Cms => crate::cms_patch::launch_client(target, lrhook),
+        Region::CmsCw => crate::cms_cw::launch_client(target),
+        _ => crate::cms_patch::launch_client(target, lrhook),
+    }
+}
+
+/// Offer the "Try to launch anyway" link after the patch server could not be
+/// reached while `--launch-after-patching` was requested, and launch the
+/// installed client when the link is clicked.
+///
+/// The connect error stays on label1 until the click. A failed or declined
+/// launch then turns label1 into the usual "click to retry" link. Returns once
+/// a launch succeeds (closing the window) or the window is closed.
+fn offer_launch_anyway(target: &Path, region: Region, lrhook: bool, window_closed: &AtomicBool) {
+    progress::set_launch_anyway_available(true);
+    while !window_closed.load(Ordering::SeqCst) {
+        if progress::take_launch_anyway_request() || progress::take_retry_request() {
+            crate::plog!("launching the installed client without updating.");
+            progress::set_launch_anyway_available(false);
+            progress::set_retry_available(false);
+            progress::finish(&tr("gui-patcher-launching", &[]), false);
+            match launch_game(target, region, lrhook) {
+                Ok(()) => {
+                    crate::plog!("launch requested; closing patcher.");
+                    progress::finish("", true);
+                    return;
+                }
+                Err(e) => {
+                    crate::plog!("launch failed or was declined: {e:#}");
+                    progress::finish(&tr("gui-patcher-launch-fail", &[]), false);
+                    progress::set_retry_available(true);
+                }
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
 }
 
 /// Compose the terminal status message for the GUI patcher.

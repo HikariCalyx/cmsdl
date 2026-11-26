@@ -75,6 +75,13 @@ pub trait Reporter: Send + Sync {
     /// [`set_retry_available`](Reporter::set_retry_available)). Returns `false`
     /// by default, i.e. no interactive link in console mode.
     fn take_retry_request(&self) -> bool { false }
+    /// Show or hide the "Try to launch anyway" link drawn after the status
+    /// line (label1). It is offered when the patch server cannot be reached
+    /// but the game was asked to launch. No-op by default (console mode).
+    fn set_launch_anyway_available(&self, _available: bool) {}
+    /// Consume a pending click on the "Try to launch anyway" link, returning
+    /// whether one was made. Returns `false` by default (console mode).
+    fn take_launch_anyway_request(&self) -> bool { false }
 }
 
 /// Sink for structured download progress, used by the GUI downloader.
@@ -277,6 +284,23 @@ pub fn take_retry_request() -> bool {
     let guard = PATCH_REPORTER.read().unwrap();
     match guard.as_ref() {
         Some(r) => r.take_retry_request(),
+        None => false,
+    }
+}
+
+/// Show or hide the "Try to launch anyway" link next to the status line; a
+/// no-op when no reporter is registered.
+pub fn set_launch_anyway_available(available: bool) {
+    with(|r| r.set_launch_anyway_available(available));
+}
+
+/// Consume a pending click on the "Try to launch anyway" link, returning
+/// whether one was made. Always `false` when no reporter is registered
+/// (console mode).
+pub fn take_launch_anyway_request() -> bool {
+    let guard = PATCH_REPORTER.read().unwrap();
+    match guard.as_ref() {
+        Some(r) => r.take_launch_anyway_request(),
         None => false,
     }
 }
