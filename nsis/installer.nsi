@@ -25,7 +25,7 @@ Unicode true
 !endif
 
 ; Version
-!define VERSION "4.229.3.0"
+!define VERSION "4.229.6.0"
 
 ; Windows 10 builds older than this (19041 = version 2004, e.g. 14393 = 1607)
 ; only get a non-blocking warning: they are out of support and the game client
@@ -412,8 +412,8 @@ FunctionEnd
 ; Helper: automatic build flag for a full install
 ; ============================================================================
 
-; If the current date is on or before December 1, 2026, add --build 1160 (CMS)
-; and --build 1158 (CMS CW) to the download commands (required for specific
+; If the current date is on or before December 1, 2026, add --build 1210 (CMS)
+; and --build 1206 (CMS CW) to the download commands (required for specific
 ; game build rollouts).
 Function SetDefaultBuildFlag
   ${GetTime} "" "L" $0 $1 $2 $3 $4 $5 $6
@@ -426,8 +426,8 @@ Function SetDefaultBuildFlag
   monthEq:
     IntCmp $0 1 beforeCutoff beforeCutoff afterCutoff
   beforeCutoff:
-    StrCpy $BuildFlag "--build 1165"
-    StrCpy $BuildFlagCW "--build 1164"
+    StrCpy $BuildFlag "--build 1210"
+    StrCpy $BuildFlagCW "--build 1206"
   afterCutoff:
 FunctionEnd
 
